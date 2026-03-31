@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Task Manager</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+
+    <header class="hero" aria-label="Task manager header">
+        <div class="hero-inner">
+            <p class="eyebrow">Organize your day</p>
+            <h1>Task Manager</h1>
+            <p class="subtitle">Add tasks, mark them complete, and keep momentum.</p>
+        </div>
+    </header>
+
+    <main id="main-content" class="app-shell" tabindex="-1">
+        <section class="card" aria-labelledby="task-section-title">
+            <h2 id="task-section-title">Your Tasks</h2>
+
+            <form id="task-form" class="task-form" aria-label="Add a new task">
+                <label for="task-input">New task</label>
+                <div class="input-row">
+                    <input
+                        type="text"
+                        id="task-input"
+                        name="task"
+                        maxlength="120"
+                        placeholder="e.g., Prepare project update"
+                        autocomplete="off"
+                        required
+                    >
+                    <button type="submit">Add Task</button>
+                </div>
+                <p class="helper-text" id="task-help">Task names can be up to 120 characters.</p>
+            </form>
+
+            <div class="task-meta" aria-live="polite" aria-atomic="true">
+                <p id="task-count">0 tasks total</p>
+            </div>
+
+            <ul id="task-list" class="task-list" aria-label="Task list"></ul>
+        </section>
+    </main>
+
+    <script src="script.js" defer></script>
+</body>
+</html>

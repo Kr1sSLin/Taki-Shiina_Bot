@@ -1,0 +1,59 @@
+# 环境变量和密钥
+.env
+.env.local
+.env.*.local
+
+# 用户数据和隐私
+chat_history.json
+user_memories.json
+current_city.txt
+memory_db.json
+
+# Python 虚拟环境
+.venv/
+venv/
+ENV/
+env/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 分发/打包
+dist/
+build/
+*.egg-info/
+*.egg
+
+# 压缩文件
+*.tar
+*.zip
+*.gz
+*.rar
+
+# 日志文件
+*.log
+logs/
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 测试覆盖率
+htmlcov/
+.coverage
+.coverage.*
+.pytest_cache/
+
+# 临时文件
+*.tmp
+*.bak
