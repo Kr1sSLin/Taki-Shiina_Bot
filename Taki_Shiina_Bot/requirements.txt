@@ -1,0 +1,8 @@
+python-telegram-bot
+openai
+httpx
+python-dotenv
+Pillow
+google-genai
+google-generativeai
+reportlab
