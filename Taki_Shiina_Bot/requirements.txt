@@ -6,3 +6,6 @@ Pillow
 google-genai
 google-generativeai
 reportlab
+fastapi
+uvicorn[standard]
+websockets
