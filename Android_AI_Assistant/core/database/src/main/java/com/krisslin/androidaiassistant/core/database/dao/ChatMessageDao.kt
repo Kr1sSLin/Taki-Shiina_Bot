@@ -28,6 +28,12 @@ interface ChatMessageDao {
     @Query("UPDATE chat_messages SET content = :content, status = :status WHERE message_id = :messageId")
     suspend fun updateContent(messageId: String, content: String, status: String)
 
+    @Query("UPDATE chat_messages SET content = content || :delta WHERE message_id = :messageId")
+    suspend fun appendContent(messageId: String, delta: String)
+
+    @Query("UPDATE chat_messages SET message_id = :newId, status = :status WHERE message_id = :oldId")
+    suspend fun finalizeMessage(oldId: String, newId: String, status: String)
+
     @Query("DELETE FROM chat_messages WHERE session_id = :sessionId")
     suspend fun deleteBySession(sessionId: String)
 }

@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -64,10 +65,21 @@ fun ChatRoute(
         }
     }
 
+    // 流式消息更新时也滚动
+    val lastMessage = state.messages.lastOrNull()
+    LaunchedEffect(lastMessage?.content) {
+        if (state.messages.isNotEmpty()) {
+            listState.animateScrollToItem(state.messages.size - 1)
+        }
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            ConnectionStatusBar(status = state.connectionStatus)
+            ConnectionStatusBar(
+                status = state.connectionStatus,
+                onReconnect = viewModel::reconnect
+            )
         }
     ) { padding ->
         Column(
@@ -119,11 +131,13 @@ fun ChatRoute(
                     modifier = Modifier.weight(1f),
                     placeholder = { Text("输入消息") },
                     singleLine = true,
-                    enabled = !state.sending
+                    enabled = !state.sending && state.connectionStatus == ConnectionStatus.CONNECTED
                 )
                 Button(
                     onClick = viewModel::sendText,
-                    enabled = !state.sending && state.input.isNotBlank()
+                    enabled = !state.sending 
+                        && state.input.isNotBlank() 
+                        && state.connectionStatus == ConnectionStatus.CONNECTED
                 ) {
                     Text("发送")
                 }
@@ -133,11 +147,15 @@ fun ChatRoute(
 }
 
 /**
- * 连接状态栏（HTTP 模式简化版）
+ * 连接状态栏
  */
 @Composable
-private fun ConnectionStatusBar(status: ConnectionStatus) {
+private fun ConnectionStatusBar(
+    status: ConnectionStatus,
+    onReconnect: () -> Unit
+) {
     val (statusText, statusColor) = when (status) {
+        ConnectionStatus.CONNECTING -> "连接中..." to Color(0xFFFFA726)
         ConnectionStatus.CONNECTED -> "在线" to Color(0xFF4CAF50)
         ConnectionStatus.DISCONNECTED -> "离线" to Color(0xFFF44336)
     }
@@ -147,19 +165,36 @@ private fun ConnectionStatusBar(status: ConnectionStatus) {
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface)
             .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Box(
-            modifier = Modifier
-                .size(10.dp)
-                .clip(CircleShape)
-                .background(statusColor)
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = statusText,
-            style = MaterialTheme.typography.titleMedium
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (status == ConnectionStatus.CONNECTING) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 2.dp,
+                    color = statusColor
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(statusColor)
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = statusText,
+                style = MaterialTheme.typography.titleMedium
+            )
+        }
+        
+        if (status == ConnectionStatus.DISCONNECTED) {
+            TextButton(onClick = onReconnect) {
+                Text("重连")
+            }
+        }
     }
 }
 

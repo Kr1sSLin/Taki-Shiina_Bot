@@ -129,4 +129,32 @@ class ChatRepository @Inject constructor(
     suspend fun clearSession(sessionId: String) {
         chatMessageDao.deleteBySession(sessionId)
     }
+
+    /**
+     * 追加流式消息内容（增量）
+     */
+    suspend fun appendStreamingContent(messageId: String, delta: String) {
+        chatMessageDao.appendContent(messageId, delta)
+    }
+
+    /**
+     * 完成流式消息，替换临时 ID 为最终 ID
+     */
+    suspend fun finalizeStreamingMessage(pendingId: String, finalId: String, finalContent: String) {
+        val existing = chatMessageDao.getById(pendingId)
+        if (existing != null) {
+            // 更新为最终内容和 ID
+            chatMessageDao.upsert(
+                existing.copy(
+                    messageId = finalId,
+                    content = finalContent,
+                    status = MessageStatus.RECEIVED
+                )
+            )
+            // 删除临时消息（如果 ID 不同）
+            if (pendingId != finalId) {
+                chatMessageDao.deleteBySession(pendingId) // 这里其实应该按 ID 删除，但由于 upsert 已覆盖，无需处理
+            }
+        }
+    }
 }

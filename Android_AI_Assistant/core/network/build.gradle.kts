@@ -12,7 +12,7 @@ android {
     defaultConfig {
         minSdk = 26
         buildConfigField("String", "API_BASE_URL", "\"https://takishiinabot.top/api/v1/\"")
-        buildConfigField("String", "WS_BASE_URL", "\"\"")  // HTTP 模式不需要
+        buildConfigField("String", "WS_BASE_URL", "\"wss://takishiinabot.top\"")
     }
 
     compileOptions {
