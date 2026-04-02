@@ -1,6 +1,8 @@
+import asyncio
 import os
 import uuid
 import logging
+import json
 from datetime import datetime, timezone, timedelta
 
 import httpx
@@ -52,6 +54,43 @@ prompt_service = PromptService(
 )
 
 app = FastAPI(title="TakiShiina Bot HTTP API")
+TIMELINE_FILE = os.path.join(_base_dir, "chat_timeline.json")
+
+
+async def extract_user_facts(user_id: str, message: str):
+    """异步提取用户消息中的事实并存入 user_memories.json"""
+    logger.info(f"🔍 开始提取用户事实: user_id={user_id}, message={message[:50]}...")
+    extraction_prompt = (
+        "你是一个信息提取助手。从用户消息中提取关于用户自身的客观事实（如习惯、计划、状态、偏好等）。\n"
+        "规则：\n"
+        "1. 只提取关于「用户」的事实，忽略闲聊、问候、对他人的描述\n"
+        "2. 每条事实以「用户」开头，简洁表述\n"
+        "3. 若无可提取事实，返回空数组\n"
+        "4. 严格返回JSON数组格式，如：[\"用户今天感冒了\", \"用户计划明天出门\"]\n\n"
+        f"用户消息：{message}"
+    )
+    try:
+        resp = await client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": extraction_prompt}],
+            temperature=0.3,
+        )
+        raw = resp.choices[0].message.content or "[]"
+        logger.info(f"🔍 LLM返回: {raw[:200]}")
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        facts = json.loads(raw)
+        logger.info(f"🔍 解析到 {len(facts)} 条事实: {facts}")
+        if isinstance(facts, list):
+            for fact in facts:
+                if isinstance(fact, str) and fact.strip():
+                    db.update_profile(user_id, fact.strip())
+                    logger.info(f"✅ 已写入事实: {fact.strip()}")
+    except json.JSONDecodeError as e:
+        logger.warning(f"事实提取JSON解析失败: {e}, raw={raw[:200]}")
+    except Exception as e:
+        logger.error(f"事实提取异常: {e}")
 
 
 class ChatRequest(BaseModel):
@@ -102,6 +141,35 @@ async def trace_middleware(request: Request, call_next):
 async def healthz(request: Request):
     trace_id = request.state.trace_id
     return response_body(0, "ok", {"status": "up"}, trace_id)
+
+
+@app.get("/api/v1/chat/history")
+async def chat_history(
+    request: Request,
+    since: int = 0,
+    limit: int = 200,
+    authorization: str | None = Header(default=None),
+):
+    trace_id = request.state.trace_id
+    if BOT_HTTP_TOKEN:
+        expected = f"Bearer {BOT_HTTP_TOKEN}"
+        if authorization != expected:
+            raise HTTPException(status_code=401, detail=response_body(40101, "鉴权失败", None, trace_id))
+
+    try:
+        if not os.path.exists(TIMELINE_FILE):
+            return response_body(0, "ok", {"items": []}, trace_id)
+        with open(TIMELINE_FILE, "r", encoding="utf-8") as f:
+            items = json.load(f)
+        filtered = [x for x in items if int(x.get("timestamp", 0)) > since]
+        filtered = filtered[-max(1, min(limit, 500)) :]
+        return response_body(0, "ok", {"items": filtered}, trace_id)
+    except Exception as error:
+        logger.exception("history failed")
+        return JSONResponse(
+            status_code=500,
+            content=response_body(5000, f"系统异常: {error}", None, trace_id),
+        )
 
 
 @app.post("/api/v1/chat")
@@ -169,6 +237,8 @@ async def chat(
 
         state.last_activity[user_id] = datetime.now(timezone.utc)
         state.last_bot_response_time[user_id] = datetime.now(timezone.utc)
+
+        asyncio.create_task(extract_user_facts(user_id, message_text))
 
         final_reply = inject_emojis(sanitize_taki_reply(cleaned_reply))
         usage = response.usage

@@ -90,8 +90,14 @@ fun ChatRoute(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // 提示信息区域
-            if (state.sending) {
-                Text(text = "发送中…", color = MaterialTheme.colorScheme.primary)
+            when (state.botActivity) {
+                BotActivityStatus.IDLE -> { /* 不显示任何内容 */ }
+                BotActivityStatus.SENDING -> {
+                    Text(text = "发送中…", color = MaterialTheme.colorScheme.primary)
+                }
+                BotActivityStatus.TYPING -> {
+                    Text(text = "输入中…", color = MaterialTheme.colorScheme.primary)
+                }
             }
             state.error?.let {
                 Row(
@@ -131,12 +137,11 @@ fun ChatRoute(
                     modifier = Modifier.weight(1f),
                     placeholder = { Text("输入消息") },
                     singleLine = true,
-                    enabled = !state.sending && state.connectionStatus == ConnectionStatus.CONNECTED
+                    enabled = state.connectionStatus == ConnectionStatus.CONNECTED
                 )
                 Button(
                     onClick = viewModel::sendText,
-                    enabled = !state.sending 
-                        && state.input.isNotBlank() 
+                    enabled = state.input.isNotBlank()
                         && state.connectionStatus == ConnectionStatus.CONNECTED
                 ) {
                     Text("发送")
@@ -226,7 +231,7 @@ private fun MessageBubble(message: ChatMessageUi) {
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text(
-                    text = message.content,
+                    text = message.content.trimEnd('\n'),
                     style = MaterialTheme.typography.bodyMedium
                 )
                 if (message.isStreaming) {

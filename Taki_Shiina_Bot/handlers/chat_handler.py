@@ -3,7 +3,15 @@ import datetime
 import random
 import re
 import uuid
+import traceback
 from datetime import timedelta, timezone
+
+# 飞书告警模块（可选）
+try:
+    from alert_sender import send_alert
+    ALERT_ENABLED = True
+except (ImportError, ValueError):
+    ALERT_ENABLED = False
 
 
 def compute_debounce_window(bot_last, now_utc, debounce_base, debounce_extended, debounce_extend_window):
@@ -234,6 +242,13 @@ def create_chat_handler(
 
         except Exception as e:
             logger.error(f"❌ Chat Error: {e}")
+            # 发送飞书告警
+            if ALERT_ENABLED:
+                try:
+                    error_detail = f"聊天处理异常\n\n用户ID: {user_id}\n用户消息: {full_user_text[:100]}...\n\n错误类型: {type(e).__name__}\n错误信息: {str(e)}\n\n堆栈追踪:\n{traceback.format_exc()}"
+                    send_alert(error_detail)
+                except Exception:
+                    pass
 
     async def chat(update, context):
         if not update.message:

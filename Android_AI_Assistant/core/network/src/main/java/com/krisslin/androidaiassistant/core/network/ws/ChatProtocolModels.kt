@@ -22,14 +22,24 @@ data class ReplyPayload(
     val timestamp: Long
 )
 
+data class TimerInstruction(
+    val target: String,
+    val text: String
+)
+
 data class ReplyStreamPayload(
-    val delta: String,
-    val done: Boolean
+    val delta: String = "",
+    val done: Boolean = false,
+    val messageId: String? = null,
+    val finalContent: String? = null,
+    val timerInstruction: TimerInstruction? = null,
+    val requestIds: List<String>? = null
 )
 
 data class BotErrorPayload(
     val errorCode: String,
     val message: String,
+    val requestIds: List<String> = emptyList(),
     val timestamp: Long
 )
 
@@ -42,7 +52,7 @@ data class IncomingEnvelope<T>(
 sealed interface IncomingMessage {
     data class Reply(val requestId: String?, val payload: ReplyPayload) : IncomingMessage
     data class ReplyStream(val requestId: String?, val payload: ReplyStreamPayload) : IncomingMessage
-    data class BotError(val payload: BotErrorPayload) : IncomingMessage
+    data class BotError(val requestId: String?, val payload: BotErrorPayload) : IncomingMessage
     data object Typing : IncomingMessage
     data object AuthExpired : IncomingMessage
     data class Unknown(val type: String, val raw: String) : IncomingMessage
@@ -77,6 +87,7 @@ class IncomingMessageParser(
                 .let {
                     val payloadJson = gson.toJsonTree(it.payload)
                     IncomingMessage.BotError(
+                        requestId = it.requestId,
                         payload = gson.fromJson(payloadJson, BotErrorPayload::class.java)
                     )
                 }

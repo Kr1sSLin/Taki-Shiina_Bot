@@ -45,14 +45,14 @@ class ChatRepository @Inject constructor(
     /**
      * 观察指定会话的消息（按时间升序）
      */
-    fun observeMessages(sessionId: String, limit: Int = 100): Flow<List<ChatMessageEntity>> {
+    fun observeMessages(sessionId: String, limit: Int = 300): Flow<List<ChatMessageEntity>> {
         return chatMessageDao.observeLatest(sessionId, limit)
     }
 
     /**
      * 一次性获取指定会话的消息
      */
-    suspend fun getMessages(sessionId: String, limit: Int = 100): List<ChatMessageEntity> {
+    suspend fun getMessages(sessionId: String, limit: Int = 300): List<ChatMessageEntity> {
         return chatMessageDao.getLatest(sessionId, limit)
     }
 
@@ -108,6 +108,31 @@ class ChatRepository @Inject constructor(
     }
 
     /**
+     * 保存外部同步消息（历史补拉）
+     */
+    suspend fun saveExternalMessage(
+        messageId: String,
+        sessionId: String,
+        role: String,
+        content: String,
+        timestamp: Long
+    ) {
+        val existing = chatMessageDao.getById(messageId)
+        if (existing != null) return
+        chatMessageDao.upsert(
+            ChatMessageEntity(
+                messageId = messageId,
+                sessionId = sessionId,
+                role = role,
+                messageType = MessageType.TEXT,
+                content = content,
+                status = MessageStatus.RECEIVED,
+                timestamp = timestamp
+            )
+        )
+    }
+
+    /**
      * 更新流式消息内容
      */
     suspend fun updateStreamingContent(messageId: String, content: String, finished: Boolean) {
@@ -131,6 +156,13 @@ class ChatRepository @Inject constructor(
     }
 
     /**
+     * 删除单条消息
+     */
+    suspend fun deleteMessage(messageId: String) {
+        chatMessageDao.deleteById(messageId)
+    }
+
+    /**
      * 追加流式消息内容（增量）
      */
     suspend fun appendStreamingContent(messageId: String, delta: String) {
@@ -141,20 +173,6 @@ class ChatRepository @Inject constructor(
      * 完成流式消息，替换临时 ID 为最终 ID
      */
     suspend fun finalizeStreamingMessage(pendingId: String, finalId: String, finalContent: String) {
-        val existing = chatMessageDao.getById(pendingId)
-        if (existing != null) {
-            // 更新为最终内容和 ID
-            chatMessageDao.upsert(
-                existing.copy(
-                    messageId = finalId,
-                    content = finalContent,
-                    status = MessageStatus.RECEIVED
-                )
-            )
-            // 删除临时消息（如果 ID 不同）
-            if (pendingId != finalId) {
-                chatMessageDao.deleteBySession(pendingId) // 这里其实应该按 ID 删除，但由于 upsert 已覆盖，无需处理
-            }
-        }
+        chatMessageDao.finalizeMessage(pendingId, finalId, finalContent, MessageStatus.RECEIVED)
     }
 }

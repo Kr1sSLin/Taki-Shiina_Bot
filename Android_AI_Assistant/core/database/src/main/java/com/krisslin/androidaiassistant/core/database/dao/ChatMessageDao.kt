@@ -16,11 +16,11 @@ interface ChatMessageDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(messages: List<ChatMessageEntity>)
 
-    @Query("SELECT * FROM chat_messages WHERE session_id = :sessionId ORDER BY timestamp ASC LIMIT :limit")
-    fun observeLatest(sessionId: String, limit: Int = 100): Flow<List<ChatMessageEntity>>
+    @Query("SELECT * FROM (SELECT * FROM chat_messages WHERE session_id = :sessionId ORDER BY timestamp DESC LIMIT :limit) ORDER BY timestamp ASC")
+    fun observeLatest(sessionId: String, limit: Int = 300): Flow<List<ChatMessageEntity>>
 
-    @Query("SELECT * FROM chat_messages WHERE session_id = :sessionId ORDER BY timestamp ASC LIMIT :limit")
-    suspend fun getLatest(sessionId: String, limit: Int = 100): List<ChatMessageEntity>
+    @Query("SELECT * FROM (SELECT * FROM chat_messages WHERE session_id = :sessionId ORDER BY timestamp DESC LIMIT :limit) ORDER BY timestamp ASC")
+    suspend fun getLatest(sessionId: String, limit: Int = 300): List<ChatMessageEntity>
 
     @Query("SELECT * FROM chat_messages WHERE message_id = :messageId")
     suspend fun getById(messageId: String): ChatMessageEntity?
@@ -31,9 +31,12 @@ interface ChatMessageDao {
     @Query("UPDATE chat_messages SET content = content || :delta WHERE message_id = :messageId")
     suspend fun appendContent(messageId: String, delta: String)
 
-    @Query("UPDATE chat_messages SET message_id = :newId, status = :status WHERE message_id = :oldId")
-    suspend fun finalizeMessage(oldId: String, newId: String, status: String)
+    @Query("UPDATE chat_messages SET message_id = :newId, content = :content, status = :status WHERE message_id = :oldId")
+    suspend fun finalizeMessage(oldId: String, newId: String, content: String, status: String)
 
     @Query("DELETE FROM chat_messages WHERE session_id = :sessionId")
     suspend fun deleteBySession(sessionId: String)
+
+    @Query("DELETE FROM chat_messages WHERE message_id = :messageId")
+    suspend fun deleteById(messageId: String)
 }

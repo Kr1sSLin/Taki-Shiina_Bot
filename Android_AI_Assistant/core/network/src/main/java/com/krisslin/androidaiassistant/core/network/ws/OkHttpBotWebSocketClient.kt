@@ -43,7 +43,7 @@ class OkHttpBotWebSocketClient @Inject constructor(
     private fun openWebSocket(token: String) {
         heartbeatJob?.cancel()
         val request = Request.Builder()
-            .url("${BuildConfig.WS_BASE_URL}/chat?token=$token")
+            .url("${BuildConfig.WS_BASE_URL}/ws/chat?token=$token")
             .build()
         val webSocket = okHttpClient.newWebSocket(request, listener)
         wsRef.set(webSocket)

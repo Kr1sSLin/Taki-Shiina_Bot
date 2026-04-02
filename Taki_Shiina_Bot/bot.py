@@ -2,6 +2,8 @@ import random
 import logging
 import os
 import sys
+import traceback
+import threading
 from datetime import timedelta, timezone, time
 
 # 第三方库
@@ -32,6 +34,17 @@ from services.history_store import HistoryStore
 from services.prompt_service import PromptService
 from services.weather_service import WeatherService
 from text_utils import inject_emojis, sanitize_taki_reply
+
+# 飞书告警模块
+try:
+    from alert_sender import send_alert
+    ALERT_ENABLED = True
+except ImportError:
+    ALERT_ENABLED = False
+    print("⚠️ 飞书告警模块未启用（未配置环境变量或导入失败）")
+except ValueError as e:
+    ALERT_ENABLED = False
+    print(f"⚠️ 飞书告警模块配置错误: {e}")
 
 # ================= 1. 配置区域 =================
 _base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -172,6 +185,40 @@ chat = create_chat_handler(
 )
 
 # ================= 9. 启动区 =================
+def send_startup_alert():
+    """发送Bot启动通知到飞书（延迟执行，避免干扰事件循环初始化）"""
+    import time as time_module
+    
+    def _send():
+        # 等待 5 秒，确保事件循环已经启动
+        time_module.sleep(5)
+        if ALERT_ENABLED:
+            try:
+                from alert_sender import FEISHU_WEBHOOK_URL
+                logger.info("📤 正在发送飞书启动通知...")
+                logger.info(f"📡 Webhook URL: {FEISHU_WEBHOOK_URL[:50] if FEISHU_WEBHOOK_URL else 'None'}...")
+                result = send_alert("✅ 立希Bot 已成功启动并开始运行", bypass_rate_limit=True)
+                if result:
+                    logger.info("✅ 飞书启动通知发送成功")
+                else:
+                    logger.warning("⚠️ 飞书启动通知发送失败")
+            except Exception as e:
+                logger.error(f"❌ 飞书启动通知异常: {e}")
+        else:
+            logger.info("ℹ️ 飞书告警模块未启用，跳过启动通知")
+    
+    # 在后台线程中发送
+    threading.Thread(target=_send, daemon=True).start()
+
+def send_crash_alert(error):
+    """发送崩溃告警到飞书（同步执行，因为程序即将退出）"""
+    if ALERT_ENABLED:
+        try:
+            error_detail = f"Bot崩溃！\n\n错误类型: {type(error).__name__}\n错误信息: {str(error)}\n\n堆栈追踪:\n{traceback.format_exc()}"
+            send_alert(error_detail, bypass_rate_limit=True)
+        except Exception:
+            pass
+
 if __name__ == '__main__':
     loaded_history = load_chat_history()
     state.user_chat_history.clear()
@@ -212,7 +259,14 @@ if __name__ == '__main__':
             )
 
     print("👀 立希 v1.4.0 已就位...")
-    application.run_polling()
+    send_startup_alert()
+    
+    try:
+        application.run_polling()
+    except Exception as e:
+        logger.critical(f"🚨 Bot崩溃: {e}")
+        send_crash_alert(e)
+        raise
 
 #教 你 打 维 护 代 码
 #sudo systemctl restart mybot              重启机器人

@@ -3,9 +3,13 @@ package com.krisslin.androidaiassistant.feature.chat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
 import com.krisslin.androidaiassistant.core.database.entity.ChatMessageEntity
 import com.krisslin.androidaiassistant.core.database.repository.ChatRepository
+import com.krisslin.androidaiassistant.core.database.repository.MessageRole
 import com.krisslin.androidaiassistant.core.database.repository.MessageStatus
+import com.krisslin.androidaiassistant.core.network.api.ChatApi
 import com.krisslin.androidaiassistant.core.network.auth.AuthRepository
 import com.krisslin.androidaiassistant.core.network.auth.TokenState
 import com.krisslin.androidaiassistant.core.network.ws.BotWebSocketClient
@@ -18,6 +22,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -46,9 +52,18 @@ enum class ConnectionStatus {
     DISCONNECTED    // 已断开
 }
 
+/**
+ * Bot 活动状态（用于顶部提示显示）
+ */
+enum class BotActivityStatus {
+    IDLE,       // 空闲：不显示任何内容
+    SENDING,    // 发送中：用户消息已发出，等待服务器确认
+    TYPING      // 输入中：Bot 正在生成回复
+}
+
 data class ChatUiState(
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
-    val sending: Boolean = false,
+    val botActivity: BotActivityStatus = BotActivityStatus.IDLE,
     val input: String = "",
     val error: String? = null,
     val messages: List<ChatMessageUi> = emptyList()
@@ -64,6 +79,7 @@ sealed interface ChatSideEffect {
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
+    private val chatApi: ChatApi,
     private val chatRepository: ChatRepository,
     private val authRepository: AuthRepository,
     private val botWebSocketClient: BotWebSocketClient,
@@ -86,14 +102,24 @@ class ChatViewModel @Inject constructor(
 
     // 流式消息超时任务: requestId -> Job
     private val streamingTimeoutJobs = ConcurrentHashMap<String, Job>()
+    private val pendingRequestIds = ConcurrentHashMap.newKeySet<String>()
+
+    // 流式消息处理锁，防止竞态条件
+    private val streamingMutex = Mutex()
+
+    // 追踪已收到首帧的 requestId（用于判断是否切换为 TYPING 状态）
+    private val receivedFirstChunk = ConcurrentHashMap.newKeySet<String>()
 
     // 流式消息超时时间（毫秒）
-    private val streamingTimeoutMs = 60_000L
+    private val streamingTimeoutMs = 180_000L
+
+    private var lastSyncedTimestampMs: Long = 0L
 
     init {
         loadHistoryFromDb()
         observeAuthState()
         observeWebSocketEvents()
+        connectWebSocket()  // 直接连接
     }
 
     /**
@@ -103,6 +129,7 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             chatRepository.observeMessages(sessionId).collect { entities ->
                 val uiMessages = entities.map { it.toUiModel() }
+                lastSyncedTimestampMs = entities.maxOfOrNull { it.timestamp } ?: lastSyncedTimestampMs
                 _uiState.update { it.copy(messages = uiMessages) }
             }
         }
@@ -131,7 +158,7 @@ class ChatViewModel @Inject constructor(
      * 连接 WebSocket
      */
     private fun connectWebSocket() {
-        val token = authRepository.getAccessToken() ?: return
+        val token = authRepository.getAccessToken() ?: ""  // 允许空 Token
         _uiState.update { it.copy(connectionStatus = ConnectionStatus.CONNECTING) }
         botWebSocketClient.connect(token)
     }
@@ -145,6 +172,7 @@ class ChatViewModel @Inject constructor(
                 when (event) {
                     is WebSocketEvent.Connected -> {
                         _uiState.update { it.copy(connectionStatus = ConnectionStatus.CONNECTED, error = null) }
+                        syncHistoryFromServer()
                     }
                     is WebSocketEvent.Disconnected -> {
                         _uiState.update { it.copy(connectionStatus = ConnectionStatus.DISCONNECTED) }
@@ -200,6 +228,9 @@ class ChatViewModel @Inject constructor(
         val requestId = message.requestId ?: return
         val payload = message.payload
 
+        // 收到回复，切换为 TYPING 状态
+        _uiState.update { it.copy(botActivity = BotActivityStatus.TYPING) }
+
         // 取消超时任务
         streamingTimeoutJobs.remove(requestId)?.cancel()
         streamingContentCache.remove(requestId)
@@ -207,15 +238,31 @@ class ChatViewModel @Inject constructor(
         // 标记用户消息已发送
         chatRepository.markUserMessageSent(requestId)
 
-        // 保存 Bot 回复
-        chatRepository.saveBotMessage(
-            messageId = payload.messageId,
-            sessionId = sessionId,
-            content = payload.content,
-            isStreaming = false
-        )
+        val segments = splitBotSegments(payload.content)
+        if (segments.isEmpty()) {
+            chatRepository.saveBotMessage(
+                messageId = payload.messageId,
+                sessionId = sessionId,
+                content = payload.content,
+                isStreaming = false
+            )
+        } else {
+            segments.forEachIndexed { index, segment ->
+                chatRepository.saveBotMessage(
+                    messageId = "${payload.messageId}_$index",
+                    sessionId = sessionId,
+                    content = segment,
+                    isStreaming = false
+                )
+            }
+        }
 
-        _uiState.update { it.copy(sending = false) }
+        // 回复完成，移除 pendingId 并回到 IDLE
+        pendingRequestIds.remove(requestId)
+        receivedFirstChunk.remove(requestId)
+        _uiState.update { 
+            it.copy(botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING) 
+        }
     }
 
     /**
@@ -226,48 +273,81 @@ class ChatViewModel @Inject constructor(
         val payload = message.payload
         val pendingMessageId = "pending_$requestId"
 
-        if (payload.done) {
-            // 流式完成
-            streamingTimeoutJobs.remove(requestId)?.cancel()
-            streamingContentCache.remove(requestId)
+        streamingMutex.withLock {
+            runCatching {
+                if (payload.done) {
+                    // 流式完成
+                    streamingTimeoutJobs.remove(requestId)?.cancel()
+                    val cachedContent = streamingContentCache.remove(requestId)?.toString()
 
-            // 标记用户消息已发送
-            chatRepository.markUserMessageSent(requestId)
+                    // 标记被防抖合并的所有用户消息已发送
+                    val relatedIds = payload.requestIds?.takeIf { it.isNotEmpty() } ?: listOf(requestId)
+                    relatedIds.forEach { id ->
+                        runCatching { chatRepository.markUserMessageSent(id) }
+                        pendingRequestIds.remove(id)
+                        receivedFirstChunk.remove(id)
+                        streamingTimeoutJobs.remove(id)?.cancel()
+                    }
 
-            // 使用 finalContent（如果有）或累积的内容
-            val finalContent = try {
-                val payloadMap = gson.fromJson(gson.toJson(payload), Map::class.java)
-                payloadMap["finalContent"]?.toString()
-            } catch (e: Exception) {
-                null
-            }
+                    val finalContent = payload.finalContent ?: cachedContent ?: ""
+                    val finalMessageId = payload.messageId ?: "bot_$requestId"
+                    val segments = splitBotSegments(finalContent)
 
-            val messageId = try {
-                val payloadMap = gson.fromJson(gson.toJson(payload), Map::class.java)
-                payloadMap["messageId"]?.toString() ?: UUID.randomUUID().toString()
-            } catch (e: Exception) {
-                UUID.randomUUID().toString()
-            }
+                    // 删除流式占位消息（如果存在）
+                    if (cachedContent != null) {
+                        chatRepository.deleteMessage(pendingMessageId)
+                    }
 
-            if (finalContent != null) {
-                chatRepository.finalizeStreamingMessage(pendingMessageId, messageId, finalContent)
-            } else {
-                chatRepository.updateStreamingContent(pendingMessageId, "", finished = true)
-            }
+                    // 保存分条气泡
+                    if (segments.isEmpty()) {
+                        chatRepository.saveBotMessage(
+                            messageId = finalMessageId,
+                            sessionId = sessionId,
+                            content = finalContent,
+                            isStreaming = false
+                        )
+                    } else {
+                        segments.forEachIndexed { index, segment ->
+                            chatRepository.saveBotMessage(
+                                messageId = "${finalMessageId}_$index",
+                                sessionId = sessionId,
+                                content = segment,
+                                isStreaming = false
+                            )
+                        }
+                    }
 
-            _uiState.update { it.copy(sending = false) }
-        } else {
-            // 流式增量
-            val delta = payload.delta
-            if (delta.isNotEmpty()) {
-                // 追加到缓存
-                streamingContentCache.getOrPut(requestId) { StringBuilder() }.append(delta)
+                    // 流式完成，回到 IDLE 或保持 SENDING（如有其他待处理消息）
+                    _uiState.update { 
+                        it.copy(botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING) 
+                    }
+                } else {
+                    // 流式增量
+                    val delta = payload.delta
+                    if (delta.isNotEmpty()) {
+                        // 首帧到达时切换为 TYPING 状态
+                        if (receivedFirstChunk.add(requestId)) {
+                            _uiState.update { it.copy(botActivity = BotActivityStatus.TYPING) }
+                        }
 
-                // 追加到数据库
-                chatRepository.appendStreamingContent(pendingMessageId, delta)
-
-                // 重置超时计时器
-                resetStreamingTimeout(requestId, pendingMessageId)
+                        // 确保占位消息存在后再追加
+                        if (!streamingContentCache.containsKey(requestId)) {
+                            chatRepository.saveBotMessage(
+                                messageId = pendingMessageId,
+                                sessionId = sessionId,
+                                content = delta,
+                                isStreaming = true
+                            )
+                            streamingContentCache[requestId] = StringBuilder(delta)
+                        } else {
+                            streamingContentCache[requestId]!!.append(delta)
+                            chatRepository.appendStreamingContent(pendingMessageId, delta)
+                        }
+                        resetStreamingTimeout(requestId, pendingMessageId)
+                    }
+                }
+            }.onFailure { e ->
+                android.util.Log.e("ChatViewModel", "Stream handling error: ${e.message}", e)
             }
         }
     }
@@ -277,9 +357,21 @@ class ChatViewModel @Inject constructor(
      */
     private suspend fun handleBotError(message: IncomingMessage.BotError) {
         val payload = message.payload
+        val relatedIds = buildList {
+            message.requestId?.let { add(it) }
+            addAll(payload.requestIds)
+        }.distinct()
+        relatedIds.forEach { requestId ->
+            streamingTimeoutJobs.remove(requestId)?.cancel()
+            streamingContentCache.remove(requestId)
+            pendingRequestIds.remove(requestId)
+            receivedFirstChunk.remove(requestId)
+            chatRepository.markMessageError("pending_$requestId", payload.errorCode)
+            chatRepository.markMessageError(requestId, payload.errorCode)
+        }
         _uiState.update { 
             it.copy(
-                sending = false,
+                botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING,
                 error = "${payload.errorCode}: ${payload.message}"
             ) 
         }
@@ -309,8 +401,15 @@ class ChatViewModel @Inject constructor(
             delay(streamingTimeoutMs)
             // 超时仍在 streaming → 标记错误
             streamingContentCache.remove(requestId)
+            pendingRequestIds.remove(requestId)
+            receivedFirstChunk.remove(requestId)
             chatRepository.markMessageError(pendingMessageId, "TIMEOUT")
-            _uiState.update { it.copy(sending = false, error = "AI 响应超时，请重试") }
+            _uiState.update { 
+                it.copy(
+                    botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING, 
+                    error = "AI 响应超时，请重试"
+                ) 
+            }
         }
     }
 
@@ -336,7 +435,8 @@ class ChatViewModel @Inject constructor(
         }
 
         val requestId = UUID.randomUUID().toString()
-        _uiState.update { it.copy(input = "", sending = true, error = null) }
+        pendingRequestIds.add(requestId)
+        _uiState.update { it.copy(input = "", botActivity = BotActivityStatus.SENDING, error = null) }
 
         viewModelScope.launch {
             // 保存用户消息到 DB
@@ -344,14 +444,6 @@ class ChatViewModel @Inject constructor(
                 messageId = requestId,
                 sessionId = sessionId,
                 content = current
-            )
-
-            // 预创建 Bot 消息占位（streaming 状态）
-            chatRepository.saveBotMessage(
-                messageId = "pending_$requestId",
-                sessionId = sessionId,
-                content = "",
-                isStreaming = true
             )
 
             // 构建 WebSocket 消息
@@ -367,9 +459,15 @@ class ChatViewModel @Inject constructor(
             // 发送
             val sent = botWebSocketClient.send(gson.toJson(wsMessage))
             if (!sent) {
+                pendingRequestIds.remove(requestId)
                 chatRepository.markMessageError(requestId, "SEND_FAILED")
                 chatRepository.markMessageError("pending_$requestId", "SEND_FAILED")
-                _uiState.update { it.copy(sending = false, error = "消息发送失败") }
+                _uiState.update { 
+                    it.copy(
+                        botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING, 
+                        error = "消息发送失败"
+                    ) 
+                }
                 return@launch
             }
 
@@ -392,6 +490,82 @@ class ChatViewModel @Inject constructor(
         streamingTimeoutJobs.values.forEach { it.cancel() }
         streamingTimeoutJobs.clear()
         streamingContentCache.clear()
+        pendingRequestIds.clear()
+        receivedFirstChunk.clear()
+    }
+
+    private fun splitBotSegments(content: String): List<String> {
+        return content
+            .split('\n')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+    }
+
+    private fun syncHistoryFromServer() {
+        viewModelScope.launch {
+            runCatching {
+                chatApi.history(
+                    since = lastSyncedTimestampMs,
+                    limit = 300
+                )
+            }.onSuccess { response ->
+                val items = response.getAsJsonObject("data")
+                    ?.getAsJsonArray("items")
+                    ?: JsonArray()
+                applyHistoryItems(items)
+            }.onFailure {
+                // 历史补拉失败不影响实时聊天
+            }
+        }
+    }
+
+    private suspend fun applyHistoryItems(items: JsonArray) {
+        for (i in 0 until items.size()) {
+            runCatching {
+                val item = items[i].asJsonObjectOrNull() ?: return@runCatching
+                val userId = item.getStringOrNull("userId")
+                if (userId != null && userId != "default-user") return@runCatching
+                val messageId = item.getStringOrNull("messageId") ?: return@runCatching
+                val role = item.getStringOrNull("role") ?: return@runCatching
+                val content = item.getStringOrNull("content") ?: return@runCatching
+                val timestamp = item.getLongOrNull("timestamp") ?: return@runCatching
+
+                if (role == "user") {
+                    chatRepository.saveExternalMessage(
+                        messageId = messageId,
+                        sessionId = sessionId,
+                        role = MessageRole.USER,
+                        content = content,
+                        timestamp = timestamp
+                    )
+                } else {
+                    val segments = splitBotSegments(content)
+                    if (segments.isEmpty()) {
+                        chatRepository.saveExternalMessage(
+                            messageId = messageId,
+                            sessionId = sessionId,
+                            role = MessageRole.BOT,
+                            content = content,
+                            timestamp = timestamp
+                        )
+                    } else {
+                        segments.forEachIndexed { index, segment ->
+                            chatRepository.saveExternalMessage(
+                                messageId = "${messageId}_$index",
+                                sessionId = sessionId,
+                                role = MessageRole.BOT,
+                                content = segment,
+                                timestamp = timestamp + index
+                            )
+                        }
+                    }
+                }
+
+                if (timestamp > lastSyncedTimestampMs) {
+                    lastSyncedTimestampMs = timestamp
+                }
+            }
+        }
     }
 
     private fun ChatMessageEntity.toUiModel() = ChatMessageUi(
@@ -401,4 +575,18 @@ class ChatViewModel @Inject constructor(
         timestamp = timestamp,
         isStreaming = status == MessageStatus.STREAMING
     )
+
+    private fun JsonObject.getStringOrNull(name: String): String? {
+        val v = get(name) ?: return null
+        return if (v.isJsonNull) null else v.asString
+    }
+
+    private fun JsonObject.getLongOrNull(name: String): Long? {
+        val v = get(name) ?: return null
+        return if (v.isJsonNull) null else v.asLong
+    }
+
+    private fun com.google.gson.JsonElement.asJsonObjectOrNull(): JsonObject? {
+        return if (isJsonObject) asJsonObject else null
+    }
 }

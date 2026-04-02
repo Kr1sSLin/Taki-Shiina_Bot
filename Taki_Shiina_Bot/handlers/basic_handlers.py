@@ -1,7 +1,15 @@
 import asyncio
 import os
+import traceback
 
 import PIL.Image
+
+# 飞书告警模块（可选）
+try:
+    from alert_sender import send_alert
+    ALERT_ENABLED = True
+except (ImportError, ValueError):
+    ALERT_ENABLED = False
 
 
 def create_set_city_command(weather_service):
@@ -77,6 +85,13 @@ def create_handle_photo_handler(
             await update.message.reply_text(inject_emojis(filtered_reply))
         except Exception as e:
             logger.error(f"❌ 识图详细报错: {e}")
+            # 发送飞书告警
+            if ALERT_ENABLED:
+                try:
+                    error_detail = f"图片处理异常\n\n用户ID: {user_id}\n图片说明: {caption[:50] if caption else '无'}\n\n错误类型: {type(e).__name__}\n错误信息: {str(e)}\n\n堆栈追踪:\n{traceback.format_exc()}"
+                    send_alert(error_detail)
+                except Exception:
+                    pass
             await update.message.reply_text("看不清。")
 
     return handle_photo
