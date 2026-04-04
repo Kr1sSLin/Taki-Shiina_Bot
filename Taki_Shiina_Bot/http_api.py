@@ -103,6 +103,10 @@ class ChatRequest(BaseModel):
     traceId: str | None = None
 
 
+class CityRequest(BaseModel):
+    city: str
+
+
 def response_body(code: int, message: str, data: dict | None, trace_id: str):
     return {"code": code, "message": message, "data": data, "traceId": trace_id}
 
@@ -166,6 +170,58 @@ async def chat_history(
         return response_body(0, "ok", {"items": filtered}, trace_id)
     except Exception as error:
         logger.exception("history failed")
+        return JSONResponse(
+            status_code=500,
+            content=response_body(5000, f"系统异常: {error}", None, trace_id),
+        )
+
+
+@app.get("/api/v1/settings/city")
+async def get_city(
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    trace_id = request.state.trace_id
+    if BOT_HTTP_TOKEN:
+        expected = f"Bearer {BOT_HTTP_TOKEN}"
+        if authorization != expected:
+            raise HTTPException(status_code=401, detail=response_body(40101, "鉴权失败", None, trace_id))
+
+    try:
+        city = weather_service.get_current_city()
+        return response_body(0, "ok", {"city": city}, trace_id)
+    except Exception as error:
+        logger.exception("get city failed")
+        return JSONResponse(
+            status_code=500,
+            content=response_body(5000, f"系统异常: {error}", None, trace_id),
+        )
+
+
+@app.put("/api/v1/settings/city")
+async def set_city(
+    payload: CityRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    trace_id = request.state.trace_id
+    if BOT_HTTP_TOKEN:
+        expected = f"Bearer {BOT_HTTP_TOKEN}"
+        if authorization != expected:
+            raise HTTPException(status_code=401, detail=response_body(40101, "鉴权失败", None, trace_id))
+
+    city = (payload.city or "").strip()
+    if not city:
+        return JSONResponse(
+            status_code=400,
+            content=response_body(40002, "city 不能为空", None, trace_id),
+        )
+
+    try:
+        weather_service.set_city(city)
+        return response_body(0, "ok", {"city": city}, trace_id)
+    except Exception as error:
+        logger.exception("set city failed")
         return JSONResponse(
             status_code=500,
             content=response_body(5000, f"系统异常: {error}", None, trace_id),

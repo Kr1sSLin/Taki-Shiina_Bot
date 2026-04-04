@@ -14,4 +14,13 @@ interface BotNotificationDao {
 
     @Query("SELECT * FROM bot_notifications ORDER BY timestamp DESC")
     fun observeAll(): Flow<List<BotNotificationEntity>>
+
+    @Query("SELECT COUNT(*) FROM bot_notifications WHERE is_read = 0")
+    fun observeUnreadCount(): Flow<Int>
+
+    @Query("UPDATE bot_notifications SET is_read = 1 WHERE notification_id = :notificationId")
+    suspend fun markAsRead(notificationId: String)
+
+    @Query("UPDATE bot_notifications SET is_read = 1 WHERE is_read = 0")
+    suspend fun markAllAsRead()
 }

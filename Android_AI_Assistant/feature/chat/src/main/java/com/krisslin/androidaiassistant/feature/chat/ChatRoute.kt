@@ -78,6 +78,7 @@ fun ChatRoute(
         topBar = {
             ConnectionStatusBar(
                 status = state.connectionStatus,
+                botActivity = state.botActivity,
                 onReconnect = viewModel::reconnect
             )
         }
@@ -90,15 +91,7 @@ fun ChatRoute(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // 提示信息区域
-            when (state.botActivity) {
-                BotActivityStatus.IDLE -> { /* 不显示任何内容 */ }
-                BotActivityStatus.SENDING -> {
-                    Text(text = "发送中…", color = MaterialTheme.colorScheme.primary)
-                }
-                BotActivityStatus.TYPING -> {
-                    Text(text = "输入中…", color = MaterialTheme.colorScheme.primary)
-                }
-            }
+            BotActivityHint(state.botActivity)
             state.error?.let {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -157,6 +150,7 @@ fun ChatRoute(
 @Composable
 private fun ConnectionStatusBar(
     status: ConnectionStatus,
+    botActivity: BotActivityStatus,
     onReconnect: () -> Unit
 ) {
     val (statusText, statusColor) = when (status) {
@@ -190,7 +184,11 @@ private fun ConnectionStatusBar(
             }
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = statusText,
+                text = if (status == ConnectionStatus.CONNECTED && botActivity != BotActivityStatus.IDLE) {
+                    "$statusText · ${botActivity.statusLabel()}"
+                } else {
+                    statusText
+                },
                 style = MaterialTheme.typography.titleMedium
             )
         }
@@ -201,6 +199,18 @@ private fun ConnectionStatusBar(
             }
         }
     }
+}
+
+@Composable
+private fun BotActivityHint(activity: BotActivityStatus) {
+    val label = activity.statusLabel() ?: return
+    Text(text = label, color = MaterialTheme.colorScheme.primary)
+}
+
+private fun BotActivityStatus.statusLabel(): String? = when (this) {
+    BotActivityStatus.IDLE -> null
+    BotActivityStatus.SENDING -> "发送中…"
+    BotActivityStatus.TYPING -> "输入中…"
 }
 
 /**

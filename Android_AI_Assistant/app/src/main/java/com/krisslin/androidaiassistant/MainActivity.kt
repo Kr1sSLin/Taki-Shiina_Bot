@@ -1,5 +1,7 @@
 package com.krisslin.androidaiassistant
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
 import androidx.fragment.app.FragmentActivity
@@ -46,10 +48,19 @@ class MainActivity : FragmentActivity() {
         setContent {
             MaterialTheme {
                 Surface {
+                    requestNotificationPermissionIfNeeded()
                     AppRoot(activity = this)
                 }
             }
         }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
     }
 }
 

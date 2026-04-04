@@ -6,6 +6,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.krisslin.androidaiassistant.core.database.entity.ChatMessageEntity
+import com.krisslin.androidaiassistant.core.database.repository.BotNotificationRepository
 import com.krisslin.androidaiassistant.core.database.repository.ChatRepository
 import com.krisslin.androidaiassistant.core.database.repository.MessageRole
 import com.krisslin.androidaiassistant.core.database.repository.MessageStatus
@@ -18,6 +19,8 @@ import com.krisslin.androidaiassistant.core.network.ws.ChatMessageRequest
 import com.krisslin.androidaiassistant.core.network.ws.IncomingMessage
 import com.krisslin.androidaiassistant.core.network.ws.IncomingMessageParser
 import com.krisslin.androidaiassistant.core.network.ws.WebSocketEvent
+import com.krisslin.androidaiassistant.core.push.AppNotifier
+import com.krisslin.androidaiassistant.core.push.ReminderScheduler
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -81,8 +84,11 @@ sealed interface ChatSideEffect {
 class ChatViewModel @Inject constructor(
     private val chatApi: ChatApi,
     private val chatRepository: ChatRepository,
+    private val botNotificationRepository: BotNotificationRepository,
     private val authRepository: AuthRepository,
     private val botWebSocketClient: BotWebSocketClient,
+    private val appNotifier: AppNotifier,
+    private val reminderScheduler: ReminderScheduler,
     private val gson: Gson
 ) : ViewModel() {
 
@@ -116,6 +122,7 @@ class ChatViewModel @Inject constructor(
     private var lastSyncedTimestampMs: Long = 0L
 
     init {
+        appNotifier.ensureChannels()
         loadHistoryFromDb()
         observeAuthState()
         observeWebSocketEvents()
@@ -317,6 +324,15 @@ class ChatViewModel @Inject constructor(
                         }
                     }
 
+                    payload.timerInstruction?.let { timer ->
+                        val scheduleKey = relatedIds.joinToString("_")
+                        reminderScheduler.schedule(
+                            requestId = scheduleKey.ifBlank { requestId },
+                            target = timer.target,
+                            text = timer.text
+                        )
+                    }
+
                     // 流式完成，回到 IDLE 或保持 SENDING（如有其他待处理消息）
                     _uiState.update { 
                         it.copy(botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING) 
@@ -375,6 +391,13 @@ class ChatViewModel @Inject constructor(
                 error = "${payload.errorCode}: ${payload.message}"
             ) 
         }
+
+        botNotificationRepository.addError(
+            errorCode = payload.errorCode,
+            message = payload.message,
+            timestamp = payload.timestamp
+        )
+        appNotifier.showBotError(payload.errorCode, payload.message)
     }
 
     /**
