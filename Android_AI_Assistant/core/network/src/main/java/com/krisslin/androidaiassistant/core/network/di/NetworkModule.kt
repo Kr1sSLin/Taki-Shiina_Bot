@@ -101,6 +101,6 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideBotWebSocketClient(
-        impl: OkHttpBotWebSocketClient
-    ): BotWebSocketClient = impl
+        okHttpClient: OkHttpClient
+    ): BotWebSocketClient = OkHttpBotWebSocketClient(okHttpClient)
 }

@@ -1,8 +1,10 @@
 package com.krisslin.androidaiassistant
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -31,6 +34,7 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -39,12 +43,23 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.krisslin.androidaiassistant.feature.chat.ChatRoute
+import com.krisslin.androidaiassistant.service.WebSocketService
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
+
+    private var serviceIntent: Intent? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 启动WebSocket前台服务
+        serviceIntent = Intent(this, WebSocketService::class.java).apply {
+            action = WebSocketService.ACTION_START
+        }
+        startService(serviceIntent)
+
         setContent {
             MaterialTheme {
                 Surface {
@@ -53,6 +68,11 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // 不停止Service，让其独立运行以保持后台连接
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -165,12 +185,59 @@ private fun AppRoot(activity: FragmentActivity?) {
                 onRetry = { triggerBiometricAuth() }
             )
         }
+
+        // 首次安装引导开启通知权限
+        if (lockState == AppLockState.UNLOCKED) {
+            NotificationGuideDialog()
+        }
     }
 }
 
 private enum class AppLockState {
     LOCKED,
     UNLOCKED
+}
+
+@Composable
+private fun NotificationGuideDialog() {
+    val context = LocalContext.current
+    val prefs = remember {
+        context.getSharedPreferences("notification_guide", android.content.Context.MODE_PRIVATE)
+    }
+    val hasGuided = remember { prefs.getBoolean("has_guided", false) }
+
+    if (hasGuided) return
+
+    var showDialog by remember { mutableStateOf(true) }
+    if (!showDialog) return
+
+    AlertDialog(
+        onDismissRequest = { },
+        title = { Text("开启通知权限") },
+        text = {
+            Text("为确保您能及时收到消息，请在接下来的设置页面中开启以下权限：\n\n1. 悬浮通知（横幅通知）\n2. 锁屏通知\n\n开启后即可在任何场景下收到消息提醒。")
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                prefs.edit().putBoolean("has_guided", true).apply()
+                showDialog = false
+                val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                }
+                context.startActivity(intent)
+            }) {
+                Text("去设置")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                prefs.edit().putBoolean("has_guided", true).apply()
+                showDialog = false
+            }) {
+                Text("稍后")
+            }
+        }
+    )
 }
 
 @Composable
