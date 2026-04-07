@@ -57,6 +57,9 @@ android {
 dependencies {
     implementation(project(":core:ui"))
     implementation(project(":core:common"))
+    implementation(project(":core:network"))
+    implementation(project(":core:push"))
+    implementation(libs.gson)
     implementation(project(":feature:auth"))
     implementation(project(":feature:chat"))
     implementation(project(":feature:history"))

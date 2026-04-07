@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew clean:*)",
+      "Bash(./gradlew :core:network:assembleDebug)",
+      "Bash(./gradlew :app:assembleDebug)"
+    ]
+  }
+}
