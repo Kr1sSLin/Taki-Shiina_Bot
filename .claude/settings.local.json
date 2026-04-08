@@ -3,7 +3,11 @@
     "allow": [
       "Bash(./gradlew clean:*)",
       "Bash(./gradlew :core:network:assembleDebug)",
-      "Bash(./gradlew :app:assembleDebug)"
+      "Bash(./gradlew :app:assembleDebug)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('ws_api.py', doraise=True\\); print\\('OK'\\)\")",
+      "Bash(python -m py_compile ws_api.py)",
+      "Bash(.venv/Scripts/python.exe -m py_compile ws_api.py)",
+      "Bash(python3 -m py_compile ws_api.py)"
     ]
   }
 }
