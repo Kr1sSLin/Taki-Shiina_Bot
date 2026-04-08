@@ -97,7 +97,7 @@ def send_alert(error_message, bypass_rate_limit=False):
         
         # 构造简单的纯文本消息
         alert_text = (
-            f"🚨 [立希Bot] 严重错误报警\n\n"
+            f"🚨 [立希Bot] 重要事件报警\n\n"
             f"⏰ 错误时间: {current_time}\n"
             f"🖥️ 服务器: {hostname} ({system})\n"
             f"🐍 Python版本: {python_ver}\n\n"

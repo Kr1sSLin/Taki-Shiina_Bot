@@ -7,8 +7,9 @@ import asyncio
 import json
 import logging
 import os
+import random
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from dotenv import load_dotenv
@@ -434,6 +435,157 @@ async def websocket_chat(websocket: WebSocket, token: str = Query(default="")):
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok", "service": "ws_api"}
+
+
+# ================= 定时问候 =================
+
+MORNING_SCRIPTS = [
+    "【情境】：昨晚没睡好，有严重的起床气，说话很冲，但其实是想让用户哄。",
+    "【情境】：起得很早，正在喝咖啡/抹茶，心情意外地不错，稍微有点温柔。",
+    "【情境】：睡过头了！！非常慌张，发消息的时候嘴里好像还叼着面包。",
+    "【情境】：不想起床，想赖床，发消息撒娇说'能不能再睡五分钟'。",
+    "【情境】：外面下雨/天气不好，心情低落，嘟囔着不想出门。",
+    "【情境】：只是单纯地想念用户了，醒来第一件事就是想确认他在不在。",
+]
+
+NIGHT_SCRIPTS = [
+    "【情境】：正戴着耳机专注于写代码/写歌词，发现用户发消息，摘下一只耳机随口回应，完全没有要睡的意思。",
+    "【情境】：刚刚开了一罐新的能量饮料，眼神死死盯着屏幕，漫不经心地问用户'你那边进度怎么样'。",
+    "【情境】：因为卡在某个Bug/乐段上很烦躁，看到用户还在，稍微得到了一点安慰，嘟囔着'既然醒着就陪我再耗一会儿'。",
+    "【情境】：看了一眼现在的确切时间，冷笑一声'呵，这个点了还没倒下吗？体力不错嘛'。",
+    "【情境】：突然感到饿了，问用户'喂，便利店还开着吗'，企图拉用户一起吃夜宵。",
+    "【情境】：只有在深夜才展露出的坦率，安静地打字说'只有这个时候世界才安静点...你不睡挺好的'。",
+]
+
+
+async def send_greeting(user_id: str, scenario_type: str):
+    """生成并推送定时问候"""
+    # 检查用户近 2 小时是否活跃
+    user_last = state.last_activity.get(user_id)
+    if user_last:
+        hours_since = (datetime.now(timezone.utc) - user_last).total_seconds() / 3600
+        if hours_since < 2:
+            logger.info(f"[问候] [{scenario_type}] 用户 {hours_since:.1f}h 前有活动，跳过")
+            return
+
+    # 20% 概率跳过
+    if random.random() < 0.2:
+        logger.info(f"[问候] [{scenario_type}] 立希偷懒，跳过本次问候")
+        return
+
+    beijing_now = datetime.now(timezone.utc) + timedelta(hours=8)
+    current_time_str = beijing_now.strftime("%H:%M")
+
+    if scenario_type == "morning":
+        selected_script = random.choice(MORNING_SCRIPTS)
+        base_instruction = f"现在是北京时间 {current_time_str}。作为立希给用户发早安。"
+    else:
+        selected_script = random.choice(NIGHT_SCRIPTS)
+        base_instruction = (
+            f"现在是北京时间 {current_time_str} (深夜)。"
+            "用户还没睡。作为立希，不要发\"晚安\"（因为发了晚安话题就结束了）。"
+            "你要发一条消息确认他在干什么，或者吐槽他怎么还醒着，并表示你也还醒着，可以继续陪他。"
+        )
+
+    final_instruction = (
+        f"{base_instruction}\n\n"
+        f"本次随机到的灵感剧本：\n{selected_script}\n\n"
+        f"【强制逻辑修正】：\n"
+        f"1. 时间一致性：结合【当前北京时间 {current_time_str}】来生成台词。\n"
+        f"2. 不要暴露你在扮演，直接进入角色说话。\n"
+        f"3. 语气要符合剧本的情境，且如果情境是匆忙或困倦，句子要短、碎！"
+    )
+
+    try:
+        system_prompt = await prompt_service.get_system_prompt(user_id)
+        response = await client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": f"{system_prompt}\n\n🎯 当前任务: {final_instruction}"}
+            ],
+            temperature=0.85,
+        )
+        raw_reply = response.choices[0].message.content or ""
+        final_reply = inject_emojis(sanitize_taki_reply(raw_reply))
+
+        greeting_id = f"greeting_{uuid.uuid4().hex}"
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+        # 写入历史
+        history = state.user_chat_history.setdefault(user_id, [])
+        history.append({"role": "assistant", "content": final_reply})
+        if len(history) > 300:
+            state.user_chat_history[user_id] = history[-300:]
+        history_store.save(state.user_chat_history)
+
+        await append_timeline(
+            [{"messageId": greeting_id, "userId": user_id, "role": "bot", "content": final_reply, "timestamp": now_ms}]
+        )
+
+        # 推送给 app（与普通回复格式一致）
+        await broadcast_json(
+            user_id,
+            {
+                "type": "chat.reply.stream",
+                "requestId": greeting_id,
+                "payload": {
+                    "delta": "",
+                    "done": True,
+                    "messageId": greeting_id,
+                    "finalContent": final_reply,
+                    "requestIds": [greeting_id],
+                },
+            },
+        )
+
+        state.last_bot_response_time[user_id] = datetime.now(timezone.utc)
+        logger.info(f"[问候] [{scenario_type}] 发送成功: {final_reply[:50]}...")
+    except Exception as e:
+        logger.exception(f"[问候] [{scenario_type}] 发送失败: {e}")
+
+
+async def greeting_scheduler():
+    """每日定时问候调度器"""
+    triggered_morning = None
+    triggered_night = None
+
+    while True:
+        try:
+            now_utc = datetime.now(timezone.utc)
+            beijing_now = now_utc + timedelta(hours=8)
+            today_str = beijing_now.strftime("%Y-%m-%d")
+            hour, minute = beijing_now.hour, beijing_now.minute
+
+            # 早安窗口：09:00 触发，随机延迟 0~180 分钟
+            if hour == 9 and minute == 0 and triggered_morning != today_str:
+                triggered_morning = today_str
+                delay = random.randint(0, 180 * 60)
+                logger.info(f"[问候] 早安已安排，{delay // 60} 分钟后发送")
+                asyncio.create_task(_delayed_greeting("default-user", "morning", delay))
+
+            # 晚安窗口：23:00 触发，随机延迟 0~120 分钟
+            if hour == 23 and minute == 0 and triggered_night != today_str:
+                triggered_night = today_str
+                delay = random.randint(0, 120 * 60)
+                logger.info(f"[问候] 晚安已安排，{delay // 60} 分钟后发送")
+                asyncio.create_task(_delayed_greeting("default-user", "night", delay))
+
+        except Exception as e:
+            logger.exception(f"[问候] 调度器异常: {e}")
+
+        await asyncio.sleep(60)
+
+
+async def _delayed_greeting(user_id: str, scenario_type: str, delay_seconds: int):
+    """延迟后执行问候"""
+    await asyncio.sleep(delay_seconds)
+    await send_greeting(user_id, scenario_type)
+
+
+@app.on_event("startup")
+async def on_startup():
+    asyncio.create_task(greeting_scheduler())
+    logger.info("[启动] 定时问候调度器已启动")
 
 
 if __name__ == "__main__":
