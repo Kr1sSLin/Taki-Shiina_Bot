@@ -55,6 +55,29 @@ prompt_service = PromptService(
 
 app = FastAPI(title="TakiShiina Bot HTTP API")
 TIMELINE_FILE = os.path.join(_base_dir, "chat_timeline.json")
+MEMORY_TIMELINE_FILE = os.path.join(_base_dir, "memory_timeline.json")
+MEMORY_TIMELINE_LOCK = asyncio.Lock()
+
+
+def _load_memory_timeline() -> list[dict]:
+    if not os.path.exists(MEMORY_TIMELINE_FILE):
+        return []
+    try:
+        with open(MEMORY_TIMELINE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"读取记忆时间线失败: {e}")
+        return []
+
+
+async def append_memory_timeline(items: list[dict]):
+    async with MEMORY_TIMELINE_LOCK:
+        data = _load_memory_timeline()
+        data.extend(items)
+        if len(data) > 3000:
+            data = data[-3000:]
+        with open(MEMORY_TIMELINE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 async def extract_user_facts(user_id: str, message: str):
@@ -83,10 +106,23 @@ async def extract_user_facts(user_id: str, message: str):
         facts = json.loads(raw)
         logger.info(f"🔍 解析到 {len(facts)} 条事实: {facts}")
         if isinstance(facts, list):
+            timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
+            memory_items = []
             for fact in facts:
                 if isinstance(fact, str) and fact.strip():
-                    db.update_profile(user_id, fact.strip())
-                    logger.info(f"✅ 已写入事实: {fact.strip()}")
+                    clean_fact = fact.strip()
+                    db.update_profile(user_id, clean_fact)
+                    logger.info(f"✅ 已写入事实: {clean_fact}")
+                    memory_items.append(
+                        {
+                            "factId": f"fact_{uuid.uuid4().hex}",
+                            "userId": user_id,
+                            "fact": clean_fact,
+                            "timestamp": timestamp,
+                        }
+                    )
+            if memory_items:
+                await append_memory_timeline(memory_items)
     except json.JSONDecodeError as e:
         logger.warning(f"事实提取JSON解析失败: {e}, raw={raw[:200]}")
     except Exception as e:
@@ -170,6 +206,37 @@ async def chat_history(
         return response_body(0, "ok", {"items": filtered}, trace_id)
     except Exception as error:
         logger.exception("history failed")
+        return JSONResponse(
+            status_code=500,
+            content=response_body(5000, f"系统异常: {error}", None, trace_id),
+        )
+
+
+@app.get("/api/v1/memory/facts")
+async def memory_facts(
+    request: Request,
+    since: int = 0,
+    limit: int = 200,
+    userId: str | None = None,
+    authorization: str | None = Header(default=None),
+):
+    trace_id = request.state.trace_id
+    if BOT_HTTP_TOKEN:
+        expected = f"Bearer {BOT_HTTP_TOKEN}"
+        if authorization != expected:
+            raise HTTPException(status_code=401, detail=response_body(40101, "鉴权失败", None, trace_id))
+
+    try:
+        items = _load_memory_timeline()
+        target_user = str(userId or "default-user")
+        filtered = [
+            x for x in items
+            if int(x.get("timestamp", 0)) > since and str(x.get("userId", "")) == target_user
+        ]
+        filtered = filtered[-max(1, min(limit, 500)) :]
+        return response_body(0, "ok", {"items": filtered}, trace_id)
+    except Exception as error:
+        logger.exception("memory facts failed")
         return JSONResponse(
             status_code=500,
             content=response_body(5000, f"系统异常: {error}", None, trace_id),

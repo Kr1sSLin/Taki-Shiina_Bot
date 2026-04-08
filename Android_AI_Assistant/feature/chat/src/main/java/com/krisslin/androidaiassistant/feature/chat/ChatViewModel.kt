@@ -6,10 +6,12 @@ import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.krisslin.androidaiassistant.core.database.entity.ChatMessageEntity
+import com.krisslin.androidaiassistant.core.database.entity.UserFactEntity
 import com.krisslin.androidaiassistant.core.database.repository.BotNotificationRepository
 import com.krisslin.androidaiassistant.core.database.repository.ChatRepository
 import com.krisslin.androidaiassistant.core.database.repository.MessageRole
 import com.krisslin.androidaiassistant.core.database.repository.MessageStatus
+import com.krisslin.androidaiassistant.core.database.repository.UserFactRepository
 import com.krisslin.androidaiassistant.core.network.api.ChatApi
 import com.krisslin.androidaiassistant.core.network.auth.AuthRepository
 import com.krisslin.androidaiassistant.core.network.auth.TokenState
@@ -83,6 +85,7 @@ sealed interface ChatSideEffect {
 class ChatViewModel @Inject constructor(
     private val chatApi: ChatApi,
     private val chatRepository: ChatRepository,
+    private val userFactRepository: UserFactRepository,
     private val botNotificationRepository: BotNotificationRepository,
     private val authRepository: AuthRepository,
     private val botWebSocketClient: BotWebSocketClient,
@@ -100,6 +103,7 @@ class ChatViewModel @Inject constructor(
 
     // 当前会话 ID
     private val sessionId: String = "default_session"
+    private val syncUserId: String = "default-user"
 
     // 流式消息内容缓存: requestId -> 累积内容
     private val streamingContentCache = ConcurrentHashMap<String, StringBuilder>()
@@ -118,9 +122,11 @@ class ChatViewModel @Inject constructor(
     private val streamingTimeoutMs = 180_000L
 
     private var lastSyncedTimestampMs: Long = 0L
+    private var lastSyncedFactTimestampMs: Long = 0L
 
     init {
         loadHistoryFromDb()
+        initializeFactSyncCursor()
         observeAuthState()
         observeWebSocketEvents()
     }
@@ -135,6 +141,12 @@ class ChatViewModel @Inject constructor(
                 lastSyncedTimestampMs = entities.maxOfOrNull { it.timestamp } ?: lastSyncedTimestampMs
                 _uiState.update { it.copy(messages = uiMessages) }
             }
+        }
+    }
+
+    private fun initializeFactSyncCursor() {
+        viewModelScope.launch {
+            lastSyncedFactTimestampMs = userFactRepository.getLatestTimestamp(syncUserId)
         }
     }
 
@@ -166,6 +178,7 @@ class ChatViewModel @Inject constructor(
                     is WebSocketEvent.Connected -> {
                         _uiState.update { it.copy(connectionStatus = ConnectionStatus.CONNECTED, error = null) }
                         syncHistoryFromServer()
+                        syncMemoryFactsFromServer()
                     }
                     is WebSocketEvent.Disconnected -> {
                         _uiState.update { it.copy(connectionStatus = ConnectionStatus.DISCONNECTED) }
@@ -200,6 +213,9 @@ class ChatViewModel @Inject constructor(
                 }
                 is IncomingMessage.BotError -> {
                     handleBotError(message)
+                }
+                is IncomingMessage.MemoryFactCreated -> {
+                    handleMemoryFactCreated(message)
                 }
                 is IncomingMessage.Typing -> {
                     // 可选：显示"对方正在输入..."
@@ -256,6 +272,7 @@ class ChatViewModel @Inject constructor(
         _uiState.update {
             it.copy(botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING)
         }
+        syncMemoryFactsFromServer()
     }
 
     /**
@@ -323,6 +340,7 @@ class ChatViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING)
                     }
+                    syncMemoryFactsFromServer()
                 } else {
                     // 流式增量
                     val delta = payload.delta
@@ -529,6 +547,42 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    private suspend fun handleMemoryFactCreated(message: IncomingMessage.MemoryFactCreated) {
+        val payload = message.payload
+        userFactRepository.upsertAll(
+            listOf(
+                UserFactEntity(
+                    factId = payload.factId,
+                    userId = payload.userId,
+                    fact = payload.fact,
+                    timestamp = payload.timestamp
+                )
+            )
+        )
+        if (payload.timestamp > lastSyncedFactTimestampMs) {
+            lastSyncedFactTimestampMs = payload.timestamp
+        }
+    }
+
+    private fun syncMemoryFactsFromServer() {
+        viewModelScope.launch {
+            runCatching {
+                chatApi.memoryFacts(
+                    since = lastSyncedFactTimestampMs,
+                    limit = 200,
+                    userId = syncUserId
+                )
+            }.onSuccess { response ->
+                val items = response.getAsJsonObject("data")
+                    ?.getAsJsonArray("items")
+                    ?: JsonArray()
+                applyMemoryFactItems(items)
+            }.onFailure {
+                // 记忆补拉失败不影响聊天主流程
+            }
+        }
+    }
+
     private suspend fun applyHistoryItems(items: JsonArray) {
         for (i in 0 until items.size()) {
             runCatching {
@@ -574,6 +628,32 @@ class ChatViewModel @Inject constructor(
                 if (timestamp > lastSyncedTimestampMs) {
                     lastSyncedTimestampMs = timestamp
                 }
+            }
+        }
+    }
+
+    private suspend fun applyMemoryFactItems(items: JsonArray) {
+        val facts = mutableListOf<UserFactEntity>()
+        for (i in 0 until items.size()) {
+            runCatching {
+                val item = items[i].asJsonObjectOrNull() ?: return@runCatching
+                val factId = item.getStringOrNull("factId") ?: return@runCatching
+                val userId = item.getStringOrNull("userId") ?: return@runCatching
+                val fact = item.getStringOrNull("fact") ?: return@runCatching
+                val timestamp = item.getLongOrNull("timestamp") ?: return@runCatching
+                facts += UserFactEntity(
+                    factId = factId,
+                    userId = userId,
+                    fact = fact,
+                    timestamp = timestamp
+                )
+            }
+        }
+        if (facts.isNotEmpty()) {
+            userFactRepository.upsertAll(facts)
+            val latest = facts.maxOf { it.timestamp }
+            if (latest > lastSyncedFactTimestampMs) {
+                lastSyncedFactTimestampMs = latest
             }
         }
     }

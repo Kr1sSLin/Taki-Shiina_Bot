@@ -20,6 +20,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun HistoryRoute(viewModel: HistoryViewModel = hiltViewModel()) {
@@ -49,6 +52,32 @@ fun HistoryRoute(viewModel: HistoryViewModel = hiltViewModel()) {
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            item {
+                Text(
+                    text = "用户客观事实",
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+
+            items(state.userFacts, key = { it.factId }) { item ->
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(text = item.fact, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = formatTimestamp(item.timestamp),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                }
+            }
+
+            item {
+                Text(
+                    text = "Bot 错误通知",
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+
             items(state.notifications, key = { it.notificationId }) { item ->
                 Card(
                     modifier = Modifier
@@ -67,4 +96,9 @@ fun HistoryRoute(viewModel: HistoryViewModel = hiltViewModel()) {
             }
         }
     }
+}
+
+private fun formatTimestamp(timestamp: Long): String {
+    val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+    return formatter.format(Date(timestamp))
 }

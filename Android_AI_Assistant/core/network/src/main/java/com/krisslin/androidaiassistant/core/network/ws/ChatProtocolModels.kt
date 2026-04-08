@@ -43,6 +43,13 @@ data class BotErrorPayload(
     val timestamp: Long
 )
 
+data class MemoryFactPayload(
+    val factId: String,
+    val userId: String,
+    val fact: String,
+    val timestamp: Long
+)
+
 data class IncomingEnvelope<T>(
     val type: String,
     val requestId: String? = null,
@@ -53,6 +60,7 @@ sealed interface IncomingMessage {
     data class Reply(val requestId: String?, val payload: ReplyPayload) : IncomingMessage
     data class ReplyStream(val requestId: String?, val payload: ReplyStreamPayload) : IncomingMessage
     data class BotError(val requestId: String?, val payload: BotErrorPayload) : IncomingMessage
+    data class MemoryFactCreated(val payload: MemoryFactPayload) : IncomingMessage
     data object Typing : IncomingMessage
     data object AuthExpired : IncomingMessage
     data class Unknown(val type: String, val raw: String) : IncomingMessage
@@ -89,6 +97,14 @@ class IncomingMessageParser(
                     IncomingMessage.BotError(
                         requestId = it.requestId,
                         payload = gson.fromJson(payloadJson, BotErrorPayload::class.java)
+                    )
+                }
+
+            "memory.fact.created" -> gson.fromJson(raw, IncomingEnvelope::class.java)
+                .let {
+                    val payloadJson = gson.toJsonTree(it.payload)
+                    IncomingMessage.MemoryFactCreated(
+                        payload = gson.fromJson(payloadJson, MemoryFactPayload::class.java)
                     )
                 }
 
