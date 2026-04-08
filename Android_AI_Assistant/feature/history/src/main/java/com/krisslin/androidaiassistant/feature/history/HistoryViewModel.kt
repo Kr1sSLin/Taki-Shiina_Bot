@@ -3,7 +3,9 @@ package com.krisslin.androidaiassistant.feature.history
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.krisslin.androidaiassistant.core.database.entity.BotNotificationEntity
+import com.krisslin.androidaiassistant.core.database.entity.UserFactEntity
 import com.krisslin.androidaiassistant.core.database.repository.BotNotificationRepository
+import com.krisslin.androidaiassistant.core.database.repository.UserFactRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,12 +17,14 @@ import javax.inject.Inject
 
 data class HistoryUiState(
     val notifications: List<BotNotificationEntity> = emptyList(),
-    val unreadCount: Int = 0
+    val unreadCount: Int = 0,
+    val userFacts: List<UserFactEntity> = emptyList()
 )
 
 @HiltViewModel
 class HistoryViewModel @Inject constructor(
-    private val botNotificationRepository: BotNotificationRepository
+    private val botNotificationRepository: BotNotificationRepository,
+    private val userFactRepository: UserFactRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HistoryUiState())
@@ -30,9 +34,14 @@ class HistoryViewModel @Inject constructor(
         viewModelScope.launch {
             combine(
                 botNotificationRepository.observeAll(),
-                botNotificationRepository.observeUnreadCount()
-            ) { list, unread ->
-                HistoryUiState(notifications = list, unreadCount = unread)
+                botNotificationRepository.observeUnreadCount(),
+                userFactRepository.observeByUser("default-user")
+            ) { list, unread, facts ->
+                HistoryUiState(
+                    notifications = list,
+                    unreadCount = unread,
+                    userFacts = facts
+                )
             }.collect { state ->
                 _uiState.value = state
             }

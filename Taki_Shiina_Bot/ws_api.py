@@ -38,6 +38,8 @@ DEBOUNCE_EXTEND_WINDOW = 40.0
 
 TIMELINE_FILE = os.path.join(_base_dir, "chat_timeline.json")
 TIMELINE_LOCK = asyncio.Lock()
+MEMORY_TIMELINE_FILE = os.path.join(_base_dir, "memory_timeline.json")
+MEMORY_TIMELINE_LOCK = asyncio.Lock()
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -102,6 +104,17 @@ def _load_timeline() -> list[dict]:
         return []
 
 
+def _load_memory_timeline() -> list[dict]:
+    if not os.path.exists(MEMORY_TIMELINE_FILE):
+        return []
+    try:
+        with open(MEMORY_TIMELINE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"[WS] 读取记忆时间线失败: {e}")
+        return []
+
+
 async def append_timeline(items: list[dict]):
     async with TIMELINE_LOCK:
         data = _load_timeline()
@@ -110,6 +123,72 @@ async def append_timeline(items: list[dict]):
             data = data[-3000:]
         with open(TIMELINE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+async def append_memory_timeline(items: list[dict]):
+    async with MEMORY_TIMELINE_LOCK:
+        data = _load_memory_timeline()
+        data.extend(items)
+        if len(data) > 3000:
+            data = data[-3000:]
+        with open(MEMORY_TIMELINE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+async def extract_user_facts(user_id: str, message: str):
+    extraction_prompt = (
+        "你是一个信息提取助手。从用户消息中提取关于用户自身的客观事实（如习惯、计划、状态、偏好等）。\n"
+        "规则：\n"
+        "1. 只提取关于「用户」的事实，忽略闲聊、问候、对他人的描述\n"
+        "2. 每条事实以「用户」开头，简洁表述\n"
+        "3. 若无可提取事实，返回空数组\n"
+        "4. 严格返回JSON数组格式，如：[\"用户今天感冒了\", \"用户计划明天出门\"]\n\n"
+        f"用户消息：{message}"
+    )
+
+    try:
+        resp = await client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": extraction_prompt}],
+            temperature=0.3,
+        )
+        raw = (resp.choices[0].message.content or "[]").strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+        facts = json.loads(raw)
+        if not isinstance(facts, list):
+            return
+
+        timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
+        memory_items = []
+        for fact in facts:
+            if not isinstance(fact, str):
+                continue
+            clean_fact = fact.strip()
+            if not clean_fact:
+                continue
+
+            db.update_profile(user_id, clean_fact)
+            fact_item = {
+                "factId": f"fact_{uuid.uuid4().hex}",
+                "userId": user_id,
+                "fact": clean_fact,
+                "timestamp": timestamp,
+            }
+            memory_items.append(fact_item)
+            await broadcast_json(
+                user_id,
+                {"type": "memory.fact.created", "payload": fact_item},
+            )
+
+        if memory_items:
+            await append_memory_timeline(memory_items)
+            logger.info(f"[WS] 已提取并记录 {len(memory_items)} 条用户事实: user={user_id}")
+    except json.JSONDecodeError as e:
+        logger.warning(f"[WS] 事实提取 JSON 解析失败: {e}")
+    except Exception as e:
+        logger.error(f"[WS] 事实提取失败: {e}")
 
 
 async def broadcast_json(user_id: str, data: dict):
@@ -244,6 +323,7 @@ async def process_buffered_messages(user_id: str):
 
         state.last_activity[user_id] = datetime.now(timezone.utc)
         state.last_bot_response_time[user_id] = datetime.now(timezone.utc)
+        asyncio.create_task(extract_user_facts(user_id, merged_text))
 
         await broadcast_json(
             user_id,

@@ -22,6 +22,14 @@ interface ChatApi {
         @Query("limit") limit: Int = 300
     ): JsonObject
 
+    @GET("memory/facts")
+    suspend fun memoryFacts(
+        @Header("Authorization") authorization: String? = null,
+        @Query("since") since: Long = 0,
+        @Query("limit") limit: Int = 200,
+        @Query("userId") userId: String = "default-user"
+    ): JsonObject
+
     @GET("settings/city")
     suspend fun getCity(
         @Header("Authorization") authorization: String? = null
