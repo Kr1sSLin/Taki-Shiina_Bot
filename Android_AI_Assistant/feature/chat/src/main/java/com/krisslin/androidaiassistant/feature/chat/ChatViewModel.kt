@@ -448,6 +448,26 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
+     * 清空当前会话（仅本地聊天记录，不影响登录态）
+     */
+    fun clearConversation() {
+        viewModelScope.launch {
+            streamingTimeoutJobs.values.forEach { it.cancel() }
+            streamingTimeoutJobs.clear()
+            streamingContentCache.clear()
+            pendingRequestIds.clear()
+            receivedFirstChunk.clear()
+
+            chatRepository.clearSession(sessionId)
+            // 防止清空后立即被历史补拉回灌
+            lastSyncedTimestampMs = System.currentTimeMillis()
+
+            _uiState.update { it.copy(botActivity = BotActivityStatus.IDLE, error = null) }
+            _sideEffects.emit(ChatSideEffect.ShowToast("会话已清空"))
+        }
+    }
+
+    /**
      * 发送文本消息
      */
     fun sendText() {

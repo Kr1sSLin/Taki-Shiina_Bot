@@ -20,6 +20,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -27,11 +29,14 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -39,6 +44,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatRoute(
     viewModel: ChatViewModel = hiltViewModel(),
@@ -47,6 +53,7 @@ fun ChatRoute(
     val state by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
+    var showClearConfirm by remember { mutableStateOf(false) }
 
     // 处理 side effects
     LaunchedEffect(Unit) {
@@ -76,11 +83,21 @@ fun ChatRoute(
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            ConnectionStatusBar(
-                status = state.connectionStatus,
-                botActivity = state.botActivity,
-                onReconnect = viewModel::reconnect
-            )
+            Column {
+                TopAppBar(
+                    title = { Text("对话") },
+                    actions = {
+                        TextButton(onClick = { showClearConfirm = true }) {
+                            Text("清空会话")
+                        }
+                    }
+                )
+                ConnectionStatusBar(
+                    status = state.connectionStatus,
+                    botActivity = state.botActivity,
+                    onReconnect = viewModel::reconnect
+                )
+            }
         }
     ) { padding ->
         Column(
@@ -141,6 +158,29 @@ fun ChatRoute(
                 }
             }
         }
+    }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("清空会话") },
+            text = { Text("仅清空本地聊天记录，不影响登录状态。是否继续？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearConfirm = false
+                        viewModel.clearConversation()
+                    }
+                ) {
+                    Text("清空")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
 

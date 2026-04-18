@@ -18,7 +18,13 @@ from services.history_store import HistoryStore
 from services.memory_service import MemoryService
 from services.prompt_service import PromptService
 from services.weather_service import WeatherService
-from text_utils import inject_emojis, sanitize_taki_reply
+from text_utils import (
+    clean_short_term_history,
+    inject_emojis,
+    is_repetitive_reply,
+    sanitize_taki_reply,
+    strip_polluted_tail,
+)
 
 _base_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_base_dir, ".env"))
@@ -28,6 +34,7 @@ OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 MY_LAT = float(os.getenv("MY_LAT", "0"))
 MY_LON = float(os.getenv("MY_LON", "0"))
 BOT_HTTP_TOKEN = os.getenv("BOT_HTTP_TOKEN", "")
+DEBUG_REPLY_TRACE = os.getenv("DEBUG_REPLY_TRACE", "0") == "1"
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -57,6 +64,15 @@ app = FastAPI(title="TakiShiina Bot HTTP API")
 TIMELINE_FILE = os.path.join(_base_dir, "chat_timeline.json")
 MEMORY_TIMELINE_FILE = os.path.join(_base_dir, "memory_timeline.json")
 MEMORY_TIMELINE_LOCK = asyncio.Lock()
+
+
+def _trace_text(label: str, user_id: str, text: str):
+    if not DEBUG_REPLY_TRACE:
+        return
+    compact = (text or "").replace("\n", "\\n")
+    if len(compact) > 280:
+        compact = compact[:280] + "...(truncated)"
+    logger.info(f"[TRACE][{user_id}] {label}: {compact}")
 
 
 def _load_memory_timeline() -> list[dict]:
@@ -320,7 +336,9 @@ async def chat(
     try:
         history = state.user_chat_history.setdefault(user_id, [])
         weather_info = await weather_service.get_weather_str()
-        system_content = f"{await prompt_service.get_system_prompt(user_id)}\n{weather_info}"
+        system_prompt = await prompt_service.get_system_prompt(user_id)
+        system_content = f"{system_prompt}\n{weather_info}"
+        _trace_text("SYS_PROMPT", user_id, system_prompt)
 
         emotional_prompt = ""
         for keyword, instruction in EMOTIONAL_TRIGGERS.items():
@@ -336,11 +354,20 @@ async def chat(
 
         anchor_prompt = (
             "【强制提醒】：保持“酷但笨拙”人设；禁止动作叙事；回复长短跟随内容。"
+            "\n【去重要求】：避免复用最近10次回复的开头词、句式骨架和结尾口头禅。"
             f"{emotional_prompt}{trigger_prompt}"
         )
 
+        short_history = history[-20:]
+        short_history, polluted_tails = clean_short_term_history(short_history, min_repeat=3)
+        if DEBUG_REPLY_TRACE:
+            recent_assistant_count = sum(1 for m in short_history if m.get("role") == "assistant")
+            logger.info(
+                f"[TRACE][{user_id}] SHORT_HISTORY size={len(short_history)} assistant={recent_assistant_count} tails={len(polluted_tails)}"
+            )
+
         messages = [{"role": "system", "content": system_content}]
-        messages.extend(history[-20:])
+        messages.extend(short_history)
         messages.append({"role": "system", "content": anchor_prompt})
         messages.append({"role": "user", "content": message_text})
 
@@ -350,7 +377,33 @@ async def chat(
             temperature=0.75,
         )
         raw_reply = response.choices[0].message.content or ""
+        _trace_text("A_RAW", user_id, raw_reply)
         cleaned_reply, timer_at, timer_text = parse_timer_instruction(raw_reply)
+        _trace_text("B_PARSED", user_id, cleaned_reply)
+        cleaned_reply = strip_polluted_tail(cleaned_reply, polluted_tails)
+        _trace_text("C_STRIPPED", user_id, cleaned_reply)
+        recent_assistant_replies = [m.get("content", "") for m in short_history if m.get("role") == "assistant"]
+        if is_repetitive_reply(cleaned_reply, recent_assistant_replies, threshold=0.88):
+            logger.info(f"[去重] HTTP命中重复回复，触发重采样: user={user_id}")
+            dedupe_messages = list(messages)
+            dedupe_messages.append(
+                {
+                    "role": "system",
+                    "content": "【去重重采样】：禁止复用最近10条回复的开头、句式和收尾，保持人设但换一种自然表达。",
+                }
+            )
+            retry_response = await client.chat.completions.create(
+                model="deepseek-chat",
+                messages=dedupe_messages,
+                temperature=1.0,
+            )
+            retry_raw = retry_response.choices[0].message.content or cleaned_reply
+            _trace_text("A_RETRY_RAW", user_id, retry_raw)
+            cleaned_retry, timer_at_retry, timer_text_retry = parse_timer_instruction(retry_raw)
+            cleaned_reply = strip_polluted_tail(cleaned_retry or cleaned_reply, polluted_tails)
+            _trace_text("C_RETRY_STRIPPED", user_id, cleaned_reply)
+            if timer_at_retry and timer_text_retry:
+                timer_at, timer_text = timer_at_retry, timer_text_retry
 
         history.append({"role": "user", "content": message_text})
         history.append({"role": "assistant", "content": cleaned_reply})
@@ -364,6 +417,7 @@ async def chat(
         asyncio.create_task(extract_user_facts(user_id, message_text))
 
         final_reply = inject_emojis(sanitize_taki_reply(cleaned_reply))
+        _trace_text("D_FINAL", user_id, final_reply)
         usage = response.usage
         usage_data = {
             "promptTokens": getattr(usage, "prompt_tokens", 0),
