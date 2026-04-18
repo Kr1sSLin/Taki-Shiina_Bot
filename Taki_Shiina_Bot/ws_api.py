@@ -22,7 +22,13 @@ from services.history_store import HistoryStore
 from services.memory_service import MemoryService
 from services.prompt_service import PromptService
 from services.weather_service import WeatherService
-from text_utils import inject_emojis, sanitize_taki_reply
+from text_utils import (
+    clean_short_term_history,
+    inject_emojis,
+    is_repetitive_reply,
+    sanitize_taki_reply,
+    strip_polluted_tail,
+)
 
 _base_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_base_dir, ".env"))
@@ -32,10 +38,15 @@ OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 MY_LAT = float(os.getenv("MY_LAT", "0"))
 MY_LON = float(os.getenv("MY_LON", "0"))
 BOT_WS_TOKEN = os.getenv("BOT_WS_TOKEN", "")
+BOT_HTTP_TOKEN = os.getenv("BOT_HTTP_TOKEN", "")
+DEBUG_REPLY_TRACE = os.getenv("DEBUG_REPLY_TRACE", "0") == "1"
 
 DEBOUNCE_BASE = 8.0
 DEBOUNCE_EXTENDED = 20.0
 DEBOUNCE_EXTEND_WINDOW = 40.0
+TAIL_DEBOUNCE = 1.0
+
+HISTORY_SEPARATOR = "──── 新的一天 ────"
 
 TIMELINE_FILE = os.path.join(_base_dir, "chat_timeline.json")
 TIMELINE_LOCK = asyncio.Lock()
@@ -71,6 +82,35 @@ app = FastAPI(title="TakiShiina Bot WebSocket API")
 ACTIVE_CONNECTIONS: dict[str, set[WebSocket]] = {}
 message_buffer: dict[str, list[dict]] = {}
 debounce_jobs: dict[str, asyncio.Task] = {}
+message_events: dict[str, asyncio.Event] = {}
+last_message_at: dict[str, datetime] = {}
+is_processing: dict[str, bool] = {}
+pending_flush: dict[str, bool] = {}
+
+
+def _normalize_token(token: str) -> str:
+    raw = (token or "").strip()
+    if raw.lower().startswith("bearer "):
+        return raw[7:].strip()
+    return raw
+
+
+def _is_ws_token_allowed(token: str) -> bool:
+    provided = _normalize_token(token)
+    allowed = {_normalize_token(BOT_WS_TOKEN), _normalize_token(BOT_HTTP_TOKEN)}
+    allowed.discard("")
+    if not allowed:
+        return True
+    return provided in allowed
+
+
+def _trace_text(label: str, user_id: str, text: str):
+    if not DEBUG_REPLY_TRACE:
+        return
+    compact = (text or "").replace("\n", "\\n")
+    if len(compact) > 280:
+        compact = compact[:280] + "...(truncated)"
+    logger.info(f"[TRACE][{user_id}] {label}: {compact}")
 
 
 def parse_timer_instruction(raw_reply: str):
@@ -228,21 +268,28 @@ async def send_error(
 
 
 async def process_buffered_messages(user_id: str):
+    if is_processing.get(user_id):
+        pending_flush[user_id] = True
+        return
+
     buffered = message_buffer.get(user_id, [])
     if not buffered:
         return
     message_buffer[user_id] = []
-
-    request_ids = [m["requestId"] for m in buffered]
-    merged_text = "\n".join(m["content"] for m in buffered if m["content"])
-    merged_request_id = request_ids[-1] if request_ids else str(uuid.uuid4())
+    is_processing[user_id] = True
 
     try:
+        request_ids = [m["requestId"] for m in buffered]
+        merged_text = "\n".join(m["content"] for m in buffered if m["content"])
+        merged_request_id = request_ids[-1] if request_ids else str(uuid.uuid4())
+
         await broadcast_json(user_id, {"type": "chat.typing", "payload": {"typing": True}})
 
         history = state.user_chat_history.setdefault(user_id, [])
         weather_info = await weather_service.get_weather_str()
-        system_content = f"{await prompt_service.get_system_prompt(user_id)}\n{weather_info}"
+        system_prompt = await prompt_service.get_system_prompt(user_id)
+        system_content = f"{system_prompt}\n{weather_info}"
+        _trace_text("SYS_PROMPT", user_id, system_prompt)
 
         emotional_prompt = ""
         for keyword, instruction in EMOTIONAL_TRIGGERS.items():
@@ -258,11 +305,35 @@ async def process_buffered_messages(user_id: str):
 
         anchor_prompt = (
             "【强制提醒】：保持“酷但笨拙”人设；禁止动作叙事；回复长短跟随内容。"
+            "\n【注意力锚定】：只针对下一条用户消息回复。历史对话仅作为背景参考，不要回应历史中已结束的话题。"
+            "\n【去重要求】：避免复用最近10次回复的开头词、句式骨架和结尾口头禅。"
             f"{emotional_prompt}{trigger_prompt}"
         )
 
+        # 取分隔标记之后的历史，最多 10 条
+        sep_idx = -1
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("role") == "system" and history[i].get("content") == HISTORY_SEPARATOR:
+                sep_idx = i
+                break
+        if sep_idx >= 0:
+            recent_history = history[sep_idx + 1:]
+        else:
+            recent_history = history
+        recent_history = [
+            m for m in recent_history
+            if not (m.get("role") == "system" and m.get("content") == HISTORY_SEPARATOR)
+        ]
+        recent_history = recent_history[-10:]
+        recent_history, polluted_tails = clean_short_term_history(recent_history, min_repeat=3)
+        if DEBUG_REPLY_TRACE:
+            recent_assistant_count = sum(1 for m in recent_history if m.get("role") == "assistant")
+            logger.info(
+                f"[TRACE][{user_id}] SHORT_HISTORY size={len(recent_history)} assistant={recent_assistant_count} tails={len(polluted_tails)}"
+            )
+
         messages = [{"role": "system", "content": system_content}]
-        messages.extend(history[-20:])
+        messages.extend(recent_history)
         messages.append({"role": "system", "content": anchor_prompt})
         messages.append({"role": "user", "content": merged_text})
 
@@ -293,8 +364,35 @@ async def process_buffered_messages(user_id: str):
                     },
                 )
 
+        _trace_text("A_RAW", user_id, full_content)
         cleaned_reply, timer_at, timer_text = parse_timer_instruction(full_content)
+        _trace_text("B_PARSED", user_id, cleaned_reply)
+        cleaned_reply = strip_polluted_tail(cleaned_reply, polluted_tails)
+        _trace_text("C_STRIPPED", user_id, cleaned_reply)
+        recent_assistant_replies = [m.get("content", "") for m in recent_history if m.get("role") == "assistant"]
+        if is_repetitive_reply(cleaned_reply, recent_assistant_replies, threshold=0.88):
+            logger.info(f"[去重] 命中重复回复，触发重采样: user={user_id}")
+            dedupe_messages = list(messages)
+            dedupe_messages.append(
+                {
+                    "role": "system",
+                    "content": "【去重重采样】：禁止复用最近10条回复的开头、句式和收尾，保持人设但换一种自然表达。",
+                }
+            )
+            retry_resp = await client.chat.completions.create(
+                model="deepseek-chat",
+                messages=dedupe_messages,
+                temperature=1.0,
+            )
+            retry_raw = retry_resp.choices[0].message.content or cleaned_reply
+            _trace_text("A_RETRY_RAW", user_id, retry_raw)
+            cleaned_retry, timer_at_retry, timer_text_retry = parse_timer_instruction(retry_raw)
+            cleaned_reply = strip_polluted_tail(cleaned_retry or cleaned_reply, polluted_tails)
+            _trace_text("C_RETRY_STRIPPED", user_id, cleaned_reply)
+            if timer_at_retry and timer_text_retry:
+                timer_at, timer_text = timer_at_retry, timer_text_retry
         final_reply = inject_emojis(sanitize_taki_reply(cleaned_reply))
+        _trace_text("D_FINAL", user_id, final_reply)
 
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         history.append({"role": "user", "content": merged_text})
@@ -349,33 +447,74 @@ async def process_buffered_messages(user_id: str):
         logger.exception(f"[WS] 处理消息失败: {e}")
         await broadcast_json(user_id, {"type": "chat.typing", "payload": {"typing": False}})
         await send_error(user_id, "INTERNAL_ERROR", f"处理失败: {str(e)}", merged_request_id, request_ids)
+    finally:
+        is_processing[user_id] = False
+        # 处理期间有新消息到达，给一小段尾批窗口再触发下一轮合并。
+        need_tail_flush = pending_flush.pop(user_id, False) or bool(message_buffer.get(user_id))
+        if need_tail_flush:
+            asyncio.create_task(_tail_flush_wakeup(user_id))
+
+
+async def _tail_flush_wakeup(user_id: str):
+    await asyncio.sleep(TAIL_DEBOUNCE)
+    event = message_events.get(user_id)
+    if event:
+        event.set()
+
+
+def _ensure_user_worker(user_id: str):
+    old_worker = debounce_jobs.get(user_id)
+    if old_worker and not old_worker.done():
+        return
+
+    message_events.setdefault(user_id, asyncio.Event())
+
+    async def _worker():
+        while True:
+            event = message_events[user_id]
+            await event.wait()
+            event.clear()
+
+            # 等待“静默窗口”：在窗口内若收到新消息则重置等待。
+            while True:
+                last_at = last_message_at.get(user_id)
+                if not last_at:
+                    break
+                window = calc_debounce_window(user_id)
+                elapsed = (datetime.now(timezone.utc) - last_at).total_seconds()
+                remaining = window - elapsed
+                if remaining <= 0:
+                    break
+
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=remaining)
+                    event.clear()
+                    continue
+                except asyncio.TimeoutError:
+                    break
+
+            if is_processing.get(user_id):
+                pending_flush[user_id] = True
+                continue
+
+            await process_buffered_messages(user_id)
+
+    debounce_jobs[user_id] = asyncio.create_task(_worker())
+    logger.info(f"[防抖] 启动用户 worker: user={user_id}")
 
 
 def schedule_debounce(user_id: str):
-    window = calc_debounce_window(user_id)
-    old_job = debounce_jobs.get(user_id)
-    if old_job and not old_job.done():
-        old_job.cancel()
-        logger.info(f"[防抖] 重置计时器: user={user_id}, window={window}s")
-    else:
-        logger.info(f"[防抖] 启动计时器: user={user_id}, window={window}s")
-
-    async def _debounce_worker():
-        try:
-            await asyncio.sleep(window)
-            buffered_count = len(message_buffer.get(user_id, []))
-            logger.info(f"[防抖] 计时结束，处理 {buffered_count} 条消息: user={user_id}")
-            await process_buffered_messages(user_id)
-        except asyncio.CancelledError:
-            logger.info(f"[防抖] 计时器被取消: user={user_id}")
-            return
-
-    debounce_jobs[user_id] = asyncio.create_task(_debounce_worker())
+    _ensure_user_worker(user_id)
+    message_events[user_id].set()
+    buffered_count = len(message_buffer.get(user_id, []))
+    logger.info(
+        f"[防抖] 收到消息，等待静默窗口: user={user_id}, window={calc_debounce_window(user_id)}s, buffered={buffered_count}"
+    )
 
 
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket, token: str = Query(default="")):
-    if BOT_WS_TOKEN and token != BOT_WS_TOKEN:
+    if not _is_ws_token_allowed(token):
         await websocket.close(code=4011, reason="Invalid token")
         logger.warning("[WS] 连接被拒绝: token 无效")
         return
@@ -412,6 +551,7 @@ async def websocket_chat(websocket: WebSocket, token: str = Query(default="")):
                     await send_error(user_id, "EMPTY_MESSAGE", "消息内容不能为空", request_id)
                     continue
                 message_buffer.setdefault(user_id, []).append({"requestId": request_id, "content": content})
+                last_message_at[user_id] = datetime.now(timezone.utc)
                 await broadcast_json(
                     user_id,
                     {
@@ -430,6 +570,14 @@ async def websocket_chat(websocket: WebSocket, token: str = Query(default="")):
         logger.exception(f"[WS] 连接异常: {e}")
     finally:
         ACTIVE_CONNECTIONS.get(user_id, set()).discard(websocket)
+        if not ACTIVE_CONNECTIONS.get(user_id):
+            worker = debounce_jobs.pop(user_id, None)
+            if worker and not worker.done():
+                worker.cancel()
+            message_events.pop(user_id, None)
+            last_message_at.pop(user_id, None)
+            is_processing.pop(user_id, None)
+            pending_flush.pop(user_id, None)
 
 
 @app.get("/healthz")
@@ -585,7 +733,63 @@ async def _delayed_greeting(user_id: str, scenario_type: str, delay_seconds: int
 @app.on_event("startup")
 async def on_startup():
     asyncio.create_task(greeting_scheduler())
+    asyncio.create_task(history_separator_scheduler())
     logger.info("[启动] 定时问候调度器已启动")
+    logger.info("[启动] 历史分隔调度器已启动")
+
+
+# ================= 每日历史软切割 =================
+
+def insert_daily_separator(user_id: str):
+    """向 history 中插入每日分隔标记"""
+    history = state.user_chat_history.setdefault(user_id, [])
+    # 防止重复插入
+    if history and history[-1].get("role") == "system" and history[-1].get("content") == HISTORY_SEPARATOR:
+        logger.info(f"[分隔] 已存在分隔标记，跳过: user={user_id}")
+        return
+    history.append({"role": "system", "content": HISTORY_SEPARATOR})
+    if len(history) > 300:
+        state.user_chat_history[user_id] = history[-300:]
+    history_store.save(state.user_chat_history)
+    logger.info(f"[分隔] 已插入每日分隔标记: user={user_id}")
+
+
+async def history_separator_scheduler():
+    """每日北京时间 06:00 插入历史分隔标记"""
+    triggered_date = None
+
+    while True:
+        try:
+            now_utc = datetime.now(timezone.utc)
+            beijing_now = now_utc + timedelta(hours=8)
+            today_str = beijing_now.strftime("%Y-%m-%d")
+            hour, minute = beijing_now.hour, beijing_now.minute
+
+            if hour == 6 and minute == 0 and triggered_date != today_str:
+                user_id = "default-user"
+                user_last = state.last_activity.get(user_id)
+
+                # 如果用户 30 分钟内有活动，延迟 30 分钟后重试
+                if user_last:
+                    minutes_since = (now_utc - user_last).total_seconds() / 60
+                    if minutes_since < 30:
+                        logger.info(f"[分隔] 用户 {minutes_since:.0f} 分钟前有活动，延迟 30 分钟")
+                        await asyncio.sleep(30 * 60)
+                        # 延迟后再次检查
+                        now_utc = datetime.now(timezone.utc)
+                        user_last = state.last_activity.get(user_id)
+                        if user_last:
+                            minutes_since = (now_utc - user_last).total_seconds() / 60
+                            if minutes_since < 30:
+                                logger.info(f"[分隔] 用户仍活跃，强制插入分隔标记")
+
+                triggered_date = today_str
+                insert_daily_separator(user_id)
+
+        except Exception as e:
+            logger.exception(f"[分隔] 调度器异常: {e}")
+
+        await asyncio.sleep(60)
 
 
 if __name__ == "__main__":
