@@ -14,6 +14,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -32,11 +33,13 @@ class OkHttpBotWebSocketClient @Inject constructor(
     private var reconnectAttempts = 0
     private var manuallyClosed = false
     private var latestToken: String? = null
+    private val reconnecting = AtomicBoolean(false)
 
     override fun connect(token: String) {
         latestToken = token
         manuallyClosed = false
         reconnectAttempts = 0
+        reconnecting.set(false)
         openWebSocket(token)
     }
 
@@ -52,6 +55,7 @@ class OkHttpBotWebSocketClient @Inject constructor(
 
     override fun disconnect() {
         manuallyClosed = true
+        reconnecting.set(false)
         heartbeatJob?.cancel()
         reconnectJob?.cancel()
         wsRef.getAndSet(null)?.close(1000, "client disconnect")
@@ -65,6 +69,7 @@ class OkHttpBotWebSocketClient @Inject constructor(
     private fun scheduleReconnect() {
         val token = latestToken ?: return
         if (manuallyClosed || reconnectAttempts >= 15) return
+        if (!reconnecting.compareAndSet(false, true)) return
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
             val backoffSeconds = (1 shl reconnectAttempts).coerceAtMost(60)
@@ -73,6 +78,7 @@ class OkHttpBotWebSocketClient @Inject constructor(
             if (!manuallyClosed) {
                 openWebSocket(token)
             }
+            reconnecting.set(false)
         }
     }
 
@@ -94,6 +100,7 @@ class OkHttpBotWebSocketClient @Inject constructor(
         override fun onOpen(webSocket: WebSocket, response: Response) {
             reconnectAttempts = 0
             reconnectJob?.cancel()
+            reconnecting.set(false)
             _events.tryEmit(WebSocketEvent.Connected)
             startHeartbeat()
         }
