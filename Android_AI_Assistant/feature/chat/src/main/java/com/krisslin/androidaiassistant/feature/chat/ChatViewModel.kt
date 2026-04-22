@@ -144,6 +144,15 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    private fun normalizeHistoryOnResume() {
+        viewModelScope.launch {
+            if (pendingRequestIds.isNotEmpty() || streamingContentCache.isNotEmpty()) {
+                return@launch
+            }
+            chatRepository.normalizeStreamingMessages(sessionId)
+        }
+    }
+
     private fun initializeFactSyncCursor() {
         viewModelScope.launch {
             lastSyncedFactTimestampMs = userFactRepository.getLatestTimestamp(syncUserId)

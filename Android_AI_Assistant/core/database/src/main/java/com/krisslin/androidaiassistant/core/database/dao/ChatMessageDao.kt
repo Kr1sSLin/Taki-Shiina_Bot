@@ -37,6 +37,9 @@ interface ChatMessageDao {
     @Query("DELETE FROM chat_messages WHERE session_id = :sessionId")
     suspend fun deleteBySession(sessionId: String)
 
+    @Query("UPDATE chat_messages SET status = 'received' WHERE session_id = :sessionId AND status = 'streaming'")
+    suspend fun normalizeStreamingMessages(sessionId: String)
+
     @Query("DELETE FROM chat_messages WHERE message_id = :messageId")
     suspend fun deleteById(messageId: String)
 }

@@ -88,7 +88,7 @@ class WebSocketService : Service() {
 
     private fun observeMessages() {
         serviceScope.launch {
-            webSocketClient.events.collect { event ->
+            webSocketClient.events.collect { event -> 
                 if (event is WebSocketEvent.Message) {
                     handleMessage(event.text)
                 }

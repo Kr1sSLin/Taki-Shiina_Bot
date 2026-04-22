@@ -156,6 +156,13 @@ class ChatRepository @Inject constructor(
     }
 
     /**
+     * 将会话中残留的流式消息收敛为已完成状态
+     */
+    suspend fun normalizeStreamingMessages(sessionId: String) {
+        chatMessageDao.normalizeStreamingMessages(sessionId)
+    }
+
+    /**
      * 删除单条消息
      */
     suspend fun deleteMessage(messageId: String) {
