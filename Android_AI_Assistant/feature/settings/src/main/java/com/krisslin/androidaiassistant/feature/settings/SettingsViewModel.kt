@@ -1,11 +1,14 @@
 package com.krisslin.androidaiassistant.feature.settings
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonObject
 import com.krisslin.androidaiassistant.core.network.api.ChatApi
 import com.krisslin.androidaiassistant.core.network.api.CityHttpRequest
+import com.krisslin.androidaiassistant.core.ui.theme.ThemeMode
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -16,18 +19,22 @@ import javax.inject.Inject
 data class SettingsUiState(
     val cityInput: String = "",
     val loading: Boolean = false,
-    val message: String? = null
+    val message: String? = null,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM
 )
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val chatApi: ChatApi
 ) : ViewModel() {
 
+    private val themeStore by lazy { ThemePreferenceStore(context) }
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
     init {
+        _uiState.update { it.copy(themeMode = themeStore.themeMode) }
         loadCity()
     }
 
@@ -37,6 +44,11 @@ class SettingsViewModel @Inject constructor(
 
     fun clearMessage() {
         _uiState.update { it.copy(message = null) }
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        themeStore.updateThemeMode(mode)
+        _uiState.update { it.copy(themeMode = mode, message = "主题已切换为：${mode.label()}") }
     }
 
     fun loadCity() {
@@ -81,5 +93,11 @@ class SettingsViewModel @Inject constructor(
     private fun JsonObject.dataObject(): JsonObject? {
         val data = get("data") ?: return null
         return if (data.isJsonObject) data.asJsonObject else null
+    }
+
+    private fun ThemeMode.label(): String = when (this) {
+        ThemeMode.SYSTEM -> "跟随系统"
+        ThemeMode.LIGHT -> "日间"
+        ThemeMode.DARK -> "夜间"
     }
 }

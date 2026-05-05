@@ -1,6 +1,8 @@
 package com.krisslin.androidaiassistant.core.database.repository
 
 import com.krisslin.androidaiassistant.core.database.dao.ChatMessageDao
+import com.krisslin.androidaiassistant.core.database.dao.ChatAttachmentDao
+import com.krisslin.androidaiassistant.core.database.entity.ChatAttachmentEntity
 import com.krisslin.androidaiassistant.core.database.entity.ChatMessageEntity
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
@@ -26,6 +28,17 @@ object MessageType {
     const val WEATHER = "weather"
 }
 
+object ContentType {
+    const val TEXT = "text"
+    const val IMAGE = "image"
+    const val MIXED = "mixed"
+}
+
+object ModelProvider {
+    const val DEEPSEEK = "deepseek"
+    const val GEMINI = "gemini"
+}
+
 /**
  * 消息角色
  */
@@ -40,7 +53,8 @@ object MessageRole {
  */
 @Singleton
 class ChatRepository @Inject constructor(
-    private val chatMessageDao: ChatMessageDao
+    private val chatMessageDao: ChatMessageDao,
+    private val chatAttachmentDao: ChatAttachmentDao
 ) {
     /**
      * 观察指定会话的消息（按时间升序）
@@ -62,13 +76,17 @@ class ChatRepository @Inject constructor(
     suspend fun saveUserMessage(
         messageId: String,
         sessionId: String,
-        content: String
+        content: String,
+        contentType: String = ContentType.TEXT,
+        modelProvider: String = ModelProvider.DEEPSEEK
     ): ChatMessageEntity {
         val entity = ChatMessageEntity(
             messageId = messageId,
             sessionId = sessionId,
             role = MessageRole.USER,
             messageType = MessageType.TEXT,
+            contentType = contentType,
+            modelProvider = modelProvider,
             content = content,
             status = MessageStatus.SENDING,
             timestamp = System.currentTimeMillis()
@@ -92,16 +110,21 @@ class ChatRepository @Inject constructor(
         messageId: String,
         sessionId: String,
         content: String,
-        isStreaming: Boolean = false
+        isStreaming: Boolean = false,
+        contentType: String = ContentType.TEXT,
+        modelProvider: String = ModelProvider.DEEPSEEK,
+        timestamp: Long = System.currentTimeMillis()
     ): ChatMessageEntity {
         val entity = ChatMessageEntity(
             messageId = messageId,
             sessionId = sessionId,
             role = MessageRole.BOT,
             messageType = MessageType.TEXT,
+            contentType = contentType,
+            modelProvider = modelProvider,
             content = content,
             status = if (isStreaming) MessageStatus.STREAMING else MessageStatus.RECEIVED,
-            timestamp = System.currentTimeMillis()
+            timestamp = timestamp
         )
         chatMessageDao.upsert(entity)
         return entity
@@ -115,7 +138,9 @@ class ChatRepository @Inject constructor(
         sessionId: String,
         role: String,
         content: String,
-        timestamp: Long
+        timestamp: Long,
+        contentType: String = ContentType.TEXT,
+        modelProvider: String = ModelProvider.DEEPSEEK
     ) {
         val existing = chatMessageDao.getById(messageId)
         if (existing != null) return
@@ -125,6 +150,8 @@ class ChatRepository @Inject constructor(
                 sessionId = sessionId,
                 role = role,
                 messageType = MessageType.TEXT,
+                contentType = contentType,
+                modelProvider = modelProvider,
                 content = content,
                 status = MessageStatus.RECEIVED,
                 timestamp = timestamp
@@ -153,6 +180,7 @@ class ChatRepository @Inject constructor(
      */
     suspend fun clearSession(sessionId: String) {
         chatMessageDao.deleteBySession(sessionId)
+        chatAttachmentDao.deleteBySession(sessionId)
     }
 
     /**
@@ -166,6 +194,7 @@ class ChatRepository @Inject constructor(
      * 删除单条消息
      */
     suspend fun deleteMessage(messageId: String) {
+        chatAttachmentDao.deleteByMessageId(messageId)
         chatMessageDao.deleteById(messageId)
     }
 
@@ -181,5 +210,19 @@ class ChatRepository @Inject constructor(
      */
     suspend fun finalizeStreamingMessage(pendingId: String, finalId: String, finalContent: String) {
         chatMessageDao.finalizeMessage(pendingId, finalId, finalContent, MessageStatus.RECEIVED)
+    }
+
+    suspend fun saveMessageAttachments(items: List<ChatAttachmentEntity>) {
+        if (items.isEmpty()) return
+        chatAttachmentDao.upsertAll(items)
+    }
+
+    suspend fun getAttachmentsByMessageIds(messageIds: List<String>): List<ChatAttachmentEntity> {
+        if (messageIds.isEmpty()) return emptyList()
+        return chatAttachmentDao.getByMessageIds(messageIds)
+    }
+
+    suspend fun getAttachmentsByMessageId(messageId: String): List<ChatAttachmentEntity> {
+        return chatAttachmentDao.getByMessageId(messageId)
     }
 }

@@ -10,6 +10,8 @@ data class ChatMessageEntity(
     @ColumnInfo(name = "session_id") val sessionId: String,
     val role: String,
     @ColumnInfo(name = "message_type") val messageType: String,
+    @ColumnInfo(name = "content_type") val contentType: String = "text",
+    @ColumnInfo(name = "model_provider") val modelProvider: String = "deepseek",
     val content: String,
     @ColumnInfo(name = "image_url") val imageUrl: String? = null,
     @ColumnInfo(name = "weather_attached") val weatherAttached: Int = 0,

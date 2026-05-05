@@ -10,6 +10,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -17,6 +18,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.krisslin.androidaiassistant.core.ui.theme.ThemeMode
 
 @Composable
 fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
@@ -32,6 +34,29 @@ fun SettingsRoute(viewModel: SettingsViewModel = hiltViewModel()) {
             text = "城市设置",
             style = MaterialTheme.typography.titleLarge
         )
+
+        Text(
+            text = "主题模式",
+            style = MaterialTheme.typography.titleMedium
+        )
+
+        val themeMode = state.themeMode
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            ThemeMode.values().forEach { mode ->
+                OutlinedButton(
+                    onClick = { viewModel.setThemeMode(mode) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = when (mode) {
+                            ThemeMode.SYSTEM -> "跟随系统"
+                            ThemeMode.LIGHT -> "日间模式"
+                            ThemeMode.DARK -> "夜间模式"
+                        } + if (mode == themeMode) " · 已选中" else ""
+                    )
+                }
+            }
+        }
 
         OutlinedTextField(
             value = state.cityInput,

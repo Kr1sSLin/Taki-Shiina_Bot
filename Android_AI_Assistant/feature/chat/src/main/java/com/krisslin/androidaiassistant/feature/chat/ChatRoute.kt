@@ -1,6 +1,14 @@
 package com.krisslin.androidaiassistant.feature.chat
 
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.text.format.DateUtils
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,16 +20,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -41,21 +50,64 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
+import coil.compose.AsyncImage
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.Icon
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatRoute(
     viewModel: ChatViewModel = hiltViewModel(),
+    isDarkMode: Boolean = false,
+    onToggleTheme: () -> Unit = {},
     onNavigateToLogin: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     val state by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     var showClearConfirm by remember { mutableStateOf(false) }
+    var showImagePreview by remember { mutableStateOf<String?>(null) }
+    var showAttachMenu by remember { mutableStateOf(false) }
+    val tempCameraUri = remember { mutableStateOf<Uri?>(null) }
 
-    // 处理 side effects
+    val pickImagesLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        viewModel.onPickImages(uris.take(3))
+    }
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        val uri = tempCameraUri.value
+        if (success && uri != null) {
+            viewModel.onPickImages(listOf(uri))
+        }
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            createTempImageUri(context)?.also {
+                tempCameraUri.value = it
+                takePictureLauncher.launch(it)
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         viewModel.sideEffects.collect { effect ->
             when (effect) {
@@ -65,14 +117,12 @@ fun ChatRoute(
         }
     }
 
-    // 自动滚动到底部
     LaunchedEffect(state.messages.size) {
         if (state.messages.isNotEmpty()) {
             listState.animateScrollToItem(state.messages.size - 1)
         }
     }
 
-    // 流式消息更新时也滚动
     val lastMessage = state.messages.lastOrNull()
     LaunchedEffect(lastMessage?.content) {
         if (state.messages.isNotEmpty()) {
@@ -87,6 +137,12 @@ fun ChatRoute(
                 TopAppBar(
                     title = { Text("对话") },
                     actions = {
+                        TextButton(onClick = onToggleTheme) {
+                            Icon(
+                                imageVector = if (isDarkMode) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+                                contentDescription = if (isDarkMode) "切换日间模式" else "切换夜间模式"
+                            )
+                        }
                         TextButton(onClick = { showClearConfirm = true }) {
                             Text("清空会话")
                         }
@@ -107,8 +163,6 @@ fun ChatRoute(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 提示信息区域
-            BotActivityHint(state.botActivity)
             state.error?.let {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -122,7 +176,6 @@ fun ChatRoute(
                 }
             }
 
-            // 消息列表
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
@@ -131,11 +184,22 @@ fun ChatRoute(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(state.messages, key = { it.id }) { msg ->
-                    MessageBubble(message = msg)
+                    MessageBubble(
+                        message = msg,
+                        onImageClick = { showImagePreview = it },
+                        onRetry = { viewModel.retryMessage(msg.id) }
+                    )
                 }
             }
 
-            // 输入区域
+            if (state.selectedImages.isNotEmpty()) {
+                SelectedImageStrip(
+                    images = state.selectedImages,
+                    onRemove = viewModel::removeSelectedImage,
+                    onPreview = { showImagePreview = it }
+                )
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -151,10 +215,49 @@ fun ChatRoute(
                 )
                 Button(
                     onClick = viewModel::sendText,
-                    enabled = state.input.isNotBlank()
-                        && state.connectionStatus == ConnectionStatus.CONNECTED
+                    enabled = (state.input.isNotBlank() || state.selectedImages.isNotEmpty()) &&
+                        state.connectionStatus == ConnectionStatus.CONNECTED
                 ) {
                     Text("发送")
+                }
+                Box {
+                    TextButton(
+                        onClick = { showAttachMenu = true },
+                        enabled = state.connectionStatus == ConnectionStatus.CONNECTED && state.selectedImages.size < 3
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Add,
+                            contentDescription = "添加图片"
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showAttachMenu,
+                        onDismissRequest = { showAttachMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("相册") },
+                            onClick = {
+                                showAttachMenu = false
+                                pickImagesLauncher.launch("image/*")
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("拍照") },
+                            onClick = {
+                                showAttachMenu = false
+                                if (state.selectedImages.size >= 3) return@DropdownMenuItem
+                                val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                                if (granted) {
+                                    createTempImageUri(context)?.also {
+                                        tempCameraUri.value = it
+                                        takePictureLauncher.launch(it)
+                                    }
+                                } else {
+                                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -182,11 +285,27 @@ fun ChatRoute(
             }
         )
     }
+
+    showImagePreview?.let { uri ->
+        AlertDialog(
+            onDismissRequest = { showImagePreview = null },
+            title = { Text("图片预览") },
+            text = {
+                AsyncImage(
+                    model = uri,
+                    contentDescription = "图片预览",
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showImagePreview = null }) {
+                    Text("关闭")
+                }
+            }
+        )
+    }
 }
 
-/**
- * 连接状态栏
- */
 @Composable
 private fun ConnectionStatusBar(
     status: ConnectionStatus,
@@ -232,7 +351,7 @@ private fun ConnectionStatusBar(
                 style = MaterialTheme.typography.titleMedium
             )
         }
-        
+
         if (status == ConnectionStatus.DISCONNECTED) {
             TextButton(onClick = onReconnect) {
                 Text("重连")
@@ -253,11 +372,12 @@ private fun BotActivityStatus.statusLabel(): String? = when (this) {
     BotActivityStatus.TYPING -> "输入中…"
 }
 
-/**
- * 消息气泡
- */
 @Composable
-private fun MessageBubble(message: ChatMessageUi) {
+private fun MessageBubble(
+    message: ChatMessageUi,
+    onImageClick: (String) -> Unit,
+    onRetry: () -> Unit
+) {
     val isUser = message.role == "user"
     val alignment = if (isUser) Alignment.End else Alignment.Start
     val bubbleColor = if (isUser) {
@@ -280,10 +400,27 @@ private fun MessageBubble(message: ChatMessageUi) {
             colors = CardDefaults.cardColors(containerColor = bubbleColor)
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                Text(
-                    text = message.content.trimEnd('\n'),
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                if (message.attachments.isNotEmpty()) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(message.attachments, key = { it.id }) { attachment ->
+                            AsyncImage(
+                                model = attachment.localUri,
+                                contentDescription = "消息图片",
+                                modifier = Modifier
+                                    .size(120.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onImageClick(attachment.localUri) }
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.size(6.dp))
+                }
+                if (message.content.isNotBlank()) {
+                    Text(
+                        text = message.content.trimEnd('\n'),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
                 if (message.isStreaming) {
                     Text(
                         text = "▌",
@@ -291,7 +428,67 @@ private fun MessageBubble(message: ChatMessageUi) {
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
+                if (isUser && message.status == "error") {
+                    Spacer(modifier = Modifier.size(6.dp))
+                    TextButton(onClick = onRetry) {
+                        Text("发送失败，点击重试")
+                    }
+                }
+                Spacer(modifier = Modifier.size(6.dp))
+                Text(
+                    text = formatMessageTime(message.timestamp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.align(Alignment.End)
+                )
             }
         }
     }
+}
+
+private fun formatMessageTime(timestamp: Long): String {
+    val pattern = if (DateUtils.isToday(timestamp)) "HH:mm" else "MM-dd HH:mm"
+    val formatter = SimpleDateFormat(pattern, Locale.getDefault())
+    return formatter.format(Date(timestamp))
+}
+
+@Composable
+private fun SelectedImageStrip(
+    images: List<ChatAttachmentUi>,
+    onRemove: (String) -> Unit,
+    onPreview: (String) -> Unit
+) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        items(images, key = { it.id }) { item ->
+            Box {
+                AsyncImage(
+                    model = item.localUri,
+                    contentDescription = "待发送图片",
+                    modifier = Modifier
+                        .size(84.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onPreview(item.localUri) }
+                )
+                TextButton(
+                    onClick = { onRemove(item.id) },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(22.dp)
+                        .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                ) {
+                    Text("×", color = Color.White)
+                }
+            }
+        }
+    }
+}
+
+private fun createTempImageUri(context: Context): Uri? {
+    val file = runCatching {
+        val dir = java.io.File(context.cacheDir, "camera")
+        if (!dir.exists()) dir.mkdirs()
+        java.io.File.createTempFile("chat_camera_", ".jpg", dir)
+    }.getOrNull() ?: return null
+    val authority = "${context.packageName}.fileprovider"
+    return FileProvider.getUriForFile(context, authority, file)
 }

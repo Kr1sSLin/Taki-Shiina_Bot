@@ -4,6 +4,7 @@ WebSocket API for TakiShiina Bot
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+import google.generativeai as genai
 from openai import AsyncOpenAI
 
 from app_constants import EMOTIONAL_TRIGGERS, LORE_TRIGGERS, USER_MEMO
@@ -39,7 +41,15 @@ MY_LAT = float(os.getenv("MY_LAT", "0"))
 MY_LON = float(os.getenv("MY_LON", "0"))
 BOT_WS_TOKEN = os.getenv("BOT_WS_TOKEN", "")
 BOT_HTTP_TOKEN = os.getenv("BOT_HTTP_TOKEN", "")
+APP_USER_ID = os.getenv("APP_USER_ID", "default-user").strip() or "default-user"
 DEBUG_REPLY_TRACE = os.getenv("DEBUG_REPLY_TRACE", "0") == "1"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+VISION_MAX_IMAGE_MB = int(os.getenv("VISION_MAX_IMAGE_MB", "3"))
+VISION_MAX_IMAGE_COUNT = int(os.getenv("VISION_MAX_IMAGE_COUNT", "3"))
+VISION_ALLOWED_MIME = {
+    m.strip() for m in os.getenv("VISION_ALLOWED_MIME", "image/jpeg,image/png").split(",") if m.strip()
+}
 
 DEBOUNCE_BASE = 8.0
 DEBOUNCE_EXTENDED = 20.0
@@ -76,6 +86,9 @@ prompt_service = PromptService(
     user_memo=USER_MEMO,
     logger=logger,
 )
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI(title="TakiShiina Bot WebSocket API")
 
@@ -282,6 +295,10 @@ async def process_buffered_messages(user_id: str):
         request_ids = [m["requestId"] for m in buffered]
         merged_text = "\n".join(m["content"] for m in buffered if m["content"])
         merged_request_id = request_ids[-1] if request_ids else str(uuid.uuid4())
+        merged_images = []
+        for m in buffered:
+            merged_images.extend(m.get("images", []))
+        has_images = len(merged_images) > 0
 
         await broadcast_json(user_id, {"type": "chat.typing", "payload": {"typing": True}})
 
@@ -341,28 +358,53 @@ async def process_buffered_messages(user_id: str):
         bot_message_id = str(uuid.uuid4())
         user_message_id = merged_request_id
 
-        response = await asyncio.wait_for(
-            client.chat.completions.create(
-                model="deepseek-chat",
-                messages=messages,
-                temperature=0.75,
-                stream=True,
-            ),
-            timeout=90.0,
-        )
-
-        async for chunk in response:
-            delta = chunk.choices[0].delta.content or ""
-            if delta:
-                full_content += delta
-                await broadcast_json(
-                    user_id,
+        if has_images:
+            if not GEMINI_API_KEY:
+                await send_error(user_id, "GEMINI_NOT_CONFIGURED", "服务端未配置 Gemini Key", merged_request_id, request_ids)
+                return
+            prompt_text = merged_text or "请描述图片中的关键信息。"
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            parts = [prompt_text]
+            for img in merged_images[:VISION_MAX_IMAGE_COUNT]:
+                parts.append(
                     {
-                        "type": "chat.reply.stream",
-                        "requestId": merged_request_id,
-                        "payload": {"delta": delta, "done": False},
-                    },
+                        "mime_type": img["mimeType"],
+                        "data": img["raw"],
+                    }
                 )
+            resp = await asyncio.to_thread(model.generate_content, parts)
+            full_content = (resp.text or "").strip()
+            await broadcast_json(
+                user_id,
+                {
+                    "type": "chat.reply.stream",
+                    "requestId": merged_request_id,
+                    "payload": {"delta": full_content, "done": False, "contentType": "mixed", "modelProvider": "gemini"},
+                },
+            )
+        else:
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=messages,
+                    temperature=0.75,
+                    stream=True,
+                ),
+                timeout=90.0,
+            )
+
+            async for chunk in response:
+                delta = chunk.choices[0].delta.content or ""
+                if delta:
+                    full_content += delta
+                    await broadcast_json(
+                        user_id,
+                        {
+                            "type": "chat.reply.stream",
+                            "requestId": merged_request_id,
+                            "payload": {"delta": delta, "done": False, "contentType": "text", "modelProvider": "deepseek"},
+                        },
+                    )
 
         _trace_text("A_RAW", user_id, full_content)
         cleaned_reply, timer_at, timer_text = parse_timer_instruction(full_content)
@@ -370,7 +412,7 @@ async def process_buffered_messages(user_id: str):
         cleaned_reply = strip_polluted_tail(cleaned_reply, polluted_tails)
         _trace_text("C_STRIPPED", user_id, cleaned_reply)
         recent_assistant_replies = [m.get("content", "") for m in recent_history if m.get("role") == "assistant"]
-        if is_repetitive_reply(cleaned_reply, recent_assistant_replies, threshold=0.88):
+        if not has_images and is_repetitive_reply(cleaned_reply, recent_assistant_replies, threshold=0.88):
             logger.info(f"[去重] 命中重复回复，触发重采样: user={user_id}")
             dedupe_messages = list(messages)
             dedupe_messages.append(
@@ -395,7 +437,10 @@ async def process_buffered_messages(user_id: str):
         _trace_text("D_FINAL", user_id, final_reply)
 
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        history.append({"role": "user", "content": merged_text})
+        merged_record = merged_text
+        if has_images:
+            merged_record = (merged_text + "\n\n" if merged_text else "") + f"[ImageCount={len(merged_images)}]"
+        history.append({"role": "user", "content": merged_record})
         history.append({"role": "assistant", "content": final_reply})
         if len(history) > 300:
             state.user_chat_history[user_id] = history[-300:]
@@ -407,7 +452,7 @@ async def process_buffered_messages(user_id: str):
                     "messageId": user_message_id,
                     "userId": user_id,
                     "role": "user",
-                    "content": merged_text,
+                    "content": merged_record,
                     "timestamp": now_ms - 1,
                 },
                 {
@@ -434,6 +479,9 @@ async def process_buffered_messages(user_id: str):
                     "done": True,
                     "messageId": bot_message_id,
                     "finalContent": final_reply,
+                    "timestamp": now_ms,
+                    "contentType": "mixed" if has_images and merged_text else ("image" if has_images else "text"),
+                    "modelProvider": "gemini" if has_images else "deepseek",
                     "timerInstruction": {"target": timer_at, "text": timer_text} if timer_at else None,
                     "requestIds": request_ids,
                 },
@@ -520,7 +568,7 @@ async def websocket_chat(websocket: WebSocket, token: str = Query(default="")):
         return
 
     await websocket.accept()
-    user_id = "default-user"
+    user_id = APP_USER_ID
     ACTIVE_CONNECTIONS.setdefault(user_id, set()).add(websocket)
     logger.info(f"[WS] 连接建立: user={user_id}")
 
@@ -546,11 +594,37 @@ async def websocket_chat(websocket: WebSocket, token: str = Query(default="")):
             if msg_type == "chat.message":
                 payload = message.get("payload", {})
                 content = (payload.get("content") or "").strip()
+                raw_images = payload.get("images") or []
                 logger.info(f"[WS] 收到消息: user={user_id}, content={content[:50]}...")
-                if not content:
+                if not content and not raw_images:
                     await send_error(user_id, "EMPTY_MESSAGE", "消息内容不能为空", request_id)
                     continue
-                message_buffer.setdefault(user_id, []).append({"requestId": request_id, "content": content})
+                parsed_images = []
+                if raw_images:
+                    if len(raw_images) > VISION_MAX_IMAGE_COUNT:
+                        await send_error(user_id, "VISION_IMAGE_COUNT_EXCEEDED", f"单次最多 {VISION_MAX_IMAGE_COUNT} 张图片", request_id)
+                        continue
+                    for idx, item in enumerate(raw_images):
+                        mime_type = (item or {}).get("mimeType", "").strip().lower()
+                        data_base64 = (item or {}).get("dataBase64", "")
+                        if mime_type not in VISION_ALLOWED_MIME:
+                            await send_error(user_id, "VISION_INVALID_MIME", f"第 {idx + 1} 张图片格式不支持", request_id)
+                            parsed_images = []
+                            break
+                        try:
+                            raw = base64.b64decode(data_base64)
+                        except Exception:
+                            await send_error(user_id, "VISION_INVALID_BASE64", f"第 {idx + 1} 张图片解析失败", request_id)
+                            parsed_images = []
+                            break
+                        if len(raw) > VISION_MAX_IMAGE_MB * 1024 * 1024:
+                            await send_error(user_id, "VISION_IMAGE_TOO_LARGE", f"第 {idx + 1} 张图片超过 {VISION_MAX_IMAGE_MB}MB", request_id)
+                            parsed_images = []
+                            break
+                        parsed_images.append({"mimeType": mime_type, "raw": raw})
+                    if raw_images and not parsed_images:
+                        continue
+                message_buffer.setdefault(user_id, []).append({"requestId": request_id, "content": content, "images": parsed_images})
                 last_message_at[user_id] = datetime.now(timezone.utc)
                 await broadcast_json(
                     user_id,
@@ -681,6 +755,7 @@ async def send_greeting(user_id: str, scenario_type: str):
                     "done": True,
                     "messageId": greeting_id,
                     "finalContent": final_reply,
+                    "timestamp": now_ms,
                     "requestIds": [greeting_id],
                 },
             },
@@ -709,14 +784,14 @@ async def greeting_scheduler():
                 triggered_morning = today_str
                 delay = random.randint(0, 180 * 60)
                 logger.info(f"[问候] 早安已安排，{delay // 60} 分钟后发送")
-                asyncio.create_task(_delayed_greeting("default-user", "morning", delay))
+                asyncio.create_task(_delayed_greeting(APP_USER_ID, "morning", delay))
 
             # 晚安窗口：23:00 触发，随机延迟 0~120 分钟
             if hour == 23 and minute == 0 and triggered_night != today_str:
                 triggered_night = today_str
                 delay = random.randint(0, 120 * 60)
                 logger.info(f"[问候] 晚安已安排，{delay // 60} 分钟后发送")
-                asyncio.create_task(_delayed_greeting("default-user", "night", delay))
+                asyncio.create_task(_delayed_greeting(APP_USER_ID, "night", delay))
 
         except Exception as e:
             logger.exception(f"[问候] 调度器异常: {e}")
@@ -766,7 +841,7 @@ async def history_separator_scheduler():
             hour, minute = beijing_now.hour, beijing_now.minute
 
             if hour == 6 and minute == 0 and triggered_date != today_str:
-                user_id = "default-user"
+                user_id = APP_USER_ID
                 user_last = state.last_activity.get(user_id)
 
                 # 如果用户 30 分钟内有活动，延迟 30 分钟后重试
