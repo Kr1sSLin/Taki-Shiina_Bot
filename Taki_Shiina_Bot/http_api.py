@@ -34,6 +34,7 @@ OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 MY_LAT = float(os.getenv("MY_LAT", "0"))
 MY_LON = float(os.getenv("MY_LON", "0"))
 BOT_HTTP_TOKEN = os.getenv("BOT_HTTP_TOKEN", "")
+APP_USER_ID = os.getenv("APP_USER_ID", "default-user").strip() or "default-user"
 DEBUG_REPLY_TRACE = os.getenv("DEBUG_REPLY_TRACE", "0") == "1"
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -244,7 +245,7 @@ async def memory_facts(
 
     try:
         items = _load_memory_timeline()
-        target_user = str(userId or "default-user")
+        target_user = str(userId or APP_USER_ID)
         filtered = [
             x for x in items
             if int(x.get("timestamp", 0)) > since and str(x.get("userId", "")) == target_user
@@ -330,7 +331,7 @@ async def chat(
             content=response_body(40001, "message 不能为空", None, trace_id),
         )
 
-    user_id = str(payload.userId or payload.conversationId or "default-user")
+    user_id = str(payload.userId or payload.conversationId or APP_USER_ID)
     message_text = payload.message.strip()
 
     try:

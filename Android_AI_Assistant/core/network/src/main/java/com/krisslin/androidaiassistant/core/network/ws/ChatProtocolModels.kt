@@ -12,7 +12,14 @@ data class ChatMessagePayload(
     val messageType: String,
     val content: String? = null,
     val imageUrl: String? = null,
+    val images: List<ChatImagePayload>? = null,
     val timestamp: Long
+)
+
+data class ChatImagePayload(
+    val mimeType: String,
+    val dataBase64: String,
+    val localUri: String? = null
 )
 
 data class ReplyPayload(
@@ -32,8 +39,11 @@ data class ReplyStreamPayload(
     val done: Boolean = false,
     val messageId: String? = null,
     val finalContent: String? = null,
+    val contentType: String? = null,
+    val modelProvider: String? = null,
     val timerInstruction: TimerInstruction? = null,
-    val requestIds: List<String>? = null
+    val requestIds: List<String>? = null,
+    val timestamp: Long? = null
 )
 
 data class BotErrorPayload(
