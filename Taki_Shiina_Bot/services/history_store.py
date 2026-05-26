@@ -1,25 +1,23 @@
-import json
 import logging
-import os
+
+from secure_storage import SecureJsonStore
 
 
 class HistoryStore:
     def __init__(self, history_file):
         self.history_file = history_file
         self.logger = logging.getLogger(__name__)
+        self.store = SecureJsonStore(self.history_file, self.logger)
 
     def load(self):
-        if os.path.exists(self.history_file):
-            try:
-                with open(self.history_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                self.logger.error(f"⚠️ 读取历史记录失败: {e}")
-        return {}
+        try:
+            return self.store.load({})
+        except Exception as e:
+            self.logger.error(f"⚠️ 读取历史记录失败: {e}")
+            return {}
 
     def save(self, history_data):
         try:
-            with open(self.history_file, "w", encoding="utf-8") as f:
-                json.dump(history_data, f, ensure_ascii=False, indent=2)
+            self.store.save(history_data)
         except Exception as e:
             self.logger.error(f"❌ 保存历史失败: {e}")

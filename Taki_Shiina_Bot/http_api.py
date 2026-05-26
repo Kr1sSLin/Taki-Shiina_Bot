@@ -12,8 +12,10 @@ from fastapi.responses import JSONResponse
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
+from auth_utils import AuthContext, DeviceEntry, parse_device_tokens, resolve_auth_context
 from app_constants import EMOTIONAL_TRIGGERS, LORE_TRIGGERS, USER_MEMO
 from app_state import AppState
+from secure_storage import SecureJsonStore
 from services.history_store import HistoryStore
 from services.memory_service import MemoryService
 from services.prompt_service import PromptService
@@ -33,9 +35,27 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 MY_LAT = float(os.getenv("MY_LAT", "0"))
 MY_LON = float(os.getenv("MY_LON", "0"))
-BOT_HTTP_TOKEN = os.getenv("BOT_HTTP_TOKEN", "")
+BOT_HTTP_TOKEN = (os.getenv("BOT_HTTP_TOKEN", "") or "").strip()
+BOT_WS_TOKEN = (os.getenv("BOT_WS_TOKEN", "") or "").strip()
 APP_USER_ID = os.getenv("APP_USER_ID", "default-user").strip() or "default-user"
+AUTH_USERNAME = (os.getenv("AUTH_USERNAME", "") or "").strip()
+AUTH_USER_ID = (os.getenv("AUTH_USER_ID", "") or "").strip()
+DEFAULT_USER_ID = AUTH_USER_ID or AUTH_USERNAME or APP_USER_ID
 DEBUG_REPLY_TRACE = os.getenv("DEBUG_REPLY_TRACE", "0") == "1"
+AUTH_JWT_SECRET = (os.getenv("AUTH_JWT_SECRET", "") or "").strip()
+BOT_DEVICE_TOKENS = (os.getenv("BOT_DEVICE_TOKENS", "") or "").strip()
+MAX_DEVICE_COUNT = 4
+DEVICE_TOKEN_ERROR: str | None = None
+DEVICE_TOKEN_MAP: dict[str, AuthContext] = {}
+DEVICE_ALLOWLIST: dict[str, DeviceEntry] = {}
+try:
+    DEVICE_TOKEN_MAP, DEVICE_ALLOWLIST = parse_device_tokens(
+        BOT_DEVICE_TOKENS, DEFAULT_USER_ID, max_devices=MAX_DEVICE_COUNT
+    )
+    if BOT_DEVICE_TOKENS and not DEVICE_ALLOWLIST:
+        raise ValueError("BOT_DEVICE_TOKENS 为空")
+except ValueError as exc:
+    DEVICE_TOKEN_ERROR = str(exc)
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -66,6 +86,27 @@ TIMELINE_FILE = os.path.join(_base_dir, "chat_timeline.json")
 MEMORY_TIMELINE_FILE = os.path.join(_base_dir, "memory_timeline.json")
 MEMORY_TIMELINE_LOCK = asyncio.Lock()
 
+timeline_store = SecureJsonStore(TIMELINE_FILE, logger)
+memory_timeline_store = SecureJsonStore(MEMORY_TIMELINE_FILE, logger)
+
+
+def _missing_required_tokens() -> list[str]:
+    if DEVICE_TOKEN_ERROR:
+        return [f"BOT_DEVICE_TOKENS({DEVICE_TOKEN_ERROR})"]
+    missing: list[str] = []
+    if not AUTH_JWT_SECRET:
+        missing.append("AUTH_JWT_SECRET")
+    return missing
+
+
+@app.on_event("startup")
+async def validate_security_config():
+    missing = _missing_required_tokens()
+    if missing:
+        joined = ", ".join(missing)
+        logger.critical(f"[SECURITY] 缺少必填鉴权配置: {joined}，服务拒绝启动")
+        raise RuntimeError(f"Missing required token env(s): {joined}")
+
 
 def _trace_text(label: str, user_id: str, text: str):
     if not DEBUG_REPLY_TRACE:
@@ -77,11 +118,8 @@ def _trace_text(label: str, user_id: str, text: str):
 
 
 def _load_memory_timeline() -> list[dict]:
-    if not os.path.exists(MEMORY_TIMELINE_FILE):
-        return []
     try:
-        with open(MEMORY_TIMELINE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return memory_timeline_store.load([])
     except Exception as e:
         logger.error(f"读取记忆时间线失败: {e}")
         return []
@@ -93,8 +131,10 @@ async def append_memory_timeline(items: list[dict]):
         data.extend(items)
         if len(data) > 3000:
             data = data[-3000:]
-        with open(MEMORY_TIMELINE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            memory_timeline_store.save(data)
+        except Exception as e:
+            logger.error(f"保存记忆时间线失败: {e}")
 
 
 async def extract_user_facts(user_id: str, message: str):
@@ -164,6 +204,20 @@ def response_body(code: int, message: str, data: dict | None, trace_id: str):
     return {"code": code, "message": message, "data": data, "traceId": trace_id}
 
 
+def _require_http_auth(authorization: str | None, trace_id: str) -> AuthContext:
+    auth = resolve_auth_context(
+        token=authorization or "",
+        jwt_secret=AUTH_JWT_SECRET,
+        device_allowlist=DEVICE_ALLOWLIST,
+        legacy_token_map=DEVICE_TOKEN_MAP,
+        fallback_tokens=[BOT_HTTP_TOKEN, BOT_WS_TOKEN],
+        default_user_id=DEFAULT_USER_ID,
+    )
+    if not auth:
+        raise HTTPException(status_code=401, detail=response_body(40101, "鉴权失败", None, trace_id))
+    return auth
+
+
 def parse_timer_instruction(raw_reply: str):
     import re
 
@@ -208,17 +262,17 @@ async def chat_history(
     authorization: str | None = Header(default=None),
 ):
     trace_id = request.state.trace_id
-    if BOT_HTTP_TOKEN:
-        expected = f"Bearer {BOT_HTTP_TOKEN}"
-        if authorization != expected:
-            raise HTTPException(status_code=401, detail=response_body(40101, "鉴权失败", None, trace_id))
+    auth = _require_http_auth(authorization, trace_id)
 
     try:
         if not os.path.exists(TIMELINE_FILE):
             return response_body(0, "ok", {"items": []}, trace_id)
-        with open(TIMELINE_FILE, "r", encoding="utf-8") as f:
-            items = json.load(f)
-        filtered = [x for x in items if int(x.get("timestamp", 0)) > since]
+        items = timeline_store.load([])
+        filtered = [
+            x
+            for x in items
+            if int(x.get("timestamp", 0)) > since and str(x.get("userId", "")) == auth.user_id
+        ]
         filtered = filtered[-max(1, min(limit, 500)) :]
         return response_body(0, "ok", {"items": filtered}, trace_id)
     except Exception as error:
@@ -238,14 +292,11 @@ async def memory_facts(
     authorization: str | None = Header(default=None),
 ):
     trace_id = request.state.trace_id
-    if BOT_HTTP_TOKEN:
-        expected = f"Bearer {BOT_HTTP_TOKEN}"
-        if authorization != expected:
-            raise HTTPException(status_code=401, detail=response_body(40101, "鉴权失败", None, trace_id))
+    auth = _require_http_auth(authorization, trace_id)
 
     try:
         items = _load_memory_timeline()
-        target_user = str(userId or APP_USER_ID)
+        target_user = auth.user_id
         filtered = [
             x for x in items
             if int(x.get("timestamp", 0)) > since and str(x.get("userId", "")) == target_user
@@ -266,10 +317,7 @@ async def get_city(
     authorization: str | None = Header(default=None),
 ):
     trace_id = request.state.trace_id
-    if BOT_HTTP_TOKEN:
-        expected = f"Bearer {BOT_HTTP_TOKEN}"
-        if authorization != expected:
-            raise HTTPException(status_code=401, detail=response_body(40101, "鉴权失败", None, trace_id))
+    _require_http_auth(authorization, trace_id)
 
     try:
         city = weather_service.get_current_city()
@@ -289,10 +337,7 @@ async def set_city(
     authorization: str | None = Header(default=None),
 ):
     trace_id = request.state.trace_id
-    if BOT_HTTP_TOKEN:
-        expected = f"Bearer {BOT_HTTP_TOKEN}"
-        if authorization != expected:
-            raise HTTPException(status_code=401, detail=response_body(40101, "鉴权失败", None, trace_id))
+    _require_http_auth(authorization, trace_id)
 
     city = (payload.city or "").strip()
     if not city:
@@ -320,10 +365,7 @@ async def chat(
 ):
     trace_id = payload.traceId or request.state.trace_id
 
-    if BOT_HTTP_TOKEN:
-        expected = f"Bearer {BOT_HTTP_TOKEN}"
-        if authorization != expected:
-            raise HTTPException(status_code=401, detail=response_body(40101, "鉴权失败", None, trace_id))
+    auth = _require_http_auth(authorization, trace_id)
 
     if not payload.message or not payload.message.strip():
         return JSONResponse(
@@ -331,7 +373,7 @@ async def chat(
             content=response_body(40001, "message 不能为空", None, trace_id),
         )
 
-    user_id = str(payload.userId or payload.conversationId or APP_USER_ID)
+    user_id = auth.user_id
     message_text = payload.message.strip()
 
     try:

@@ -14,12 +14,14 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import google.generativeai as genai
 from openai import AsyncOpenAI
 
+from auth_utils import AuthContext, DeviceEntry, parse_device_tokens, resolve_auth_context
 from app_constants import EMOTIONAL_TRIGGERS, LORE_TRIGGERS, USER_MEMO
 from app_state import AppState
+from secure_storage import SecureJsonStore
 from services.history_store import HistoryStore
 from services.memory_service import MemoryService
 from services.prompt_service import PromptService
@@ -39,9 +41,12 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 MY_LAT = float(os.getenv("MY_LAT", "0"))
 MY_LON = float(os.getenv("MY_LON", "0"))
-BOT_WS_TOKEN = os.getenv("BOT_WS_TOKEN", "")
-BOT_HTTP_TOKEN = os.getenv("BOT_HTTP_TOKEN", "")
+BOT_WS_TOKEN = (os.getenv("BOT_WS_TOKEN", "") or "").strip()
+BOT_HTTP_TOKEN = (os.getenv("BOT_HTTP_TOKEN", "") or "").strip()
 APP_USER_ID = os.getenv("APP_USER_ID", "default-user").strip() or "default-user"
+AUTH_USERNAME = (os.getenv("AUTH_USERNAME", "") or "").strip()
+AUTH_USER_ID = (os.getenv("AUTH_USER_ID", "") or "").strip()
+DEFAULT_USER_ID = AUTH_USER_ID or AUTH_USERNAME or APP_USER_ID
 DEBUG_REPLY_TRACE = os.getenv("DEBUG_REPLY_TRACE", "0") == "1"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
@@ -50,6 +55,20 @@ VISION_MAX_IMAGE_COUNT = int(os.getenv("VISION_MAX_IMAGE_COUNT", "3"))
 VISION_ALLOWED_MIME = {
     m.strip() for m in os.getenv("VISION_ALLOWED_MIME", "image/jpeg,image/png").split(",") if m.strip()
 }
+AUTH_JWT_SECRET = (os.getenv("AUTH_JWT_SECRET", "") or "").strip()
+BOT_DEVICE_TOKENS = (os.getenv("BOT_DEVICE_TOKENS", "") or "").strip()
+MAX_DEVICE_COUNT = 4
+DEVICE_TOKEN_ERROR: str | None = None
+DEVICE_TOKEN_MAP: dict[str, AuthContext] = {}
+DEVICE_ALLOWLIST: dict[str, DeviceEntry] = {}
+try:
+    DEVICE_TOKEN_MAP, DEVICE_ALLOWLIST = parse_device_tokens(
+        BOT_DEVICE_TOKENS, DEFAULT_USER_ID, max_devices=MAX_DEVICE_COUNT
+    )
+    if BOT_DEVICE_TOKENS and not DEVICE_ALLOWLIST:
+        raise ValueError("BOT_DEVICE_TOKENS 为空")
+except ValueError as exc:
+    DEVICE_TOKEN_ERROR = str(exc)
 
 DEBOUNCE_BASE = 8.0
 DEBOUNCE_EXTENDED = 20.0
@@ -71,6 +90,9 @@ db = MemoryService(_base_dir)
 weather_service = WeatherService(_base_dir, OPENWEATHER_API_KEY, MY_LAT, MY_LON)
 history_store = HistoryStore(state.history_file)
 state.user_chat_history.update(history_store.load())
+
+timeline_store = SecureJsonStore(TIMELINE_FILE, logger)
+memory_timeline_store = SecureJsonStore(MEMORY_TIMELINE_FILE, logger)
 
 client = AsyncOpenAI(
     api_key=DEEPSEEK_API_KEY,
@@ -101,20 +123,53 @@ is_processing: dict[str, bool] = {}
 pending_flush: dict[str, bool] = {}
 
 
-def _normalize_token(token: str) -> str:
-    raw = (token or "").strip()
-    if raw.lower().startswith("bearer "):
-        return raw[7:].strip()
-    return raw
+def _missing_required_tokens() -> list[str]:
+    if DEVICE_TOKEN_ERROR:
+        return [f"BOT_DEVICE_TOKENS({DEVICE_TOKEN_ERROR})"]
+    missing: list[str] = []
+    if not AUTH_JWT_SECRET:
+        missing.append("AUTH_JWT_SECRET")
+    return missing
 
 
-def _is_ws_token_allowed(token: str) -> bool:
-    provided = _normalize_token(token)
-    allowed = {_normalize_token(BOT_WS_TOKEN), _normalize_token(BOT_HTTP_TOKEN)}
-    allowed.discard("")
-    if not allowed:
-        return True
-    return provided in allowed
+@app.on_event("startup")
+async def validate_security_config():
+    missing = _missing_required_tokens()
+    if missing:
+        joined = ", ".join(missing)
+        logger.critical(f"[SECURITY] 缺少必填鉴权配置: {joined}，服务拒绝启动")
+        raise RuntimeError(f"Missing required token env(s): {joined}")
+
+
+def _resolve_ws_context(token: str) -> AuthContext | None:
+    return resolve_auth_context(
+        token=token,
+        jwt_secret=AUTH_JWT_SECRET,
+        device_allowlist=DEVICE_ALLOWLIST,
+        legacy_token_map=DEVICE_TOKEN_MAP,
+        fallback_tokens=[BOT_WS_TOKEN, BOT_HTTP_TOKEN],
+        default_user_id=DEFAULT_USER_ID,
+    )
+
+
+def _extract_ws_auth(websocket: WebSocket) -> tuple[str, str | None]:
+    auth_header = websocket.headers.get("authorization")
+    if auth_header:
+        return auth_header, None
+
+    protocol_header = websocket.headers.get("sec-websocket-protocol") or ""
+    if protocol_header:
+        protocols = [item.strip() for item in protocol_header.split(",") if item.strip()]
+        for item in protocols:
+            if item.lower().startswith("auth."):
+                return item[5:], item
+            if item.lower().startswith("bearer "):
+                return item, item
+
+    query_token = websocket.query_params.get("token")
+    if query_token:
+        logger.warning("[WS] token 出现在 URL query，已拒绝该连接")
+    return "", None
 
 
 def _trace_text(label: str, user_id: str, text: str):
@@ -148,22 +203,16 @@ def calc_debounce_window(user_id: str):
 
 
 def _load_timeline() -> list[dict]:
-    if not os.path.exists(TIMELINE_FILE):
-        return []
     try:
-        with open(TIMELINE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return timeline_store.load([])
     except Exception as e:
         logger.error(f"[WS] 读取时间线失败: {e}")
         return []
 
 
 def _load_memory_timeline() -> list[dict]:
-    if not os.path.exists(MEMORY_TIMELINE_FILE):
-        return []
     try:
-        with open(MEMORY_TIMELINE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return memory_timeline_store.load([])
     except Exception as e:
         logger.error(f"[WS] 读取记忆时间线失败: {e}")
         return []
@@ -175,8 +224,10 @@ async def append_timeline(items: list[dict]):
         data.extend(items)
         if len(data) > 3000:
             data = data[-3000:]
-        with open(TIMELINE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            timeline_store.save(data)
+        except Exception as e:
+            logger.error(f"[WS] 保存时间线失败: {e}")
 
 
 async def append_memory_timeline(items: list[dict]):
@@ -185,8 +236,10 @@ async def append_memory_timeline(items: list[dict]):
         data.extend(items)
         if len(data) > 3000:
             data = data[-3000:]
-        with open(MEMORY_TIMELINE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            memory_timeline_store.save(data)
+        except Exception as e:
+            logger.error(f"[WS] 保存记忆时间线失败: {e}")
 
 
 async def extract_user_facts(user_id: str, message: str):
@@ -561,16 +614,22 @@ def schedule_debounce(user_id: str):
 
 
 @app.websocket("/ws/chat")
-async def websocket_chat(websocket: WebSocket, token: str = Query(default="")):
-    if not _is_ws_token_allowed(token):
+async def websocket_chat(websocket: WebSocket):
+    token, subprotocol = _extract_ws_auth(websocket)
+    auth = _resolve_ws_context(token)
+    if not auth:
         await websocket.close(code=4011, reason="Invalid token")
         logger.warning("[WS] 连接被拒绝: token 无效")
         return
 
-    await websocket.accept()
-    user_id = APP_USER_ID
+    if subprotocol:
+        await websocket.accept(subprotocol=subprotocol)
+    else:
+        await websocket.accept()
+    user_id = auth.user_id
+    device_id = auth.device_id
     ACTIVE_CONNECTIONS.setdefault(user_id, set()).add(websocket)
-    logger.info(f"[WS] 连接建立: user={user_id}")
+    logger.info(f"[WS] 连接建立: user={user_id}, device={device_id}")
 
     try:
         while True:
@@ -639,7 +698,7 @@ async def websocket_chat(websocket: WebSocket, token: str = Query(default="")):
 
             await send_error(user_id, "UNKNOWN_TYPE", f"未知的消息类型: {msg_type}", request_id)
     except WebSocketDisconnect:
-        logger.info(f"[WS] 连接断开: user={user_id}")
+        logger.info(f"[WS] 连接断开: user={user_id}, device={device_id}")
     except Exception as e:
         logger.exception(f"[WS] 连接异常: {e}")
     finally:
@@ -784,14 +843,14 @@ async def greeting_scheduler():
                 triggered_morning = today_str
                 delay = random.randint(0, 180 * 60)
                 logger.info(f"[问候] 早安已安排，{delay // 60} 分钟后发送")
-                asyncio.create_task(_delayed_greeting(APP_USER_ID, "morning", delay))
+                asyncio.create_task(_delayed_greeting(DEFAULT_USER_ID, "morning", delay))
 
             # 晚安窗口：23:00 触发，随机延迟 0~120 分钟
             if hour == 23 and minute == 0 and triggered_night != today_str:
                 triggered_night = today_str
                 delay = random.randint(0, 120 * 60)
                 logger.info(f"[问候] 晚安已安排，{delay // 60} 分钟后发送")
-                asyncio.create_task(_delayed_greeting(APP_USER_ID, "night", delay))
+                asyncio.create_task(_delayed_greeting(DEFAULT_USER_ID, "night", delay))
 
         except Exception as e:
             logger.exception(f"[问候] 调度器异常: {e}")
@@ -841,7 +900,7 @@ async def history_separator_scheduler():
             hour, minute = beijing_now.hour, beijing_now.minute
 
             if hour == 6 and minute == 0 and triggered_date != today_str:
-                user_id = APP_USER_ID
+                user_id = DEFAULT_USER_ID
                 user_last = state.last_activity.get(user_id)
 
                 # 如果用户 30 分钟内有活动，延迟 30 分钟后重试
@@ -873,4 +932,3 @@ if __name__ == "__main__":
     host = os.getenv("BOT_WS_HOST", "0.0.0.0")
     port = int(os.getenv("BOT_WS_PORT", "8001"))
     uvicorn.run("ws_api:app", host=host, port=port, reload=False)
-

@@ -30,7 +30,8 @@ class AuthRepository @Inject constructor(
      */
     suspend fun login(username: String, password: String): Result<Unit> {
         return runCatching {
-            val response = authApi.login(LoginRequest(username, password))
+            val deviceId = tokenManager.getOrCreateDeviceId()
+            val response = authApi.login(LoginRequest(username, password, deviceId))
             tokenManager.saveTokens(response.accessToken, response.refreshToken)
         }
     }

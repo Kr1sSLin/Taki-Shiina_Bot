@@ -8,6 +8,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -64,6 +65,19 @@ class TokenManager @Inject constructor(
     fun getRefreshToken(): String? = prefs.getString(KEY_REFRESH_TOKEN, null)
 
     /**
+     * 获取或生成设备ID（用于设备维度鉴权）
+     */
+    fun getOrCreateDeviceId(): String {
+        val existing = prefs.getString(KEY_DEVICE_ID, null)
+        if (!existing.isNullOrBlank()) {
+            return existing
+        }
+        val newId = "device_${UUID.randomUUID()}"
+        prefs.edit().putString(KEY_DEVICE_ID, newId).apply()
+        return newId
+    }
+
+    /**
      * 保存 token 对（登录或刷新成功后调用）
      */
     fun saveTokens(accessToken: String, refreshToken: String) {
@@ -93,5 +107,6 @@ class TokenManager @Inject constructor(
     companion object {
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_REFRESH_TOKEN = "refresh_token"
+        private const val KEY_DEVICE_ID = "device_id"
     }
 }
