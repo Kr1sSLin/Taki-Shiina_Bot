@@ -11,7 +11,7 @@ interface AuthApi {
     suspend fun refreshToken(@Body request: RefreshTokenRequest): TokenResponse
 }
 
-data class LoginRequest(val username: String, val password: String)
+data class LoginRequest(val username: String, val password: String, val deviceId: String? = null)
 
 data class RefreshTokenRequest(val refreshToken: String)
 

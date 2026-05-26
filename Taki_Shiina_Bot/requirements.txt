@@ -9,3 +9,4 @@ reportlab
 fastapi
 uvicorn[standard]
 websockets
+cryptography

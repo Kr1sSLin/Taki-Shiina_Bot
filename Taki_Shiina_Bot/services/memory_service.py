@@ -1,7 +1,8 @@
 import datetime
-import json
 import logging
 import os
+
+from secure_storage import SecureJsonStore
 
 
 class MemoryService:
@@ -9,24 +10,23 @@ class MemoryService:
         self.logger = logging.getLogger(__name__)
         self.db_file = os.path.join(base_dir, "user_memories.json")
         self.data = {}
+        self.store = SecureJsonStore(self.db_file, self.logger)
         self.load()
 
     def load(self):
-        if os.path.exists(self.db_file):
-            try:
-                with open(self.db_file, "r", encoding="utf-8") as f:
-                    self.data = json.load(f)
-            except Exception as e:
-                self.logger.error(f"无法读取记忆文件: {e}")
-                self.data = {}
-        else:
+        if not os.path.exists(self.db_file):
             self.data = {}
             self.save()
+            return
+        try:
+            self.data = self.store.load({})
+        except Exception as e:
+            self.logger.error(f"无法读取记忆文件: {e}")
+            self.data = {}
 
     def save(self):
         try:
-            with open(self.db_file, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=4)
+            self.store.save(self.data)
         except Exception as e:
             self.logger.error(f"无法保存记忆文件: {e}")
 

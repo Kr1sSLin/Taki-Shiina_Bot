@@ -91,7 +91,10 @@ OPENWEATHER_API_KEY=your_openweather_api_key
 MY_LAT=your_latitude
 MY_LON=your_longitude
 MONITOR_BOT_TOKEN=your_monitor_bot_token
+DATA_ENC_KEY=your_base64_or_hex_key
 ```
+
+生产建议使用反向代理终止 TLS，服务仅绑定 `127.0.0.1`，并透传 `Authorization` 与 `Sec-WebSocket-Protocol` 头。
 
 ### 依赖安装
 ```bash
