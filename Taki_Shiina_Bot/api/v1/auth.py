@@ -6,8 +6,8 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from auth_utils import create_access_token, parse_device_tokens, verify_password
-from services.auth_store import DeviceLimitError, InvalidTokenError, RefreshTokenStore
+from ...auth_utils import create_access_token, parse_device_tokens, verify_password
+from ...services.auth_store import DeviceLimitError, InvalidTokenError, RefreshTokenStore
 
 router = APIRouter()
 
