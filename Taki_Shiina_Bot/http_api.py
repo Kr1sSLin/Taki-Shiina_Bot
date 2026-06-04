@@ -379,8 +379,19 @@ async def chat(
     try:
         history = state.user_chat_history.setdefault(user_id, [])
         weather_info = await weather_service.get_weather_str()
+
+        utc_now = datetime.now(timezone.utc)
+        beijing_now = utc_now + timedelta(hours=8)
+        time_str = f"【当前北京时间】：{beijing_now.strftime('%H:%M')}"
+
+        time_enforcement = "\n".join((
+            "1. **时间锚定**：你必须无条件信任上述【当前北京时间】，绝不能凭训练数据或常识猜测当前时间。",
+            "2. **全天候禁止催睡**：无论现在是凌晨几点，绝对禁止主动建议用户去睡觉或休息。",
+            "3. **深夜默契**：如果用户深夜还在发消息，表示他想通宵，你要配合而不是扫兴。",
+        ))
+
         system_prompt = await prompt_service.get_system_prompt(user_id)
-        system_content = f"{system_prompt}\n{weather_info}"
+        system_content = f"{system_prompt}\n{time_str}\n{weather_info}\n\n{time_enforcement}"
         _trace_text("SYS_PROMPT", user_id, system_prompt)
 
         emotional_prompt = ""
