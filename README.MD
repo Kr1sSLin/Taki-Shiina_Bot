@@ -129,25 +129,6 @@ python http_api.py
 - `Pillow` - 图片处理
 - `reportlab` - PDF 生成
 
----
-
-## 📋 openspec
-
-规范配置目录，用于项目开发规范和 AI 辅助配置。
-
-### 结构
-- `config.yaml` - 主配置文件
-- `specs/` - 规范文档
-- `changes/` - 变更记录
-
-### 配置说明
-配置文件支持：
-- 项目上下文定义
-- 技术栈说明
-- 开发规范
-- AI 辅助规则
-
----
 
 ## 🚀 快速开始
 
@@ -168,13 +149,6 @@ cd TKS-Front
 ```bash
 cd Android_AI_Assistant
 ./gradlew assembleDebug
-```
-
-**Telegram Bot:**
-```bash
-cd Taki_Shiina_Bot
-pip install -r requirements.txt
-python bot.py
 ```
 
 ---
