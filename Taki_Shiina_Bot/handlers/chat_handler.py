@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import os
 import random
 import re
 import uuid
@@ -70,7 +71,7 @@ def create_chat_handler(
             2. 必须是关于【用户】的客观事实。
             """
             summary_res = await client.chat.completions.create(
-                model="deepseek-chat",
+                model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
                 messages=[
                     {"role": "system", "content": ex_prompt},
                     {
@@ -168,7 +169,7 @@ def create_chat_handler(
             messages.append({"role": "user", "content": full_user_text + force_instruction})
 
             response = await client.chat.completions.create(
-                model="deepseek-chat", messages=messages, temperature=0.75
+                model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"), messages=messages, temperature=0.75
             )
             raw_reply = response.choices[0].message.content
 

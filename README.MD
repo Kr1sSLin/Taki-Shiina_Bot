@@ -86,6 +86,7 @@ cd Android_AI_Assistant
 TELEGRAM_TOKEN=your_telegram_bot_token
 OWNER_ID=your_telegram_user_id
 DEEPSEEK_API_KEY=your_deepseek_api_key
+DEEPSEEK_MODEL=deepseek-v4-pro  # 可选，默认 deepseek-v4-pro，可改为 deepseek-v4-flash
 GOOGLE_API_KEY=your_google_api_key
 OPENWEATHER_API_KEY=your_openweather_api_key
 MY_LAT=your_latitude

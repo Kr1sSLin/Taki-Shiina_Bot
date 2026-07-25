@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import os
 import random
 from datetime import timedelta, timezone
 
@@ -141,7 +142,7 @@ def create_active_greeting_job(
 
         try:
             response = await client.chat.completions.create(
-                model="deepseek-chat",
+                model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
                 messages=[
                     {
                         "role": "system",

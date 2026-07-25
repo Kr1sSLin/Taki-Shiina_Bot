@@ -255,7 +255,7 @@ async def extract_user_facts(user_id: str, message: str):
 
     try:
         resp = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
             messages=[{"role": "user", "content": extraction_prompt}],
             temperature=0.3,
         )
@@ -449,7 +449,7 @@ async def process_buffered_messages(user_id: str):
         else:
             response = await asyncio.wait_for(
                 client.chat.completions.create(
-                    model="deepseek-chat",
+                    model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
                     messages=messages,
                     temperature=0.75,
                     stream=True,
@@ -486,7 +486,7 @@ async def process_buffered_messages(user_id: str):
                 }
             )
             retry_resp = await client.chat.completions.create(
-                model="deepseek-chat",
+                model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
                 messages=dedupe_messages,
                 temperature=1.0,
             )
@@ -791,7 +791,7 @@ async def send_greeting(user_id: str, scenario_type: str):
     try:
         system_prompt = await prompt_service.get_system_prompt(user_id)
         response = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
             messages=[
                 {"role": "system", "content": f"{system_prompt}\n\n🎯 当前任务: {final_instruction}"}
             ],

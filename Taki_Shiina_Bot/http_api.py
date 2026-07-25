@@ -151,7 +151,7 @@ async def extract_user_facts(user_id: str, message: str):
     )
     try:
         resp = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
             messages=[{"role": "user", "content": extraction_prompt}],
             temperature=0.3,
         )
@@ -426,7 +426,7 @@ async def chat(
         messages.append({"role": "user", "content": message_text})
 
         response = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
             messages=messages,
             temperature=0.75,
         )
@@ -447,7 +447,7 @@ async def chat(
                 }
             )
             retry_response = await client.chat.completions.create(
-                model="deepseek-chat",
+                model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
                 messages=dedupe_messages,
                 temperature=1.0,
             )
@@ -481,7 +481,7 @@ async def chat(
         data = {
             "conversationId": payload.conversationId or f"conv_{user_id}",
             "reply": final_reply,
-            "model": "deepseek-chat",
+            "model": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
             "usage": usage_data,
             "debounceWindowSec": calc_debounce_window(user_id),
         }
