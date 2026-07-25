@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import os
 from datetime import timedelta, timezone
 
 
@@ -11,6 +12,15 @@ class PromptService:
         self.scene_cache = scene_cache
         self.user_memo = user_memo
         self.logger = logger
+
+    async def _notify_safe(self, text):
+        """兼容同步/异步 notify_owner 回调,且通知失败不影响主流程。"""
+        try:
+            result = self.notify_owner(text)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as exc:
+            self.logger.warning(f"⚠️ 通知 owner 失败(已忽略): {exc}")
 
     async def generate_scene(self, user_id):
         utc_now = datetime.datetime.now(timezone.utc)
@@ -46,18 +56,18 @@ class PromptService:
 
         try:
             response = await self.client.chat.completions.create(
-                model="deepseek-chat",
+                model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
                 messages=[{"role": "user", "content": scene_gen_prompt}],
                 temperature=1.0,
                 max_tokens=200,
             )
             scene_text = response.choices[0].message.content.strip()
             self.logger.info(f"🎲 [场景生成] {user_id} → \n{scene_text}")
-            asyncio.create_task(self.notify_owner(f"🎭 [场景切换]\n\n{scene_text}"))
+            asyncio.create_task(self._notify_safe(f"🎭 [场景切换]\n\n{scene_text}"))
             return scene_text
         except Exception as e:
             self.logger.error(f"❌ 场景生成失败，使用默认状态: {e}")
-            asyncio.create_task(self.notify_owner(f"⚠️ [场景生成失败] 已回退默认状态\n错误：{e}"))
+            asyncio.create_task(self._notify_safe(f"⚠️ [场景生成失败] 已回退默认状态\n错误：{e}"))
             return "【立希当前状态】：\n- 情绪底色：心情平稳，但懒得多说话。\n- 正在做：坐着发呆，手机放在旁边。\n⚠️ 上述状态会影响语气和节奏，但不改变对 Kris 的核心态度。不要直接说出状态，让它自然流露。"
 
     async def get_random_scene(self, user_id):
