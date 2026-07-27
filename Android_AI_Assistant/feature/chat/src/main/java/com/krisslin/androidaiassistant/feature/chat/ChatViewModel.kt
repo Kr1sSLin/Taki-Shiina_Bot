@@ -131,8 +131,6 @@ class ChatViewModel @Inject constructor(
 
     // 当前会话 ID
     private val sessionId: String = "default_session"
-    private val syncUserId: String = "krisslin_main"
-    private val acceptedUserIds: Set<String> = setOf("krisslin_main", "default-user")
 
     // 流式消息内容缓存: requestId -> 累积内容
     private val streamingContentCache = ConcurrentHashMap<String, StringBuilder>()
@@ -169,6 +167,8 @@ class ChatViewModel @Inject constructor(
         initializeFactSyncCursor()
         observeAuthState()
         observeWebSocketEvents()
+        // 进入聊天页即主动补拉历史，不再只依赖 Connected 事件（该事件可能先于订阅者发出而丢失）
+        syncHistoryFromServer()
     }
 
     /**
@@ -207,7 +207,8 @@ class ChatViewModel @Inject constructor(
 
     private fun initializeFactSyncCursor() {
         viewModelScope.launch {
-            lastSyncedFactTimestampMs = userFactRepository.getLatestTimestamp(syncUserId)
+            // 本地库仅保存当前登录用户的事实，直接取全局最新时间戳
+            lastSyncedFactTimestampMs = userFactRepository.getLatestTimestamp()
         }
     }
 
@@ -280,6 +281,9 @@ class ChatViewModel @Inject constructor(
                 }
                 is IncomingMessage.MemoryFactCreated -> {
                     handleMemoryFactCreated(message)
+                }
+                is IncomingMessage.UserEcho -> {
+                    handleUserEcho(message)
                 }
                 is IncomingMessage.Typing -> {
                     // 可选：显示"对方正在输入..."
@@ -474,6 +478,27 @@ class ChatViewModel @Inject constructor(
         botNotificationRepository.addError(
             errorCode = payload.errorCode,
             message = payload.message,
+            timestamp = payload.timestamp
+        )
+    }
+
+    /**
+     * 处理多设备回声：本用户从其他设备发出的消息实时落库。
+     * 发送端本地已存在同 requestId 的消息，saveExternalMessage 内部按 id 跳过，天然幂等。
+     */
+    private suspend fun handleUserEcho(message: IncomingMessage.UserEcho) {
+        val requestId = message.requestId ?: return
+        val payload = message.payload
+        val content = when {
+            payload.content.isNotBlank() -> payload.content
+            payload.imageCount > 0 -> "[图片×${payload.imageCount}]"
+            else -> return
+        }
+        chatRepository.saveExternalMessage(
+            messageId = requestId,
+            sessionId = sessionId,
+            role = MessageRole.USER,
+            content = content,
             timestamp = payload.timestamp
         )
     }
@@ -710,8 +735,9 @@ class ChatViewModel @Inject constructor(
                     ?.getAsJsonArray("items")
                     ?: JsonArray()
                 applyHistoryItems(items)
-            }.onFailure {
-                // 历史补拉失败不影响实时聊天
+            }.onFailure { e ->
+                // 历史补拉失败不影响实时聊天，但必须可见（此前静默吞噬导致排查困难）
+                android.util.Log.w("ChatViewModel", "history sync failed: ${e.message}", e)
                 if (force) {
                     manualReconnectPendingFullSync = true
                 }
@@ -748,8 +774,9 @@ class ChatViewModel @Inject constructor(
                     ?.getAsJsonArray("items")
                     ?: JsonArray()
                 applyMemoryFactItems(items)
-            }.onFailure {
-                // 记忆补拉失败不影响聊天主流程
+            }.onFailure { e ->
+                // 记忆补拉失败不影响聊天主流程，但同样记录日志
+                android.util.Log.w("ChatViewModel", "memory facts sync failed: ${e.message}", e)
             }
         }
     }
@@ -758,8 +785,7 @@ class ChatViewModel @Inject constructor(
         for (i in 0 until items.size()) {
             runCatching {
                 val item = items[i].asJsonObjectOrNull() ?: return@runCatching
-                val userId = item.getStringOrNull("userId")
-                if (userId != null && userId !in acceptedUserIds) return@runCatching
+                // 服务端已按 auth.user_id 过滤，客户端不再做 userId 白名单校验
                 val messageId = item.getStringOrNull("messageId") ?: return@runCatching
                 val role = item.getStringOrNull("role") ?: return@runCatching
                 val content = item.getStringOrNull("content") ?: return@runCatching
@@ -810,7 +836,6 @@ class ChatViewModel @Inject constructor(
                 val item = items[i].asJsonObjectOrNull() ?: return@runCatching
                 val factId = item.getStringOrNull("factId") ?: return@runCatching
                 val userId = item.getStringOrNull("userId") ?: return@runCatching
-                if (userId !in acceptedUserIds) return@runCatching
                 val fact = item.getStringOrNull("fact") ?: return@runCatching
                 val timestamp = item.getLongOrNull("timestamp") ?: return@runCatching
                 facts += UserFactEntity(

@@ -20,4 +20,7 @@ interface UserFactDao {
 
     @Query("SELECT COALESCE(MAX(timestamp), 0) FROM user_facts WHERE user_id = :userId")
     suspend fun getLatestTimestamp(userId: String): Long
+
+    @Query("SELECT COALESCE(MAX(timestamp), 0) FROM user_facts")
+    suspend fun getLatestTimestampAny(): Long
 }

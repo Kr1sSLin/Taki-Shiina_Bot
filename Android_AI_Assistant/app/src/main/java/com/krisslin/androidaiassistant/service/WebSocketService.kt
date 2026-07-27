@@ -11,6 +11,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.google.gson.Gson
 import com.krisslin.androidaiassistant.core.network.auth.AuthRepository
+import com.krisslin.androidaiassistant.core.network.auth.TokenState
 import com.krisslin.androidaiassistant.core.network.ws.BotWebSocketClient
 import com.krisslin.androidaiassistant.core.network.ws.IncomingMessage
 import com.krisslin.androidaiassistant.core.network.ws.IncomingMessageParser
@@ -55,7 +56,7 @@ class WebSocketService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
         appNotifier.ensureChannels()
-        connectWebSocket()
+        observeAuthState()
         observeMessages()
     }
 
@@ -81,18 +82,37 @@ class WebSocketService : Service() {
         webSocketClient.disconnect()
     }
 
-    private fun connectWebSocket() {
-        val token = authRepository.getAccessToken() ?: ""
-        webSocketClient.connect(token)
+    private fun observeAuthState() {
+        serviceScope.launch {
+            authRepository.tokenState.collect { state ->
+                when (state) {
+                    // 登录/刷新成功：用最新 token 建立连接（StateFlow 仅在 token 变化时触发）
+                    is TokenState.Authenticated -> webSocketClient.connect(state.accessToken)
+                    // 未登录/登出：断开并停止一切重连
+                    is TokenState.Unauthenticated -> webSocketClient.disconnect()
+                }
+            }
+        }
     }
 
     private fun observeMessages() {
         serviceScope.launch {
-            webSocketClient.events.collect { event -> 
-                if (event is WebSocketEvent.Message) {
-                    handleMessage(event.text)
+            webSocketClient.events.collect { event ->
+                when (event) {
+                    is WebSocketEvent.Message -> handleMessage(event.text)
+                    is WebSocketEvent.Failure -> handleFailure(event.statusCode)
+                    else -> { /* Connected / Disconnected → 无需处理 */ }
                 }
             }
+        }
+    }
+
+    private fun handleFailure(statusCode: Int?) {
+        if (statusCode != 401 && statusCode != 403) return
+        serviceScope.launch {
+            // 握手鉴权失败：刷新 token。成功后 tokenState 观察者自动用新 token 重连；
+            // 刷新失败则 tokens 被清除 → Unauthenticated → 观察者断开连接，UI 层引导重新登录。
+            authRepository.refreshToken()
         }
     }
 
@@ -105,14 +125,22 @@ class WebSocketService : Service() {
                 if (msg.payload.done) {
                     val content = msg.payload.finalContent ?: ""
                     if (content.isNotBlank()) {
-                        appNotifier.showChatMessage(content)
+                        if (msg.payload.messageKind == "greeting") {
+                            appNotifier.showGreeting(msg.payload.greetingScenario, content)
+                        } else {
+                            appNotifier.showChatMessage(content)
+                        }
                     }
                 }
             }
             is IncomingMessage.BotError -> {
                 appNotifier.showBotError(msg.payload.errorCode, msg.payload.message)
             }
-            else -> { /* Typing / AuthExpired / Unknown → 不推通知 */ }
+            is IncomingMessage.AuthExpired -> {
+                // 服务端明确告知 token 失效：刷新后由 tokenState 观察者重连
+                serviceScope.launch { authRepository.refreshToken() }
+            }
+            else -> { /* Typing / Unknown → 不推通知 */ }
         }
     }
 

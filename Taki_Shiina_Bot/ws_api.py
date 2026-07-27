@@ -629,7 +629,25 @@ async def websocket_chat(websocket: WebSocket):
     token, subprotocol = _extract_ws_auth(websocket)
     auth = _resolve_ws_context(token)
     if not auth:
-        await websocket.close(code=4011, reason="Invalid token")
+        # 先 accept 再发送 auth.expired，让客户端区分「token 过期/非法」与网络层失败，
+        # 避免 accept 前 close 被呈现为不透明的 HTTP 403 握手错误。
+        if subprotocol:
+            await websocket.accept(subprotocol=subprotocol)
+        else:
+            await websocket.accept()
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "auth.expired",
+                    "payload": {
+                        "reason": "invalid_token",
+                        "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+                    },
+                },
+                ensure_ascii=False,
+            )
+        )
+        await websocket.close(code=4001, reason="Invalid token")
         logger.warning("[WS] 连接被拒绝: token 无效")
         return
 
@@ -696,6 +714,20 @@ async def websocket_chat(websocket: WebSocket):
                         continue
                 message_buffer.setdefault(user_id, []).append({"requestId": request_id, "content": content, "images": parsed_images})
                 last_message_at[user_id] = datetime.now(timezone.utc)
+                # 多设备回声：该用户的其他在线设备实时看到这条发言；发送端按 requestId 幂等去重
+                await broadcast_json(
+                    user_id,
+                    {
+                        "type": "chat.message.echo",
+                        "requestId": request_id,
+                        "payload": {
+                            "content": content,
+                            "imageCount": len(parsed_images),
+                            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+                            "originDeviceId": device_id,
+                        },
+                    },
+                )
                 await broadcast_json(
                     user_id,
                     {
@@ -814,7 +846,7 @@ async def send_greeting(user_id: str, scenario_type: str):
             [{"messageId": greeting_id, "userId": user_id, "role": "bot", "content": final_reply, "timestamp": now_ms}]
         )
 
-        # 推送给 app（与普通回复格式一致）
+        # 推送给 app（与普通回复格式一致，附加问候标记字段，旧版 app 会忽略未知字段）
         await broadcast_json(
             user_id,
             {
@@ -827,6 +859,8 @@ async def send_greeting(user_id: str, scenario_type: str):
                     "finalContent": final_reply,
                     "timestamp": now_ms,
                     "requestIds": [greeting_id],
+                    "messageKind": "greeting",
+                    "greetingScenario": scenario_type,
                 },
             },
         )

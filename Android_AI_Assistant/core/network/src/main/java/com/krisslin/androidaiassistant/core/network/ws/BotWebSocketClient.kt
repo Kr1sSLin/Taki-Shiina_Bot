@@ -13,5 +13,5 @@ sealed interface WebSocketEvent {
     data object Connected : WebSocketEvent
     data object Disconnected : WebSocketEvent
     data class Message(val text: String) : WebSocketEvent
-    data class Failure(val throwable: Throwable) : WebSocketEvent
+    data class Failure(val throwable: Throwable, val statusCode: Int? = null) : WebSocketEvent
 }
