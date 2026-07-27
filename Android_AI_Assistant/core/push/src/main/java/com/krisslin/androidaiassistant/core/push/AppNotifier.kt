@@ -23,6 +23,7 @@ class AppNotifier @Inject constructor(
     companion object {
         const val CHANNEL_CHAT = "chat_messages"
         const val CHANNEL_REMINDER = "chat_reminders"
+        const val CHANNEL_GREETING = "greeting_messages"
     }
 
     fun ensureChannels() {
@@ -46,8 +47,18 @@ class AppNotifier @Inject constructor(
             enableVibration(true)
             vibrationPattern = longArrayOf(0, 300, 200, 300)
         }
+        val greeting = NotificationChannel(
+            CHANNEL_GREETING,
+            "问候通知",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0, 300, 200, 300)
+        }
         manager.createNotificationChannel(chat)
         manager.createNotificationChannel(reminder)
+        manager.createNotificationChannel(greeting)
     }
 
     private fun launchIntent(): PendingIntent {
@@ -105,6 +116,30 @@ class AppNotifier @Inject constructor(
         val notification = NotificationCompat.Builder(context, CHANNEL_CHAT)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle("立希")
+            .setContentText(content.take(50))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setContentIntent(pi)
+            .setFullScreenIntent(pi, true)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(context).notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
+    }
+
+    fun showGreeting(scenario: String?, content: String) {
+        if (!canPostNotifications()) return
+        val pi = launchIntent()
+        val title = when (scenario) {
+            "morning" -> "立希的早安"
+            "night" -> "立希的深夜问候"
+            else -> "立希的问候"
+        }
+        val notification = NotificationCompat.Builder(context, CHANNEL_GREETING)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle(title)
             .setContentText(content.take(50))
             .setStyle(NotificationCompat.BigTextStyle().bigText(content))
             .setPriority(NotificationCompat.PRIORITY_HIGH)

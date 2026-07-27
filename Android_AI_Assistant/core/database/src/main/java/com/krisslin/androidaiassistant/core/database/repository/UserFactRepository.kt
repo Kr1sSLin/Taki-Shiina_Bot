@@ -18,4 +18,6 @@ class UserFactRepository @Inject constructor(
     }
 
     suspend fun getLatestTimestamp(userId: String): Long = userFactDao.getLatestTimestamp(userId)
+
+    suspend fun getLatestTimestamp(): Long = userFactDao.getLatestTimestampAny()
 }

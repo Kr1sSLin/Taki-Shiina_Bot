@@ -112,8 +112,12 @@ class OkHttpBotWebSocketClient @Inject constructor(
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             heartbeatJob?.cancel()
-            _events.tryEmit(WebSocketEvent.Failure(t))
-            scheduleReconnect()
+            val statusCode = response?.code
+            _events.tryEmit(WebSocketEvent.Failure(t, statusCode))
+            // 401/403 为鉴权失败：陈旧 token 重连必失败，交由上层刷新 token 后显式重连
+            if (statusCode != 401 && statusCode != 403) {
+                scheduleReconnect()
+            }
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {

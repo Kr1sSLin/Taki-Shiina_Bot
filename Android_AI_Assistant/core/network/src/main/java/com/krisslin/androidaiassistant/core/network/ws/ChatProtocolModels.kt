@@ -43,13 +43,22 @@ data class ReplyStreamPayload(
     val modelProvider: String? = null,
     val timerInstruction: TimerInstruction? = null,
     val requestIds: List<String>? = null,
-    val timestamp: Long? = null
+    val timestamp: Long? = null,
+    val messageKind: String? = null,
+    val greetingScenario: String? = null
 )
 
 data class BotErrorPayload(
     val errorCode: String,
     val message: String,
     val requestIds: List<String> = emptyList(),
+    val timestamp: Long
+)
+
+data class UserEchoPayload(
+    val content: String = "",
+    val imageCount: Int = 0,
+    val originDeviceId: String? = null,
     val timestamp: Long
 )
 
@@ -71,6 +80,7 @@ sealed interface IncomingMessage {
     data class ReplyStream(val requestId: String?, val payload: ReplyStreamPayload) : IncomingMessage
     data class BotError(val requestId: String?, val payload: BotErrorPayload) : IncomingMessage
     data class MemoryFactCreated(val payload: MemoryFactPayload) : IncomingMessage
+    data class UserEcho(val requestId: String?, val payload: UserEchoPayload) : IncomingMessage
     data object Typing : IncomingMessage
     data object AuthExpired : IncomingMessage
     data class Unknown(val type: String, val raw: String) : IncomingMessage
@@ -115,6 +125,15 @@ class IncomingMessageParser(
                     val payloadJson = gson.toJsonTree(it.payload)
                     IncomingMessage.MemoryFactCreated(
                         payload = gson.fromJson(payloadJson, MemoryFactPayload::class.java)
+                    )
+                }
+
+            "chat.message.echo" -> gson.fromJson(raw, IncomingEnvelope::class.java)
+                .let {
+                    val payloadJson = gson.toJsonTree(it.payload)
+                    IncomingMessage.UserEcho(
+                        requestId = it.requestId,
+                        payload = gson.fromJson(payloadJson, UserEchoPayload::class.java)
                     )
                 }
 

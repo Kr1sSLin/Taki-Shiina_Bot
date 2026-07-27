@@ -23,6 +23,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.content.ContextCompat
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.compose.runtime.collectAsState
+import com.krisslin.androidaiassistant.core.network.auth.TokenState
+import com.krisslin.androidaiassistant.feature.auth.AuthRoute
 import com.krisslin.androidaiassistant.feature.chat.ChatRoute
 import com.krisslin.androidaiassistant.core.ui.theme.AppTheme
 import com.krisslin.androidaiassistant.core.ui.theme.ThemeMode
@@ -101,10 +105,17 @@ private fun AppRoot(
     isDarkMode: Boolean,
     onToggleTheme: () -> Unit
 ) {
-    ChatRoute(
-        isDarkMode = isDarkMode,
-        onToggleTheme = onToggleTheme
-    )
+    val mainViewModel: MainViewModel = hiltViewModel()
+    val tokenState by mainViewModel.tokenState.collectAsState()
+
+    when (tokenState) {
+        // 未登录/会话失效：展示登录页（登录成功后 tokenState 变化，自动切回聊天页）
+        is TokenState.Unauthenticated -> AuthRoute()
+        is TokenState.Authenticated -> ChatRoute(
+            isDarkMode = isDarkMode,
+            onToggleTheme = onToggleTheme
+        )
+    }
     NotificationGuideDialog()
 }
 
