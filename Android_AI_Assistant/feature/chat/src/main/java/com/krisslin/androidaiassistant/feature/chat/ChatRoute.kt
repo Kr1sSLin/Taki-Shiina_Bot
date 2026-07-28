@@ -57,12 +57,18 @@ import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material3.Icon
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.vector.ImageVector
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -73,13 +79,13 @@ fun ChatRoute(
     viewModel: ChatViewModel = hiltViewModel(),
     isDarkMode: Boolean = false,
     onToggleTheme: () -> Unit = {},
-    onNavigateToLogin: () -> Unit = {}
+    onNavigateToLogin: () -> Unit = {},
+    onNavigateToSettings: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
-    var showClearConfirm by remember { mutableStateOf(false) }
     var showImagePreview by remember { mutableStateOf<String?>(null) }
     var showAttachMenu by remember { mutableStateOf(false) }
     val tempCameraUri = remember { mutableStateOf<Uri?>(null) }
@@ -135,16 +141,19 @@ fun ChatRoute(
         topBar = {
             Column {
                 TopAppBar(
-                    title = { Text("对话") },
+                    title = { Text("Taki Shiina") },
                     actions = {
-                        TextButton(onClick = onToggleTheme) {
+                        IconButton(onClick = onToggleTheme) {
                             Icon(
                                 imageVector = if (isDarkMode) Icons.Filled.LightMode else Icons.Filled.DarkMode,
                                 contentDescription = if (isDarkMode) "切换日间模式" else "切换夜间模式"
                             )
                         }
-                        TextButton(onClick = { showClearConfirm = true }) {
-                            Text("清空会话")
+                        IconButton(onClick = onNavigateToSettings) {
+                            Icon(
+                                imageVector = Icons.Filled.Settings,
+                                contentDescription = "设置"
+                            )
                         }
                     }
                 )
@@ -200,90 +209,96 @@ fun ChatRoute(
                 )
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = state.input,
-                    onValueChange = viewModel::onInputChange,
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("输入消息") },
-                    singleLine = true,
-                    enabled = state.connectionStatus == ConnectionStatus.CONNECTED
-                )
-                Button(
-                    onClick = viewModel::sendText,
-                    enabled = (state.input.isNotBlank() || state.selectedImages.isNotEmpty()) &&
-                        state.connectionStatus == ConnectionStatus.CONNECTED
+            if (showAttachMenu) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    tonalElevation = 2.dp,
+                    shadowElevation = 8.dp,
+                    modifier = Modifier.align(Alignment.Start)
                 ) {
-                    Text("发送")
-                }
-                Box {
-                    TextButton(
-                        onClick = { showAttachMenu = true },
-                        enabled = state.connectionStatus == ConnectionStatus.CONNECTED && state.selectedImages.size < 3
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(20.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.Add,
-                            contentDescription = "添加图片"
+                        AttachMenuButton(
+                            icon = Icons.Outlined.PhotoCamera,
+                            label = "相机",
+                            onClick = {
+                                showAttachMenu = false
+                                if (state.selectedImages.size < 3) {
+                                    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                                    if (granted) {
+                                        createTempImageUri(context)?.also {
+                                            tempCameraUri.value = it
+                                            takePictureLauncher.launch(it)
+                                        }
+                                    } else {
+                                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                    }
+                                }
+                            }
                         )
-                    }
-                    DropdownMenu(
-                        expanded = showAttachMenu,
-                        onDismissRequest = { showAttachMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("相册") },
+                        AttachMenuButton(
+                            icon = Icons.Outlined.Image,
+                            label = "相册",
                             onClick = {
                                 showAttachMenu = false
                                 pickImagesLauncher.launch("image/*")
                             }
                         )
-                        DropdownMenuItem(
-                            text = { Text("拍照") },
-                            onClick = {
-                                showAttachMenu = false
-                                if (state.selectedImages.size >= 3) return@DropdownMenuItem
-                                val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-                                if (granted) {
-                                    createTempImageUri(context)?.also {
-                                        tempCameraUri.value = it
-                                        takePictureLauncher.launch(it)
-                                    }
-                                } else {
-                                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                }
-                            }
-                        )
                     }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable(
+                            enabled = state.connectionStatus == ConnectionStatus.CONNECTED && state.selectedImages.size < 3
+                        ) { showAttachMenu = !showAttachMenu },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = "添加图片",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+                OutlinedTextField(
+                    value = state.input,
+                    onValueChange = viewModel::onInputChange,
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    enabled = state.connectionStatus == ConnectionStatus.CONNECTED
+                )
+                val sendEnabled = (state.input.isNotBlank() || state.selectedImages.isNotEmpty()) &&
+                    state.connectionStatus == ConnectionStatus.CONNECTED
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(if (sendEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable(enabled = sendEnabled, onClick = viewModel::sendText),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "发送",
+                        tint = if (sendEnabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .size(20.dp)
+                            .rotate(-45f)
+                    )
                 }
             }
         }
-    }
-
-    if (showClearConfirm) {
-        AlertDialog(
-            onDismissRequest = { showClearConfirm = false },
-            title = { Text("清空会话") },
-            text = { Text("仅清空本地聊天记录，不影响登录状态。是否继续？") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showClearConfirm = false
-                        viewModel.clearConversation()
-                    }
-                ) {
-                    Text("清空")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showClearConfirm = false }) {
-                    Text("取消")
-                }
-            }
-        )
     }
 
     showImagePreview?.let { uri ->
@@ -302,6 +317,38 @@ fun ChatRoute(
                     Text("关闭")
                 }
             }
+        )
+    }
+}
+
+@Composable
+private fun AttachMenuButton(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }

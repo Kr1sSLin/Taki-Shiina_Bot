@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonObject
+import com.krisslin.androidaiassistant.core.database.repository.ChatRepository
 import com.krisslin.androidaiassistant.core.network.api.ChatApi
 import com.krisslin.androidaiassistant.core.network.api.CityHttpRequest
 import com.krisslin.androidaiassistant.core.ui.theme.ThemeMode
@@ -26,7 +27,8 @@ data class SettingsUiState(
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val chatApi: ChatApi
+    private val chatApi: ChatApi,
+    private val chatRepository: ChatRepository
 ) : ViewModel() {
 
     private val themeStore by lazy { ThemePreferenceStore(context) }
@@ -90,14 +92,26 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun clearConversation() {
+        viewModelScope.launch {
+            runCatching { chatRepository.clearSession(DEFAULT_SESSION_ID) }
+                .onSuccess { _uiState.update { it.copy(message = "会话记录已清空") } }
+                .onFailure { e -> _uiState.update { it.copy(message = "清空失败: ${e.message}") } }
+        }
+    }
+
     private fun JsonObject.dataObject(): JsonObject? {
         val data = get("data") ?: return null
         return if (data.isJsonObject) data.asJsonObject else null
     }
 
-    private fun ThemeMode.label(): String = when (this) {
-        ThemeMode.SYSTEM -> "跟随系统"
-        ThemeMode.LIGHT -> "日间"
-        ThemeMode.DARK -> "夜间"
+    companion object {
+        private const val DEFAULT_SESSION_ID = "default_session"
     }
+}
+
+fun ThemeMode.label(): String = when (this) {
+    ThemeMode.SYSTEM -> "跟随系统"
+    ThemeMode.LIGHT -> "日间模式"
+    ThemeMode.DARK -> "夜间模式"
 }

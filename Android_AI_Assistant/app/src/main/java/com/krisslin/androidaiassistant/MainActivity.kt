@@ -24,13 +24,18 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.krisslin.androidaiassistant.core.network.auth.TokenState
 import com.krisslin.androidaiassistant.feature.auth.AuthRoute
 import com.krisslin.androidaiassistant.feature.chat.ChatRoute
 import com.krisslin.androidaiassistant.core.ui.theme.AppTheme
 import com.krisslin.androidaiassistant.core.ui.theme.ThemeMode
+import com.krisslin.androidaiassistant.feature.settings.SettingsRoute
 import com.krisslin.androidaiassistant.feature.settings.ThemePreferenceStore
+import com.krisslin.androidaiassistant.feature.settings.WeatherSettingsRoute
 import com.krisslin.androidaiassistant.service.WebSocketService
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -107,16 +112,44 @@ private fun AppRoot(
 ) {
     val mainViewModel: MainViewModel = hiltViewModel()
     val tokenState by mainViewModel.tokenState.collectAsState()
+    var mainPage by rememberSaveable { mutableStateOf(MainPage.CHAT) }
+
+    // 登出后重置回聊天页，避免重新登录落在设置页
+    LaunchedEffect(tokenState) {
+        if (tokenState is TokenState.Unauthenticated) mainPage = MainPage.CHAT
+    }
 
     when (tokenState) {
         // 未登录/会话失效：展示登录页（登录成功后 tokenState 变化，自动切回聊天页）
         is TokenState.Unauthenticated -> AuthRoute()
-        is TokenState.Authenticated -> ChatRoute(
-            isDarkMode = isDarkMode,
-            onToggleTheme = onToggleTheme
-        )
+        is TokenState.Authenticated -> when (mainPage) {
+            MainPage.CHAT -> ChatRoute(
+                isDarkMode = isDarkMode,
+                onToggleTheme = onToggleTheme,
+                onNavigateToSettings = { mainPage = MainPage.SETTINGS }
+            )
+            MainPage.SETTINGS -> {
+                BackHandler { mainPage = MainPage.CHAT }
+                SettingsRoute(
+                    onBack = { mainPage = MainPage.CHAT },
+                    onNavigateToWeather = { mainPage = MainPage.WEATHER_SETTINGS }
+                )
+            }
+            MainPage.WEATHER_SETTINGS -> {
+                BackHandler { mainPage = MainPage.SETTINGS }
+                WeatherSettingsRoute(
+                    onBack = { mainPage = MainPage.SETTINGS }
+                )
+            }
+        }
     }
     NotificationGuideDialog()
+}
+
+private object MainPage {
+    const val CHAT = "chat"
+    const val SETTINGS = "settings"
+    const val WEATHER_SETTINGS = "weather_settings"
 }
 
 @Composable
