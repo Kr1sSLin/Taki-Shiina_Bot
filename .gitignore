@@ -1,3 +1,18 @@
 /.codex
 /openspec
+
+# Android 构建产物（配合子项目 .gitignore，防止旧缓存被误提交）
 .gradle/
+.gradle-old/
+build.old/
+**/build.old/
+build/
+*.apk
+*.aab
+
+# IDE
+.idea/
+
+# 系统文件
+.DS_Store
+Thumbs.db
