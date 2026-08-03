@@ -1,27 +1,27 @@
 # TKS (Taki Shiina)
 
-TKS 项目仓库，包含 Android 客户端与 Python Bot 后端两个子项目：Android 应用通过 REST / WebSocket 接入后端，Telegram 用户则直接由 Bot 服务接管对话。
+TKS 项目仓库，包含 Android 客户端与 Python AI 后端两个子项目：Android 应用通过 REST / WebSocket 接入后端，获取智能对话、记忆与实时推送能力。
 
 ## 项目结构
 
 ```
 Taki-Shiina_Bot/
 ├── Android_AI_Assistant/    # Android AI 对话助手（Kotlin / Compose，多模块）
-└── Taki_Shiina_Bot/         # Python 后端（Telegram Bot + FastAPI / WebSocket 服务）
+└── Taki_Shiina_Bot/         # Python 后端（FastAPI / WebSocket AI 服务）
 ```
 
 ## 架构概览
 
 ```
 ┌──────────────────────┐   REST (8000) / WebSocket (8001)
-│ Android_AI_Assistant │ ──────────────────────────────┐
-└──────────────────────┘                               │
+│ Android_AI_Assistant │ ──────────────────────────────▶
+└──────────────────────┘
                                                        ▼
-┌──────────────┐   Bot API    ┌─────────────────────────────────┐    ┌────────────────────┐
-│ Telegram 用户 │ ───────────▶ │      Taki_Shiina_Bot (Python)   │ ─▶ │ DeepSeek / Gemini  │
-└──────────────┘              │  bot.py / main.py / http_api.py │    │ OpenWeather 等外部服务│
-                              │  ws_api.py（对话 / 记忆 / 定时任务）│    └────────────────────┘
-                              └─────────────────────────────────┘
+┌──────────────────────────────────┐   ┌─────────────────────┐
+│      Taki_Shiina_Bot (Python)    │──▶│ DeepSeek / Gemini   │
+│  main.py / http_api.py / ws_api  │   │ OpenWeather 等外部服务│
+│    （对话 / 记忆 / 定时任务）        │   └─────────────────────┘
+└──────────────────────────────────┘
 ```
 
 ---
@@ -71,11 +71,10 @@ cd Android_AI_Assistant
 
 ## 🤖 Taki_Shiina_Bot
 
-Python 后端服务，同时承载 Telegram Bot 与供 Android 客户端使用的 HTTP / WebSocket API。
+Python AI 后端服务，为 Android 客户端提供 REST / WebSocket 对话、认证与实时推送 API。
 
 ### 技术栈
 - **语言**: Python 3
-- **Bot 框架**: python-telegram-bot
 - **Web 框架**: FastAPI + Uvicorn（REST / WebSocket）
 - **AI 服务**: DeepSeek（OpenAI 兼容接口）、Google Gemini
 - **存储安全**: cryptography 加密存储（聊天记录 / 记忆数据落盘加密）
@@ -85,15 +84,14 @@ Python 后端服务，同时承载 Telegram Bot 与供 Android 客户端使用�
 - 💭 **记忆管理**: 用户记忆存储、检索与查询命令
 - 📸 **图片处理**: 图片识别与分析
 - 🌤️ **天气服务**: OpenWeather 实时天气，支持城市设置
-- ⏰ **定时任务**: 主动问候、整点场景更新、提醒、随机问候、启动通知
+- ⏰ **定时任务**: 定时场景更新与提醒调度
 - 🔐 **设备认证**: JWT 登录/刷新、设备白名单（最多 4 台）、密码 PBKDF2-SHA256 哈希
-- 🚨 **飞书告警**: `alert_sender.py` 在 Bot 异常时向飞书群发送告警（60 秒限流）
+- 🚨 **飞书告警**: `alert_sender.py` 在服务异常时向飞书群发送告警（60 秒限流）
 - 📡 **实时推送**: WebSocket 防抖合并、断线继续处理、在线实时推送
 
 ### 入口文件
 | 入口 | 说明 |
 |---|---|
-| `python bot.py` | Telegram Bot 主服务 |
 | `uvicorn` 加载 `main:app` | FastAPI 认证服务（`/api/v1` 下 health / auth 路由） |
 | `python http_api.py` | HTTP 对话 API（默认 `127.0.0.1:8000`，需 `BOT_HTTP_TOKEN`） |
 | `python ws_api.py` | WebSocket 对话 API（默认 `127.0.0.1:8001`，需 `BOT_WS_TOKEN`） |
@@ -105,7 +103,7 @@ Python 后端服务，同时承载 Telegram Bot 与供 Android 客户端使用�
 |---|---|
 | `api/v1/` | FastAPI 版本化路由（auth、health） |
 | `core/` | 配置与统一响应 |
-| `handlers/` | Telegram 消息处理器（对话、图片、记忆查询、城市设置） |
+| `handlers/` | 消息处理器（对话、图片、记忆查询、城市设置） |
 | `services/` | 业务服务层（记忆、历史、提示词、天气、认证存储） |
 | `jobs/` | 定时任务调度 |
 | `tests/` | 单元测试 |
@@ -116,10 +114,6 @@ Python 后端服务，同时承载 Telegram Bot 与供 Android 客户端使用�
 复制 `.env.example` 为 `.env` 并填写。关键变量：
 
 ```env
-# Telegram Bot
-TELEGRAM_TOKEN=your_telegram_bot_token
-OWNER_ID=your_telegram_user_id
-
 # AI 服务
 DEEPSEEK_API_KEY=your_deepseek_api_key
 GOOGLE_API_KEY=your_google_api_key
@@ -147,7 +141,7 @@ AUTH_JWT_SECRET=your_jwt_secret
 DATA_ENC_KEY=your_base64_or_hex_key
 ```
 
-完整变量（含监控 Bot、设备白名单、数据迁移开关等）请见 `.env.example`。
+完整变量（含飞书告警、设备白名单、数据迁移开关等）请见 `.env.example`。
 
 ### 依赖安装
 ```bash
@@ -155,7 +149,7 @@ cd Taki_Shiina_Bot
 pip install -r requirements.txt
 ```
 
-主要依赖：`python-telegram-bot`、`fastapi`、`uvicorn[standard]`、`websockets`、`openai`、`google-genai`、`httpx`、`cryptography`、`Pillow`、`reportlab`。
+主要依赖：`fastapi`、`uvicorn[standard]`、`websockets`、`openai`、`google-genai`、`httpx`、`cryptography`、`Pillow`、`reportlab`。
 
 ### 测试
 ```bash
@@ -172,7 +166,7 @@ python -m pytest tests/
 - **后端**: Python 3.8+, pip；配置好 `.env`
 
 ### 启动顺序
-1. 启动后端：`python bot.py`（Telegram），并按需启动 `http_api.py` / `ws_api.py`
+1. 启动后端：`uvicorn main:app`（认证服务），并按需启动 `http_api.py` / `ws_api.py`（对话 API）
 2. 修改 Android 端 `API_BASE_URL` / `WS_BASE_URL` 指向后端
 3. `cd Android_AI_Assistant && ./gradlew assembleDebug` 构建安装
 
@@ -191,4 +185,4 @@ python -m pytest tests/
 
 ---
 
-**最后更新**: 2026-07-27
+**最后更新**: 2026-08-03
