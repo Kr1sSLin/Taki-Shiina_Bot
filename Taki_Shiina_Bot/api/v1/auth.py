@@ -21,7 +21,7 @@ AUTH_PASSWORD = (os.getenv("AUTH_PASSWORD", "") or "").strip()
 AUTH_JWT_SECRET = (os.getenv("AUTH_JWT_SECRET", "") or "").strip()
 AUTH_ACCESS_TTL_MINUTES = int(os.getenv("AUTH_ACCESS_TTL_MINUTES", "15"))
 AUTH_REFRESH_TTL_DAYS = int(os.getenv("AUTH_REFRESH_TTL_DAYS", "30"))
-AUTH_MAX_DEVICES = int(os.getenv("AUTH_MAX_DEVICES", "4"))
+AUTH_MAX_DEVICES = int(os.getenv("AUTH_MAX_DEVICES", "0"))
 
 APP_USER_ID = os.getenv("APP_USER_ID", "default-user").strip() or "default-user"
 DEFAULT_USER_ID = AUTH_USER_ID or AUTH_USERNAME or APP_USER_ID

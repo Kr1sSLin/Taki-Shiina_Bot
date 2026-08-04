@@ -1,5 +1,6 @@
 # 环境变量和密钥
 .env
+.env.save
 .env.local
 .env.*.local
 
@@ -8,6 +9,10 @@ chat_history.json
 user_memories.json
 current_city.txt
 memory_db.json
+chat_timeline.json
+memory_timeline.json
+refresh_tokens.json
+*.bak
 
 # Python 虚拟环境
 .venv/
