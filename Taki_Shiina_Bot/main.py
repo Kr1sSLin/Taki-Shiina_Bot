@@ -1,3 +1,9 @@
+import os
+from dotenv import load_dotenv
+
+_basedir = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_basedir, ".env"))
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

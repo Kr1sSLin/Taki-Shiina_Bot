@@ -60,8 +60,20 @@ class RefreshTokenStore:
                 if entry.get("userId") == user_id
             }
             if device_id not in active_devices and self.max_devices > 0:
-                if len(active_devices) >= self.max_devices:
-                    raise DeviceLimitError("device limit reached")
+                while len(active_devices) >= self.max_devices:
+                    oldest = min(
+                        (e for e in data["tokens"] if e.get("userId") == user_id),
+                        key=lambda e: int(e.get("issuedAt", 0)),
+                        default=None
+                    )
+                    if oldest is None:
+                        break
+                    data["tokens"].remove(oldest)
+                    active_devices = {
+                        entry.get("deviceId")
+                        for entry in data.get("tokens", [])
+                        if entry.get("userId") == user_id
+                    }
 
             data["tokens"] = [
                 entry

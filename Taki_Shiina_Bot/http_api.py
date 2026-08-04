@@ -32,7 +32,7 @@ _base_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_base_dir, ".env"))
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
+QWEATHER_API_KEY = os.getenv("QWEATHER_API_KEY")
 MY_LAT = float(os.getenv("MY_LAT", "0"))
 MY_LON = float(os.getenv("MY_LON", "0"))
 BOT_HTTP_TOKEN = (os.getenv("BOT_HTTP_TOKEN", "") or "").strip()
@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 state = AppState(history_file=os.path.join(_base_dir, "chat_history.json"))
 db = MemoryService(_base_dir)
-weather_service = WeatherService(_base_dir, OPENWEATHER_API_KEY, MY_LAT, MY_LON)
+weather_service = WeatherService(_base_dir, QWEATHER_API_KEY, MY_LAT, MY_LON)
 history_store = HistoryStore(state.history_file)
 state.user_chat_history.update(history_store.load())
 
