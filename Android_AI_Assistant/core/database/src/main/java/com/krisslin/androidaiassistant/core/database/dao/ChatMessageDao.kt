@@ -4,16 +4,19 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
-import androidx.room.Update
+import androidx.room.Upsert
 import com.krisslin.androidaiassistant.core.database.entity.ChatMessageEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ChatMessageDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    // 注意：必须用 @Upsert（INSERT ... ON CONFLICT DO UPDATE）。
+    // 若用 @Insert(REPLACE)，SQLite 会先 DELETE 旧行再 INSERT，
+    // 触发 chat_attachments 的外键 CASCADE，把消息附件（图片）一并删掉。
+    @Upsert
     suspend fun upsert(message: ChatMessageEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun upsertAll(messages: List<ChatMessageEntity>)
 
     @Query("SELECT * FROM (SELECT * FROM chat_messages WHERE session_id = :sessionId ORDER BY timestamp DESC LIMIT :limit) ORDER BY timestamp ASC")

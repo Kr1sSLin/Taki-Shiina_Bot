@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
+import com.krisslin.androidaiassistant.core.database.entity.ChatAttachmentEntity
 import com.krisslin.androidaiassistant.core.database.entity.ChatMessageEntity
 import com.krisslin.androidaiassistant.core.database.entity.UserFactEntity
 import com.krisslin.androidaiassistant.core.database.repository.BotNotificationRepository
@@ -118,8 +119,8 @@ class ChatViewModel @Inject constructor(
     private val gson: Gson
 ) : ViewModel() {
     private companion object {
-        const val MAX_IMAGE_BYTES = 10 * 1024 * 1024
-        const val MAX_IMAGE_TIPS = "图片超过 10MB 限制"
+        const val MAX_IMAGE_BYTES = 20 * 1024 * 1024
+        const val MAX_IMAGE_TIPS = "图片超过 20MB 限制"
     }
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -170,28 +171,82 @@ class ChatViewModel @Inject constructor(
         observeWebSocketEvents()
         // 进入聊天页即主动补拉历史，不再只依赖 Connected 事件（该事件可能先于订阅者发出而丢失）
         syncHistoryFromServer()
+        repairOrphanedAttachments()
     }
 
     /**
-     * 从 Room 数据库加载历史消息
+     * 数据修复：早期版本 markUserMessageSent 用 INSERT OR REPLACE 更新消息，
+     * 触发外键 CASCADE 把已保存的附件行删掉，导致历史图片消息没有附件。
+     * 启动时把 files/chat_attachments 下未被引用的文件按时间就近匹配回图片消息。
+     */
+    private fun repairOrphanedAttachments() {
+        viewModelScope.launch {
+            runCatching {
+                val dir = java.io.File(context.filesDir, "chat_attachments")
+                val orphanFiles = dir.listFiles()?.filter { it.isFile } ?: return@runCatching
+                if (orphanFiles.isEmpty()) return@runCatching
+
+                val imageMessages = chatRepository.getMessages(sessionId).filter {
+                    it.role == MessageRole.USER &&
+                        it.contentType == ContentType.IMAGE &&
+                        it.status != MessageStatus.ERROR
+                }
+                if (imageMessages.isEmpty()) return@runCatching
+
+                val linkedPaths = chatRepository
+                    .getAttachmentsByMessageIds(imageMessages.map { it.messageId })
+                    .mapNotNull { runCatching { Uri.parse(it.localUri).path }.getOrNull() }
+                var remaining = orphanFiles.filter { it.absolutePath !in linkedPaths }
+                if (remaining.isEmpty()) return@runCatching
+
+                val windowMs = 10 * 60 * 1000L
+                for (msg in imageMessages) {
+                    if (remaining.isEmpty()) break
+                    val best = remaining.minByOrNull { kotlin.math.abs(it.lastModified() - msg.timestamp) }
+                    if (best == null || kotlin.math.abs(best.lastModified() - msg.timestamp) > windowMs) continue
+                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(best.absolutePath, opts)
+                    chatRepository.saveMessageAttachments(
+                        listOf(
+                            ChatAttachmentEntity(
+                                attachmentId = UUID.randomUUID().toString(),
+                                messageId = msg.messageId,
+                                sessionId = sessionId,
+                                mimeType = if (best.extension.equals("png", true)) "image/png" else "image/jpeg",
+                                localUri = Uri.fromFile(best).toString(),
+                                fileSize = best.length(),
+                                width = opts.outWidth.takeIf { it > 0 },
+                                height = opts.outHeight.takeIf { it > 0 }
+                            )
+                        )
+                    )
+                    remaining = remaining - best
+                }
+            }
+        }
+    }
+
+    /**
+     * 从 Room 数据库加载历史消息（消息表与附件表联动，附件保存后立即可见）
      */
     private fun loadHistoryFromDb() {
         viewModelScope.launch {
-            chatRepository.observeMessages(sessionId).collect { entities ->
-                val uiMessages = entities.map { entity ->
-                    val attachments = chatRepository.getAttachmentsByMessageId(entity.messageId).map { att ->
-                        ChatAttachmentUi(
-                            id = att.attachmentId,
-                            localUri = att.localUri,
-                            mimeType = att.mimeType,
-                            fileSize = att.fileSize,
-                            width = att.width,
-                            height = att.height
-                        )
-                    }
-                    entity.toUiModel(attachments)
+            chatRepository.observeMessagesWithAttachments(sessionId).collect { pairs ->
+                val uiMessages = pairs.map { (entity, attachments) ->
+                    entity.toUiModel(
+                        attachments.map { att ->
+                            ChatAttachmentUi(
+                                id = att.attachmentId,
+                                localUri = att.localUri,
+                                mimeType = att.mimeType,
+                                fileSize = att.fileSize,
+                                width = att.width,
+                                height = att.height
+                            )
+                        }
+                    )
                 }
-                lastSyncedTimestampMs = entities.maxOfOrNull { it.timestamp } ?: lastSyncedTimestampMs
+                lastSyncedTimestampMs = pairs.maxOfOrNull { it.first.timestamp } ?: lastSyncedTimestampMs
                 _uiState.update { it.copy(messages = uiMessages) }
             }
         }
@@ -684,8 +739,26 @@ class ChatViewModel @Inject constructor(
                 return@launch
             }
 
+            // WS 端成功接受消息 → 立即标记已送达（双勾提示），无需等待 bot 回复
+            chatRepository.markUserMessageSent(requestId)
+
             // 启动超时计时器
             resetStreamingTimeout(requestId, "pending_$requestId")
+        }
+    }
+
+    /**
+     * 删除单条消息（仅本地生效，不影响服务器对话记录）
+     */
+    fun deleteMessage(messageId: String) {
+        viewModelScope.launch {
+            // 清理流式/发送中的关联状态，防止消息被流式处理重新写回
+            pendingRequestIds.remove(messageId)
+            streamingTimeoutJobs.remove(messageId)?.cancel()
+            streamingContentCache.remove(messageId)
+            receivedFirstChunk.remove(messageId)
+            chatRepository.deleteMessage(messageId)
+            chatRepository.deleteMessage("pending_$messageId")
         }
     }
 
@@ -942,13 +1015,35 @@ class ChatViewModel @Inject constructor(
             BitmapFactory.decodeStream(input, null, options)
             options
         }
+        // 复制到应用私有目录：content:// 临时授权与相机临时文件会在会话结束后失效，
+        // 消息重建/App 重启后 AsyncImage 将无法再读取，复制后 localUri 永久可读
+        val persistedUri = copyToPrivateStorage(uri, mimeType)
+            ?: run {
+                _uiState.update { it.copy(error = "读取图片失败") }
+                return null
+            }
         return ChatAttachmentUi(
             id = UUID.randomUUID().toString(),
-            localUri = uri.toString(),
+            localUri = persistedUri.toString(),
             mimeType = mimeType,
             fileSize = if (fileSize < 0L) 0L else fileSize,
             width = bounds?.outWidth?.takeIf { it > 0 },
             height = bounds?.outHeight?.takeIf { it > 0 }
         )
+    }
+
+    private fun copyToPrivateStorage(source: Uri, mimeType: String): Uri? {
+        return runCatching {
+            val dir = java.io.File(context.filesDir, "chat_attachments").apply {
+                if (!exists()) mkdirs()
+            }
+            val ext = if (mimeType == "image/png") "png" else "jpg"
+            val target = java.io.File(dir, "${UUID.randomUUID().toString()}.$ext")
+            val input = context.contentResolver.openInputStream(source) ?: return null
+            input.use { stream ->
+                java.io.FileOutputStream(target).use { output -> stream.copyTo(output) }
+            }
+            Uri.fromFile(target)
+        }.getOrNull()
     }
 }
