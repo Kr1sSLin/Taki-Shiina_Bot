@@ -58,7 +58,10 @@ class SettingsViewModel @Inject constructor(
             _uiState.update { it.copy(loading = true, message = null) }
             runCatching { chatApi.getCity() }
                 .onSuccess { response ->
-                    val city = response.dataObject()?.get("city")?.asString ?: ""
+                    val city = response.dataObject()?.get("city")?.asString
+                        ?.substringBefore('#')
+                        ?.trim()
+                        .orEmpty()
                     _uiState.update { it.copy(cityInput = city, loading = false, message = "已加载城市设置") }
                 }
                 .onFailure { e ->
@@ -68,7 +71,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun saveCity() {
-        val city = _uiState.value.cityInput.trim()
+        val city = _uiState.value.cityInput.trim().substringBefore('#').trim()
         if (city.isEmpty()) {
             _uiState.update { it.copy(message = "城市不能为空") }
             return

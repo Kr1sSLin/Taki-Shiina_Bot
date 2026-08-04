@@ -69,6 +69,11 @@ data class MemoryFactPayload(
     val timestamp: Long
 )
 
+data class TypingPayload(
+    val typing: Boolean = true,
+    val stage: String? = null
+)
+
 data class IncomingEnvelope<T>(
     val type: String,
     val requestId: String? = null,
@@ -81,7 +86,7 @@ sealed interface IncomingMessage {
     data class BotError(val requestId: String?, val payload: BotErrorPayload) : IncomingMessage
     data class MemoryFactCreated(val payload: MemoryFactPayload) : IncomingMessage
     data class UserEcho(val requestId: String?, val payload: UserEchoPayload) : IncomingMessage
-    data object Typing : IncomingMessage
+    data class Typing(val payload: TypingPayload) : IncomingMessage
     data object AuthExpired : IncomingMessage
     data class Unknown(val type: String, val raw: String) : IncomingMessage
 }
@@ -137,7 +142,13 @@ class IncomingMessageParser(
                     )
                 }
 
-            "chat.typing" -> IncomingMessage.Typing
+            "chat.typing" -> gson.fromJson(raw, IncomingEnvelope::class.java)
+                .let {
+                    val payloadJson = gson.toJsonTree(it.payload)
+                    IncomingMessage.Typing(
+                        payload = gson.fromJson(payloadJson, TypingPayload::class.java)
+                    )
+                }
             "auth.expired" -> IncomingMessage.AuthExpired
             else -> IncomingMessage.Unknown(type, raw)
         }

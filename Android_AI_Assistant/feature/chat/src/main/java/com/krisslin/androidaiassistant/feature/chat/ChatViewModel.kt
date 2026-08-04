@@ -90,6 +90,7 @@ enum class BotActivityStatus {
 data class ChatUiState(
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
     val botActivity: BotActivityStatus = BotActivityStatus.IDLE,
+    val botStage: String? = null,
     val input: String = "",
     val error: String? = null,
     val selectedImages: List<ChatAttachmentUi> = emptyList(),
@@ -286,7 +287,7 @@ class ChatViewModel @Inject constructor(
                     handleUserEcho(message)
                 }
                 is IncomingMessage.Typing -> {
-                    // 可选：显示"对方正在输入..."
+                    handleTyping(message)
                 }
                 is IncomingMessage.AuthExpired -> {
                     handleAuthExpired()
@@ -299,6 +300,18 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
+     * 处理 Bot 输入状态（可选 stage: "vision" / "generating"）
+     */
+    private fun handleTyping(message: IncomingMessage.Typing) {
+        _uiState.update {
+            it.copy(
+                botActivity = BotActivityStatus.TYPING,
+                botStage = message.payload.stage
+            )
+        }
+    }
+
+    /**
      * 处理完整回复（非流式）
      */
     private suspend fun handleReply(message: IncomingMessage.Reply) {
@@ -306,7 +319,7 @@ class ChatViewModel @Inject constructor(
         val payload = message.payload
 
         // 收到回复，切换为 TYPING 状态
-        _uiState.update { it.copy(botActivity = BotActivityStatus.TYPING) }
+        _uiState.update { it.copy(botActivity = BotActivityStatus.TYPING, botStage = null) }
 
         // 取消超时任务
         streamingTimeoutJobs.remove(requestId)?.cancel()
@@ -340,7 +353,7 @@ class ChatViewModel @Inject constructor(
         pendingRequestIds.remove(requestId)
         receivedFirstChunk.remove(requestId)
         _uiState.update {
-            it.copy(botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING)
+            it.copy(botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING, botStage = null)
         }
         syncMemoryFactsFromServer()
     }
@@ -415,7 +428,7 @@ class ChatViewModel @Inject constructor(
 
                     // 流式完成，回到 IDLE 或保持 SENDING（如有其他待处理消息）
                     _uiState.update {
-                        it.copy(botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING)
+                        it.copy(botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING, botStage = null)
                     }
                     syncMemoryFactsFromServer()
                 } else {
@@ -424,7 +437,7 @@ class ChatViewModel @Inject constructor(
                     if (delta.isNotEmpty()) {
                         // 首帧到达时切换为 TYPING 状态
                         if (receivedFirstChunk.add(requestId)) {
-                            _uiState.update { it.copy(botActivity = BotActivityStatus.TYPING) }
+                            _uiState.update { it.copy(botActivity = BotActivityStatus.TYPING, botStage = null) }
                         }
 
                         // 确保占位消息存在后再追加
@@ -471,6 +484,7 @@ class ChatViewModel @Inject constructor(
         _uiState.update { 
             it.copy(
                 botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING,
+                botStage = null,
                 error = "${payload.errorCode}: ${payload.message}"
             ) 
         }
@@ -532,7 +546,8 @@ class ChatViewModel @Inject constructor(
             chatRepository.markMessageError(pendingMessageId, "TIMEOUT")
             _uiState.update { 
                 it.copy(
-                    botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING, 
+                    botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING,
+                    botStage = null,
                     error = "AI 响应超时，请重试"
                 ) 
             }
@@ -575,7 +590,7 @@ class ChatViewModel @Inject constructor(
             // 防止清空后立即被历史补拉回灌
             lastSyncedTimestampMs = System.currentTimeMillis()
 
-            _uiState.update { it.copy(botActivity = BotActivityStatus.IDLE, error = null, selectedImages = emptyList()) }
+            _uiState.update { it.copy(botActivity = BotActivityStatus.IDLE, botStage = null, error = null, selectedImages = emptyList()) }
             _sideEffects.emit(ChatSideEffect.ShowToast("会话已清空"))
         }
     }
@@ -603,7 +618,7 @@ class ChatViewModel @Inject constructor(
             val prepared = prepareOutgoingPayload(current, selectedImages)
             if (prepared == null) {
                 pendingRequestIds.remove(requestId)
-                _uiState.update { it.copy(botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING) }
+                _uiState.update { it.copy(botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING, botStage = null) }
                 return@launch
             }
             val contentType = if (prepared.images.isEmpty()) ContentType.TEXT else if (prepared.text.isBlank()) ContentType.IMAGE else ContentType.MIXED
@@ -661,7 +676,8 @@ class ChatViewModel @Inject constructor(
                 chatRepository.markMessageError("pending_$requestId", "SEND_FAILED")
                 _uiState.update { 
                     it.copy(
-                        botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING, 
+                        botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING,
+                        botStage = null,
                         error = "消息发送失败"
                     ) 
                 }

@@ -28,11 +28,12 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import com.krisslin.androidaiassistant.core.network.auth.TokenState
 import com.krisslin.androidaiassistant.feature.auth.AuthRoute
 import com.krisslin.androidaiassistant.feature.chat.ChatRoute
-import com.krisslin.androidaiassistant.core.ui.theme.AppTheme
 import com.krisslin.androidaiassistant.core.ui.theme.ThemeMode
+import com.krisslin.androidaiassistant.core.ui.theme.ThemeRevealContainer
 import com.krisslin.androidaiassistant.feature.settings.SettingsRoute
 import com.krisslin.androidaiassistant.feature.settings.ThemePreferenceStore
 import com.krisslin.androidaiassistant.feature.settings.WeatherSettingsRoute
@@ -58,16 +59,16 @@ class MainActivity : FragmentActivity() {
         setContent {
             val themeStore = remember { ThemePreferenceStore(this) }
             val darkThemeDetected = androidx.compose.foundation.isSystemInDarkTheme()
-            AppTheme(
-                themeMode = themeStore.themeMode,
-                darkThemeDetected = darkThemeDetected
-            ) {
+            val themeMode = themeStore.themeMode
+            ThemeRevealContainer(
+                themeMode = themeMode,
+                targetDark = when (themeMode) {
+                    ThemeMode.SYSTEM -> darkThemeDetected
+                    ThemeMode.LIGHT -> false
+                    ThemeMode.DARK -> true
+                }
+            ) { effectiveDark ->
                 Surface {
-                    val effectiveDark = when (themeStore.themeMode) {
-                        ThemeMode.SYSTEM -> darkThemeDetected
-                        ThemeMode.LIGHT -> false
-                        ThemeMode.DARK -> true
-                    }
                     AppRoot(
                         isDarkMode = effectiveDark,
                         onToggleTheme = {
@@ -113,6 +114,8 @@ private fun AppRoot(
     val mainViewModel: MainViewModel = hiltViewModel()
     val tokenState by mainViewModel.tokenState.collectAsState()
     var mainPage by rememberSaveable { mutableStateOf(MainPage.CHAT) }
+    // 页面级状态容器：页面切换（如聊天页→设置页）时保存各页状态（列表滚动位置等），返回时恢复
+    val pageStateHolder = rememberSaveableStateHolder()
 
     // 登出后重置回聊天页，避免重新登录落在设置页
     LaunchedEffect(tokenState) {
@@ -123,19 +126,21 @@ private fun AppRoot(
         // 未登录/会话失效：展示登录页（登录成功后 tokenState 变化，自动切回聊天页）
         is TokenState.Unauthenticated -> AuthRoute()
         is TokenState.Authenticated -> when (mainPage) {
-            MainPage.CHAT -> ChatRoute(
-                isDarkMode = isDarkMode,
-                onToggleTheme = onToggleTheme,
-                onNavigateToSettings = { mainPage = MainPage.SETTINGS }
-            )
-            MainPage.SETTINGS -> {
+            MainPage.CHAT -> pageStateHolder.SaveableStateProvider(MainPage.CHAT) {
+                ChatRoute(
+                    isDarkMode = isDarkMode,
+                    onToggleTheme = onToggleTheme,
+                    onNavigateToSettings = { mainPage = MainPage.SETTINGS }
+                )
+            }
+            MainPage.SETTINGS -> pageStateHolder.SaveableStateProvider(MainPage.SETTINGS) {
                 BackHandler { mainPage = MainPage.CHAT }
                 SettingsRoute(
                     onBack = { mainPage = MainPage.CHAT },
                     onNavigateToWeather = { mainPage = MainPage.WEATHER_SETTINGS }
                 )
             }
-            MainPage.WEATHER_SETTINGS -> {
+            MainPage.WEATHER_SETTINGS -> pageStateHolder.SaveableStateProvider(MainPage.WEATHER_SETTINGS) {
                 BackHandler { mainPage = MainPage.SETTINGS }
                 WeatherSettingsRoute(
                     onBack = { mainPage = MainPage.SETTINGS }

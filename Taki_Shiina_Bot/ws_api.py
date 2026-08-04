@@ -77,6 +77,25 @@ TAIL_DEBOUNCE = 1.0
 
 HISTORY_SEPARATOR = "──── 新的一天 ────"
 
+GEMINI_TIMEOUT = 30
+
+VISION_DESCRIPTION_PROMPT = (
+    "你是一个图片描述助手。请客观、准确地描述用户图片中的内容，供后续文本模型参考。\n"
+    "要求：\n"
+    "1. 输出纯事实描述：画面主体、环境、动作、人物表情、画面中的文字（如有）等。\n"
+    "2. 严禁代入任何人设或角色，严禁使用对话语气，严禁评价图片好坏。\n"
+    "3. 如果画面中有可辨认的文字，请逐字引用。\n"
+    "4. 如果图片内容不清晰或无法辨认，直接回答：图片内容无法辨认。\n"
+    "5. 200 字以内，直接输出描述正文，不要加标题或前缀。"
+)
+
+VISION_CONTEXT_TEMPLATE = (
+    "【用户发来了一张图片，识图结果】：\n"
+    "{vision_description}\n\n"
+    "【用户对图片的留言】：\n"
+    "{user_text}"
+)
+
 TIMELINE_FILE = os.path.join(_base_dir, "chat_timeline.json")
 TIMELINE_LOCK = asyncio.Lock()
 MEMORY_TIMELINE_FILE = os.path.join(_base_dir, "memory_timeline.json")
@@ -413,22 +432,30 @@ async def process_buffered_messages(user_id: str):
                 f"[TRACE][{user_id}] SHORT_HISTORY size={len(recent_history)} assistant={recent_assistant_count} tails={len(polluted_tails)}"
             )
 
-        messages = [{"role": "system", "content": system_content}]
-        messages.extend(recent_history)
-        messages.append({"role": "system", "content": anchor_prompt})
-        messages.append({"role": "user", "content": merged_text})
-
         full_content = ""
         bot_message_id = str(uuid.uuid4())
         user_message_id = merged_request_id
+
+        user_message = {"role": "user", "content": merged_text}
 
         if has_images:
             if not GEMINI_API_KEY:
                 await send_error(user_id, "GEMINI_NOT_CONFIGURED", "服务端未配置 Gemini Key", merged_request_id, request_ids)
                 return
-            prompt_text = merged_text or "请描述图片中的关键信息。"
+
+            # ---- Stage 1: Gemini 识图（结果隐式，不直接回给用户）----
+            await broadcast_json(
+                user_id,
+                {
+                    "type": "chat.typing",
+                    "payload": {"typing": True, "stage": "vision"},
+                },
+            )
             model = genai.GenerativeModel(GEMINI_MODEL)
-            parts = [prompt_text]
+            vision_prompt = VISION_DESCRIPTION_PROMPT
+            if merged_text:
+                vision_prompt += f"\n\n用户留言：{merged_text}"
+            parts = [vision_prompt]
             for img in merged_images[:VISION_MAX_IMAGE_COUNT]:
                 parts.append(
                     {
@@ -436,39 +463,69 @@ async def process_buffered_messages(user_id: str):
                         "data": img["raw"],
                     }
                 )
-            resp = await asyncio.to_thread(model.generate_content, parts)
-            full_content = (resp.text or "").strip()
+            try:
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(model.generate_content, parts),
+                    timeout=GEMINI_TIMEOUT,
+                )
+                vision_description = (resp.text or "").strip()
+            except asyncio.TimeoutError:
+                logger.warning(f"[WS] 识图超时，使用降级描述: user={user_id}")
+                vision_description = "图片内容无法辨认（识图超时）。"
+            except Exception as e:
+                logger.exception(f"[WS] 识图失败，使用降级描述: {e}")
+                vision_description = "图片内容无法辨认（识图失败）。"
+            _trace_text("VISION_DESC", user_id, vision_description)
+
+            user_message = {
+                "role": "user",
+                "content": VISION_CONTEXT_TEMPLATE.format(
+                    vision_description=vision_description,
+                    user_text=merged_text,
+                ),
+            }
+
+        messages = [{"role": "system", "content": system_content}]
+        messages.extend(recent_history)
+        messages.append({"role": "system", "content": anchor_prompt})
+        messages.append(user_message)
+
+        # ---- Stage 2: DeepSeek 流式生成 ----
+        if has_images:
             await broadcast_json(
                 user_id,
                 {
-                    "type": "chat.reply.stream",
-                    "requestId": merged_request_id,
-                    "payload": {"delta": full_content, "done": False, "contentType": "mixed", "modelProvider": "gemini"},
+                    "type": "chat.typing",
+                    "payload": {"typing": True, "stage": "generating"},
                 },
             )
-        else:
-            response = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-                    messages=messages,
-                    temperature=0.75,
-                    stream=True,
-                ),
-                timeout=90.0,
-            )
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
+                messages=messages,
+                temperature=0.75,
+                stream=True,
+            ),
+            timeout=90.0,
+        )
 
-            async for chunk in response:
-                delta = chunk.choices[0].delta.content or ""
-                if delta:
-                    full_content += delta
-                    await broadcast_json(
-                        user_id,
-                        {
-                            "type": "chat.reply.stream",
-                            "requestId": merged_request_id,
-                            "payload": {"delta": delta, "done": False, "contentType": "text", "modelProvider": "deepseek"},
+        async for chunk in response:
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                full_content += delta
+                await broadcast_json(
+                    user_id,
+                    {
+                        "type": "chat.reply.stream",
+                        "requestId": merged_request_id,
+                        "payload": {
+                            "delta": delta,
+                            "done": False,
+                            "contentType": "mixed" if has_images else "text",
+                            "modelProvider": "deepseek",
                         },
-                    )
+                    },
+                )
 
         _trace_text("A_RAW", user_id, full_content)
         cleaned_reply, timer_at, timer_text = parse_timer_instruction(full_content)
@@ -476,7 +533,7 @@ async def process_buffered_messages(user_id: str):
         cleaned_reply = strip_polluted_tail(cleaned_reply, polluted_tails)
         _trace_text("C_STRIPPED", user_id, cleaned_reply)
         recent_assistant_replies = [m.get("content", "") for m in recent_history if m.get("role") == "assistant"]
-        if not has_images and is_repetitive_reply(cleaned_reply, recent_assistant_replies, threshold=0.88):
+        if is_repetitive_reply(cleaned_reply, recent_assistant_replies, threshold=0.88):
             logger.info(f"[去重] 命中重复回复，触发重采样: user={user_id}")
             dedupe_messages = list(messages)
             dedupe_messages.append(
@@ -545,7 +602,7 @@ async def process_buffered_messages(user_id: str):
                     "finalContent": final_reply,
                     "timestamp": now_ms,
                     "contentType": "mixed" if has_images and merged_text else ("image" if has_images else "text"),
-                    "modelProvider": "gemini" if has_images else "deepseek",
+                    "modelProvider": "deepseek",
                     "timerInstruction": {"target": timer_at, "text": timer_text} if timer_at else None,
                     "requestIds": request_ids,
                 },
