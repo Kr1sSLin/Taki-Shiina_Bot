@@ -133,7 +133,7 @@ fun SettingsRoute(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "1.0.0",
+                        text = "1.1.0",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
