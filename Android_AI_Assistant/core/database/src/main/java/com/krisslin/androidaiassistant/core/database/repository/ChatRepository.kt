@@ -5,6 +5,7 @@ import com.krisslin.androidaiassistant.core.database.dao.ChatAttachmentDao
 import com.krisslin.androidaiassistant.core.database.entity.ChatAttachmentEntity
 import com.krisslin.androidaiassistant.core.database.entity.ChatMessageEntity
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -61,6 +62,25 @@ class ChatRepository @Inject constructor(
      */
     fun observeMessages(sessionId: String, limit: Int = 300): Flow<List<ChatMessageEntity>> {
         return chatMessageDao.observeLatest(sessionId, limit)
+    }
+
+    /**
+     * 观察消息及其附件：消息表与附件表任一变化都会重新发射，
+     * 保证发送后/历史重载时附件（图片）立即可见。
+     */
+    fun observeMessagesWithAttachments(
+        sessionId: String,
+        limit: Int = 300
+    ): Flow<List<Pair<ChatMessageEntity, List<ChatAttachmentEntity>>>> {
+        return combine(
+            chatMessageDao.observeLatest(sessionId, limit),
+            chatAttachmentDao.observeBySession(sessionId)
+        ) { messages, attachments ->
+            val byMessage = attachments.groupBy { it.messageId }
+            messages.map { message ->
+                message to (byMessage[message.messageId] ?: emptyList())
+            }
+        }
     }
 
     /**

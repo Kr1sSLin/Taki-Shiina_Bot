@@ -40,6 +40,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -73,6 +75,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -81,7 +85,12 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
+import com.krisslin.androidaiassistant.core.database.repository.MessageStatus
 import com.krisslin.androidaiassistant.core.ui.theme.LocalThemeRevealState
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -101,6 +110,7 @@ fun ChatRoute(
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     var showImagePreview by remember { mutableStateOf<String?>(null) }
+    var messageMenuTargetId by remember { mutableStateOf<String?>(null) }
     var showAttachMenu by remember { mutableStateOf(false) }
     var showEmojiMenu by remember { mutableStateOf(false) }
     val tempCameraUri = remember { mutableStateOf<Uri?>(null) }
@@ -108,6 +118,15 @@ fun ChatRoute(
     val keyboardController = LocalSoftwareKeyboardController.current
     var bgIsDark by remember { mutableStateOf(isDarkMode) }
     var bgScreenSize by remember { mutableStateOf(IntSize.Zero) }
+    var inputField by remember { mutableStateOf(TextFieldValue(state.input)) }
+
+    // 外部输入变化（emoji 插入、发送清空）同步回 TextFieldValue，保留光标位置
+    LaunchedEffect(state.input) {
+        if (inputField.text != state.input) {
+            val cursor = inputField.selection.start.coerceAtMost(state.input.length)
+            inputField = TextFieldValue(state.input, TextRange(cursor))
+        }
+    }
     val mediaPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         Manifest.permission.READ_MEDIA_IMAGES
     } else {
@@ -266,11 +285,38 @@ fun ChatRoute(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(state.messages, key = { it.id }) { msg ->
-                    MessageBubble(
-                        message = msg,
-                        onImageClick = { showImagePreview = it },
-                        onRetry = { viewModel.retryMessage(msg.id) }
-                    )
+                    Box {
+                        MessageBubble(
+                            message = msg,
+                            onImageClick = { showImagePreview = it },
+                            onRetry = { viewModel.retryMessage(msg.id) },
+                            onBubbleClick = { messageMenuTargetId = msg.id }
+                        )
+                        DropdownMenu(
+                            expanded = messageMenuTargetId == msg.id,
+                            onDismissRequest = { messageMenuTargetId = null },
+                            modifier = if (msg.role == "user") {
+                                Modifier.align(Alignment.TopEnd)
+                            } else {
+                                Modifier.align(Alignment.TopStart)
+                            }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("删除") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Filled.Delete,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                },
+                                onClick = {
+                                    messageMenuTargetId = null
+                                    viewModel.deleteMessage(msg.id)
+                                }
+                            )
+                        }
+                    }
                 }
             }
 
@@ -289,8 +335,11 @@ fun ChatRoute(
                 bgDark = bgIsDark,
                 bgBitmap = bgBitmap,
                 bgScreenSize = bgScreenSize,
-                input = state.input,
-                onInputChange = viewModel::onInputChange,
+                input = inputField,
+                onInputChange = { value ->
+                    inputField = value
+                    viewModel.onInputChange(value.text)
+                },
                 enabled = state.connectionStatus == ConnectionStatus.CONNECTED,
                 canSend = sendEnabled,
                 canAttach = state.connectionStatus == ConnectionStatus.CONNECTED && state.selectedImages.size < 3,
@@ -322,7 +371,11 @@ fun ChatRoute(
                     bgBitmap = bgBitmap,
                     bgScreenSize = bgScreenSize,
                     onEmojiSelected = { emoji ->
-                        viewModel.onInputChange(state.input + emoji)
+                        val current = inputField
+                        val cursor = current.selection.start.coerceIn(0, current.text.length)
+                        val newText = current.text.substring(0, cursor) + emoji + current.text.substring(cursor)
+                        inputField = TextFieldValue(newText, TextRange(cursor + emoji.length))
+                        viewModel.onInputChange(newText)
                     },
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -335,7 +388,6 @@ fun ChatRoute(
     showImagePreview?.let { uri ->
         AlertDialog(
             onDismissRequest = { showImagePreview = null },
-            title = { Text("图片预览") },
             text = {
                 AsyncImage(
                     model = uri,
@@ -452,9 +504,9 @@ private fun BotActivityStatus.statusLabel(stage: String? = null): String? = when
     BotActivityStatus.IDLE -> null
     BotActivityStatus.SENDING -> "发送中…"
     BotActivityStatus.TYPING -> when (stage) {
-        "vision" -> "看图识物中…"
+        "vision" -> "在看图"
         "generating" -> "回复生成中…"
-        else -> "输入中…"
+        else -> "打字中"
     }
 }
 
@@ -462,7 +514,8 @@ private fun BotActivityStatus.statusLabel(stage: String? = null): String? = when
 private fun MessageBubble(
     message: ChatMessageUi,
     onImageClick: (String) -> Unit,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    onBubbleClick: () -> Unit
 ) {
     val isUser = message.role == "user"
     val alignment = if (isUser) Alignment.End else Alignment.Start
@@ -476,51 +529,123 @@ private fun MessageBubble(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = alignment
     ) {
-        Card(
-            shape = RoundedCornerShape(
-                topStart = 16.dp,
-                topEnd = 16.dp,
-                bottomStart = if (isUser) 16.dp else 4.dp,
-                bottomEnd = if (isUser) 4.dp else 16.dp
-            ),
-            colors = CardDefaults.cardColors(containerColor = bubbleColor)
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                if (message.attachments.isNotEmpty()) {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(message.attachments, key = { it.id }) { attachment ->
-                            AsyncImage(
-                                model = attachment.localUri,
-                                contentDescription = "消息图片",
-                                modifier = Modifier
-                                    .size(120.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable { onImageClick(attachment.localUri) }
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.size(6.dp))
-                }
-                if (message.content.isNotBlank()) {
-                    Text(
-                        text = message.content.trimEnd('\n'),
-                        style = MaterialTheme.typography.bodyMedium
+        if (isUser && message.status == "error") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFFFEBEE))
+                        .clickable(onClick = onRetry),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = "重新发送",
+                        tint = Color(0xFFF44336),
+                        modifier = Modifier.size(16.dp)
                     )
                 }
-                if (message.isStreaming) {
-                    Text(
-                        text = "▌",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-                if (isUser && message.status == "error") {
-                    Spacer(modifier = Modifier.size(6.dp))
-                    TextButton(onClick = onRetry) {
-                        Text("发送失败，点击重试")
+                Spacer(modifier = Modifier.width(8.dp))
+                MessageContent(
+                    message = message,
+                    isUser = isUser,
+                    onImageClick = onImageClick,
+                    onBubbleClick = onBubbleClick,
+                    bubbleColor = bubbleColor
+                )
+            }
+        } else {
+            MessageContent(
+                message = message,
+                isUser = isUser,
+                onImageClick = onImageClick,
+                onBubbleClick = onBubbleClick,
+                bubbleColor = bubbleColor
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageContent(
+    message: ChatMessageUi,
+    isUser: Boolean,
+    onImageClick: (String) -> Unit,
+    onBubbleClick: () -> Unit,
+    bubbleColor: Color
+) {
+    Card(
+        modifier = Modifier.clickable(onClick = onBubbleClick),
+        shape = RoundedCornerShape(
+            topStart = 16.dp,
+            topEnd = 16.dp,
+            bottomStart = if (isUser) 16.dp else 4.dp,
+            bottomEnd = if (isUser) 4.dp else 16.dp
+        ),
+        colors = CardDefaults.cardColors(containerColor = bubbleColor)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            if (message.attachments.isNotEmpty()) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(message.attachments, key = { it.id }) { attachment ->
+                        AsyncImage(
+                            model = attachment.localUri,
+                            contentDescription = "消息图片",
+                            modifier = Modifier
+                                .size(120.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onImageClick(attachment.localUri) }
+                        )
                     }
                 }
                 Spacer(modifier = Modifier.size(6.dp))
+            }
+            if (message.content.isNotBlank()) {
+                Text(
+                    text = message.content.trimEnd('\n'),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            if (message.isStreaming) {
+                Text(
+                    text = "▌",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Spacer(modifier = Modifier.size(6.dp))
+            if (isUser && message.status != "error") {
+                Row(
+                    modifier = Modifier.align(Alignment.Start),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    when (message.status) {
+                        MessageStatus.SENDING -> {
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = "已发送",
+                                tint = Color(0xFF999999),
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                        MessageStatus.SENT -> {
+                            Icon(
+                                imageVector = Icons.Filled.DoneAll,
+                                contentDescription = "已送达",
+                                tint = Color(0xFF3390EC),
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = formatMessageTime(message.timestamp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
                 Text(
                     text = formatMessageTime(message.timestamp),
                     style = MaterialTheme.typography.labelSmall,

@@ -50,7 +50,7 @@ DEFAULT_USER_ID = AUTH_USER_ID or AUTH_USERNAME or APP_USER_ID
 DEBUG_REPLY_TRACE = os.getenv("DEBUG_REPLY_TRACE", "0") == "1"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-VISION_MAX_IMAGE_MB = int(os.getenv("VISION_MAX_IMAGE_MB", "3"))
+VISION_MAX_IMAGE_MB = int(os.getenv("VISION_MAX_IMAGE_MB", "20"))
 VISION_MAX_IMAGE_COUNT = int(os.getenv("VISION_MAX_IMAGE_COUNT", "3"))
 VISION_ALLOWED_MIME = {
     m.strip() for m in os.getenv("VISION_ALLOWED_MIME", "image/jpeg,image/png").split(",") if m.strip()
