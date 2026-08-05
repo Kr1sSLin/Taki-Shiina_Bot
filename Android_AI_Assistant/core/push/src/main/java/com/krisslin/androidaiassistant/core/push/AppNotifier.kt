@@ -24,6 +24,15 @@ class AppNotifier @Inject constructor(
         const val CHANNEL_CHAT = "chat_messages"
         const val CHANNEL_REMINDER = "chat_reminders"
         const val CHANNEL_GREETING = "greeting_messages"
+
+        // 固定通知 ID：保证同类通知替换展示、可被定向取消（1001 为前台服务常驻通知，勿动）
+        const val NOTIFICATION_ID_CHAT = 1002
+        const val NOTIFICATION_ID_GREETING = 1003
+        const val NOTIFICATION_ID_ERROR = 1004
+        const val NOTIFICATION_ID_REMINDER = 1005
+
+        // 通知未被打点/打开时，系统超时自动移除（兜底防常驻）
+        private const val AUTO_DISMISS_TIMEOUT_MS = 10 * 1000L
     }
 
     fun ensureChannels() {
@@ -86,8 +95,9 @@ class AppNotifier @Inject constructor(
             .setContentIntent(pi)
             .setFullScreenIntent(pi, true)
             .setAutoCancel(true)
+            .setTimeoutAfter(AUTO_DISMISS_TIMEOUT_MS)
             .build()
-        NotificationManagerCompat.from(context).notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
+        NotificationManagerCompat.from(context).notify(NOTIFICATION_ID_ERROR, notification)
     }
 
     fun showReminder(text: String, target: String) {
@@ -106,8 +116,9 @@ class AppNotifier @Inject constructor(
             .setContentIntent(pi)
             .setFullScreenIntent(pi, true)
             .setAutoCancel(true)
+            .setTimeoutAfter(AUTO_DISMISS_TIMEOUT_MS)
             .build()
-        NotificationManagerCompat.from(context).notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
+        NotificationManagerCompat.from(context).notify(NOTIFICATION_ID_REMINDER, notification)
     }
 
     fun showChatMessage(content: String) {
@@ -125,8 +136,9 @@ class AppNotifier @Inject constructor(
             .setContentIntent(pi)
             .setFullScreenIntent(pi, true)
             .setAutoCancel(true)
+            .setTimeoutAfter(AUTO_DISMISS_TIMEOUT_MS)
             .build()
-        NotificationManagerCompat.from(context).notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
+        NotificationManagerCompat.from(context).notify(NOTIFICATION_ID_CHAT, notification)
     }
 
     fun showGreeting(scenario: String?, content: String) {
@@ -149,8 +161,21 @@ class AppNotifier @Inject constructor(
             .setContentIntent(pi)
             .setFullScreenIntent(pi, true)
             .setAutoCancel(true)
+            .setTimeoutAfter(AUTO_DISMISS_TIMEOUT_MS)
             .build()
-        NotificationManagerCompat.from(context).notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
+        NotificationManagerCompat.from(context).notify(NOTIFICATION_ID_GREETING, notification)
+    }
+
+    /**
+     * 取消所有消息类通知（App 回到前台时调用）。
+     * 注意不使用 cancelAll()：避免误删 WebSocketService 的前台常驻通知（1001）。
+     */
+    fun dismissAll() {
+        val manager = NotificationManagerCompat.from(context)
+        manager.cancel(NOTIFICATION_ID_CHAT)
+        manager.cancel(NOTIFICATION_ID_GREETING)
+        manager.cancel(NOTIFICATION_ID_ERROR)
+        manager.cancel(NOTIFICATION_ID_REMINDER)
     }
 
     private fun canPostNotifications(): Boolean {

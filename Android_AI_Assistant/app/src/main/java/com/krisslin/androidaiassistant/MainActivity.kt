@@ -29,7 +29,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import com.krisslin.androidaiassistant.core.network.auth.TokenState
+import com.krisslin.androidaiassistant.core.push.AppNotifier
 import com.krisslin.androidaiassistant.feature.auth.AuthRoute
 import com.krisslin.androidaiassistant.feature.chat.ChatRoute
 import com.krisslin.androidaiassistant.core.ui.theme.ThemeMode
@@ -39,14 +43,26 @@ import com.krisslin.androidaiassistant.feature.settings.ThemePreferenceStore
 import com.krisslin.androidaiassistant.feature.settings.WeatherSettingsRoute
 import com.krisslin.androidaiassistant.service.WebSocketService
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
 
     private var serviceIntent: Intent? = null
 
+    @Inject
+    lateinit var appNotifier: AppNotifier
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // App 回到前台即清除消息类通知（聊天/问候/错误/提醒），
+        // 已读消息不再残留通知栏
+        lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) {
+                appNotifier.dismissAll()
+            }
+        })
 
         // 启动WebSocket前台服务
         serviceIntent = Intent(this, WebSocketService::class.java).apply {
