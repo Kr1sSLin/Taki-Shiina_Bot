@@ -5,12 +5,14 @@ import httpx
 
 
 class WeatherService:
-    def __init__(self, base_dir, api_key, my_lat, my_lon):
+    def __init__(self, base_dir, api_key, my_lat, my_lon, api_host=None):
         self.base_dir = base_dir
         self.api_key = api_key
         self.my_lat = my_lat
         self.my_lon = my_lon
+        self.api_host = api_host or os.getenv("QWEATHER_API_HOST", "").strip()
         self.cache = {"info": "未知", "time": 0}
+        self.location_cache = {"loc": None, "id": None}
 
     @property
     def city_file(self):
@@ -23,26 +25,36 @@ class WeatherService:
         return "auto_ip"
 
     async def _resolve_location_id(self, loc: str) -> str | None:
+        if self.location_cache.get("loc") == loc and self.location_cache.get("id"):
+            return self.location_cache["id"]
+
         parts = loc.split(",")
         if len(parts) == 2:
             lon, lat = parts[0].strip(), parts[1].strip()
-            return f"{lon},{lat}"
+            location_id = f"{lon},{lat}"
+            self.location_cache = {"loc": loc, "id": location_id}
+            return location_id
 
         async with httpx.AsyncClient() as client:
             resp = await client.get(
-                "https://geoapi.qweather.com/v2/city/lookup",
+                f"https://{self.api_host}/geo/v2/city/lookup",
                 params={"location": loc, "key": self.api_key},
                 timeout=5.0,
             )
             data = resp.json()
             if data.get("code") == "200" and data.get("location"):
-                return data["location"][0]["id"]
+                location_id = data["location"][0]["id"]
+                self.location_cache = {"loc": loc, "id": location_id}
+                return location_id
         return None
 
-    async def get_weather_str(self):
+    async def get_weather_str(self, force: bool = False):
         now = datetime.datetime.now().timestamp()
-        if now - self.cache["time"] < 1800 and self.cache["info"] != "未知":
+        if not force and now - self.cache["time"] < 1800 and self.cache["info"] != "未知":
             return self.cache["info"]
+
+        if not self.api_host:
+            return "【当前天气】：未配置 QWEATHER_API_HOST"
 
         try:
             loc = self.get_current_city()
@@ -52,7 +64,7 @@ class WeatherService:
 
             async with httpx.AsyncClient() as client:
                 resp = await client.get(
-                    "https://devapi.qweather.com/v7/weather/now",
+                    f"https://{self.api_host}/v7/weather/now",
                     params={"location": location_id, "key": self.api_key},
                     timeout=5.0,
                 )
@@ -72,3 +84,4 @@ class WeatherService:
         with open(self.city_file, "w", encoding="utf-8") as f:
             f.write(city)
         self.cache = {"info": "未知", "time": 0}
+        self.location_cache = {"loc": None, "id": None}

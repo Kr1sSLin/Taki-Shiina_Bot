@@ -375,7 +375,7 @@ async def process_buffered_messages(user_id: str):
         await broadcast_json(user_id, {"type": "chat.typing", "payload": {"typing": True}})
 
         history = state.user_chat_history.setdefault(user_id, [])
-        weather_info = await weather_service.get_weather_str()
+        weather_info = await weather_service.get_weather_str(force=True)
 
         utc_now = datetime.now(timezone.utc)
         beijing_now = utc_now + timedelta(hours=8)
@@ -879,10 +879,14 @@ async def send_greeting(user_id: str, scenario_type: str):
 
     try:
         system_prompt = await prompt_service.get_system_prompt(user_id)
+        weather_info = await weather_service.get_weather_str(force=True)
         response = await client.chat.completions.create(
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
             messages=[
-                {"role": "system", "content": f"{system_prompt}\n\n🎯 当前任务: {final_instruction}"}
+                {
+                    "role": "system",
+                    "content": f"{system_prompt}\n\n{weather_info}\n\n🎯 当前任务: {final_instruction}",
+                }
             ],
             temperature=0.85,
         )

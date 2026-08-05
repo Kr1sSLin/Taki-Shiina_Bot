@@ -378,7 +378,7 @@ async def chat(
 
     try:
         history = state.user_chat_history.setdefault(user_id, [])
-        weather_info = await weather_service.get_weather_str()
+        weather_info = await weather_service.get_weather_str(force=True)
 
         utc_now = datetime.now(timezone.utc)
         beijing_now = utc_now + timedelta(hours=8)
