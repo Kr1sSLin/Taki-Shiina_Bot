@@ -1,5 +1,6 @@
 import random
 import re
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 
 from app_constants import KEYWORD_TO_EMOJI
@@ -24,6 +25,17 @@ def inject_emojis(text):
     return final_text
 
 
+_TIME_STAMP_TOKEN_RE = re.compile(
+    r'[【\[\(（]\s*'
+    r'(?:'
+    r'(?:\d{1,4}[年月/.-]\d{1,2}(?:[月/.-]\d{1,2})?日?(?:\s*\d{1,2}:\d{2})?)'  # 日期(+时间)
+    r'|'
+    r'\d{1,2}:\d{2}'  # 纯时间
+    r')'
+    r'\s*[】\]\)）]'
+)
+
+
 def sanitize_taki_reply(text):
     taki_fillers = ["哈？", "喂", "啧", "受不了你", "麻烦死了", "拿你没办法", "服了你了", "唉……", "笨蛋", ""]
 
@@ -32,6 +44,9 @@ def sanitize_taki_reply(text):
     text = re.sub(r'（[^）\n]{2,}）', '', text)
     text = re.sub(r'\([^)\n]*[\u4e00-\u9fff][^)\n]*\)', '', text)
     text = re.sub(r'\n{3,}', '\n\n', text).strip()
+
+    # 剥离模型模仿输出的时间戳，如 [8-22 17:22]、【08-22 17:22】、[17:22]
+    text = _TIME_STAMP_TOKEN_RE.sub('', text).lstrip()
 
     if "真是的" in text and random.random() < 0.95:
         text = text.replace("真是的", random.choice(taki_fillers), 1)
@@ -138,3 +153,14 @@ def clean_short_term_history(messages: list[dict], min_repeat: int = 3) -> tuple
             cleaned["content"] = content
             cleaned_messages.append(cleaned)
     return cleaned_messages, polluted_tails
+
+
+def with_history_timestamp(m: dict) -> dict:
+    """history 消息带 ts 时,在 content 前加北京时间时间戳,否则原样返回"""
+    ts = m.get("ts")
+    if not ts or m.get("role") not in ("user", "assistant"):
+        return m
+    beijing = datetime.fromtimestamp(ts / 1000, timezone(timedelta(hours=8)))
+    out = dict(m)
+    out["content"] = f"【{beijing.strftime('%m-%d %H:%M')}】{m['content']}"
+    return out

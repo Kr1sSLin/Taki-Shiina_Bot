@@ -32,6 +32,7 @@ from text_utils import (
     is_repetitive_reply,
     sanitize_taki_reply,
     strip_polluted_tail,
+    with_history_timestamp,
 )
 
 _base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -407,6 +408,7 @@ async def process_buffered_messages(user_id: str):
             "【强制提醒】：保持“酷但笨拙”人设；禁止动作叙事；回复长短跟随内容。"
             "\n【注意力锚定】：只针对下一条用户消息回复。历史对话仅作为背景参考，不要回应历史中已结束的话题。"
             "\n【去重要求】：避免复用最近10次回复的开头词、句式骨架和结尾口头禅。"
+            "\n【禁止时间戳】：历史消息中的【时间】标记仅供你理解时间线，绝对禁止在回复中输出时间戳或时刻标记（如 [8-22 17:22]、【14:32】）。"
             f"{emotional_prompt}{trigger_prompt}"
         )
 
@@ -486,7 +488,7 @@ async def process_buffered_messages(user_id: str):
             }
 
         messages = [{"role": "system", "content": system_content}]
-        messages.extend(recent_history)
+        messages.extend(with_history_timestamp(m) for m in recent_history)
         messages.append({"role": "system", "content": anchor_prompt})
         messages.append(user_message)
 
@@ -561,8 +563,8 @@ async def process_buffered_messages(user_id: str):
         merged_record = merged_text
         if has_images:
             merged_record = (merged_text + "\n\n" if merged_text else "") + f"[ImageCount={len(merged_images)}]"
-        history.append({"role": "user", "content": merged_record})
-        history.append({"role": "assistant", "content": final_reply})
+        history.append({"role": "user", "content": merged_record, "ts": now_ms - 1})
+        history.append({"role": "assistant", "content": final_reply, "ts": now_ms})
         if len(history) > 300:
             state.user_chat_history[user_id] = history[-300:]
         history_store.save(state.user_chat_history)
@@ -898,7 +900,7 @@ async def send_greeting(user_id: str, scenario_type: str):
 
         # 写入历史
         history = state.user_chat_history.setdefault(user_id, [])
-        history.append({"role": "assistant", "content": final_reply})
+        history.append({"role": "assistant", "content": final_reply, "ts": now_ms})
         if len(history) > 300:
             state.user_chat_history[user_id] = history[-300:]
         history_store.save(state.user_chat_history)
