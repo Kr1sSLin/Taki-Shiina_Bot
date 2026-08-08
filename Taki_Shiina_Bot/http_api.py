@@ -26,6 +26,7 @@ from text_utils import (
     is_repetitive_reply,
     sanitize_taki_reply,
     strip_polluted_tail,
+    with_history_timestamp,
 )
 
 _base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -409,6 +410,7 @@ async def chat(
         anchor_prompt = (
             "【强制提醒】：保持“酷但笨拙”人设；禁止动作叙事；回复长短跟随内容。"
             "\n【去重要求】：避免复用最近10次回复的开头词、句式骨架和结尾口头禅。"
+            "\n【禁止时间戳】：历史消息中的【时间】标记仅供你理解时间线，绝对禁止在回复中输出时间戳或时刻标记（如 [8-22 17:22]、【14:32】）。"
             f"{emotional_prompt}{trigger_prompt}"
         )
 
@@ -421,7 +423,7 @@ async def chat(
             )
 
         messages = [{"role": "system", "content": system_content}]
-        messages.extend(short_history)
+        messages.extend(with_history_timestamp(m) for m in short_history)
         messages.append({"role": "system", "content": anchor_prompt})
         messages.append({"role": "user", "content": message_text})
 
@@ -459,8 +461,9 @@ async def chat(
             if timer_at_retry and timer_text_retry:
                 timer_at, timer_text = timer_at_retry, timer_text_retry
 
-        history.append({"role": "user", "content": message_text})
-        history.append({"role": "assistant", "content": cleaned_reply})
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        history.append({"role": "user", "content": message_text, "ts": now_ms - 1})
+        history.append({"role": "assistant", "content": cleaned_reply, "ts": now_ms})
         if len(history) > 300:
             state.user_chat_history[user_id] = history[-300:]
         history_store.save(state.user_chat_history)

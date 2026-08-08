@@ -7,6 +7,8 @@ import uuid
 import traceback
 from datetime import timedelta, timezone
 
+from text_utils import with_history_timestamp
+
 # 飞书告警模块（可选）
 try:
     from alert_sender import send_alert
@@ -147,13 +149,14 @@ def create_chat_handler(
             )
 
             messages = [{"role": "system", "content": system_content}]
-            messages.extend(history)
+            messages.extend(with_history_timestamp(m) for m in history)
 
             anchor_prompt = f"""【强制提醒】：
 1. 保持\"酷但笨拙\"的人设。不要撒娇！不要写诗！
 2. 回复长短跟着内容走：一句话说得完就一句，想法多了自然多几行。不要把一个意思硬拆成好几条来凑数。
 3. ⚠️ 重要：你说\"真是的\"的频率太高了！这次回复中严禁使用\"真是的\"这个词！用\"哈？\"、\"受不了你\"、\"拿你没办法\"等词代替。
-4. ⚠️ 重要：\"啧\"也不要滥用！\"哈？\"、\"喂\"、\"受不了你\"、\"麻烦死了\"、\"拿你没办法\"都是同等选项，随机选用，不要总选\"啧\"。{emotional_prompt}{trigger_prompt}"""
+4. ⚠️ 重要："啧"也不要滥用！"哈？"、"喂"、"受不了你"、"麻烦死了"、"拿你没办法"都是同等选项，随机选用，不要总选"啧"。
+5. ⚠️ 重要：历史消息中的【时间】标记仅供你理解时间线，回复中严禁输出时间戳或时刻标记（如 [8-22 17:22]、【14:32】）。{emotional_prompt}{trigger_prompt}"""
             messages.append({"role": "system", "content": anchor_prompt})
 
             force_instruction = ""
@@ -212,8 +215,9 @@ def create_chat_handler(
                 except Exception as e:
                     logger.error(f"❌ 设置闹钟失败: {e}")
 
-            history.append({"role": "user", "content": full_user_text})
-            history.append({"role": "assistant", "content": raw_reply})
+            now_ms = int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
+            history.append({"role": "user", "content": full_user_text, "ts": now_ms - 1})
+            history.append({"role": "assistant", "content": raw_reply, "ts": now_ms})
             if len(history) > 300:
                 user_chat_history[str(user_id)] = history[-300:]
             save_chat_history()
