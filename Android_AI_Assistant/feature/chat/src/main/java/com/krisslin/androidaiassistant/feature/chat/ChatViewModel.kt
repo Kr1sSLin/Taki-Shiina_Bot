@@ -148,7 +148,7 @@ class ChatViewModel @Inject constructor(
     private val receivedFirstChunk = ConcurrentHashMap.newKeySet<String>()
 
     // 流式消息超时时间（毫秒）
-    private val streamingTimeoutMs = 180_000L
+    private val streamingTimeoutMs = 150_000L
 
     private var lastSyncedTimestampMs: Long = 0L
     private var lastSyncedFactTimestampMs: Long = 0L
@@ -303,6 +303,7 @@ class ChatViewModel @Inject constructor(
                     }
                     is WebSocketEvent.Disconnected -> {
                         _uiState.update { it.copy(connectionStatus = ConnectionStatus.DISCONNECTED) }
+                        handleConnectionLost()
                     }
                     is WebSocketEvent.Message -> {
                         handleIncomingMessage(event.text)
@@ -314,6 +315,7 @@ class ChatViewModel @Inject constructor(
                                 error = "连接失败: ${event.throwable.message}"
                             ) 
                         }
+                        handleConnectionLost()
                     }
                 }
             }
@@ -584,6 +586,30 @@ class ChatViewModel @Inject constructor(
             botWebSocketClient.connect(newToken)
         } else {
             _sideEffects.emit(ChatSideEffect.NavigateToLogin)
+        }
+    }
+
+    /**
+     * 连接断开时的兜底：立即清掉所有未完成请求的状态,
+     * 避免一直停留在"打字中"。服务端断线期间生成的回复会在重连后由 full sync 拉回。
+     */
+    private suspend fun handleConnectionLost() {
+        if (pendingRequestIds.isEmpty() && streamingContentCache.isEmpty()) return
+        streamingTimeoutJobs.values.forEach { it.cancel() }
+        streamingTimeoutJobs.clear()
+        for (requestId in pendingRequestIds.toList()) {
+            runCatching { chatRepository.markMessageError("pending_$requestId", "CONNECTION_LOST") }
+            runCatching { chatRepository.markMessageError(requestId, "CONNECTION_LOST") }
+        }
+        streamingContentCache.clear()
+        pendingRequestIds.clear()
+        receivedFirstChunk.clear()
+        _uiState.update {
+            it.copy(
+                botActivity = BotActivityStatus.IDLE,
+                botStage = null,
+                error = "连接中断，未完成的回复已失败，重连后可查看服务端记录"
+            )
         }
     }
 

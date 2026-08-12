@@ -142,6 +142,8 @@ last_message_at: dict[str, datetime] = {}
 is_processing: dict[str, bool] = {}
 pending_flush: dict[str, bool] = {}
 
+WORKER_IDLE_TIMEOUT = 600  # 秒：worker 无任何新消息超过该时长则自退出,避免断线后泄漏
+
 
 def _missing_required_tokens() -> list[str]:
     if DEVICE_TOKEN_ERROR:
@@ -643,7 +645,18 @@ def _ensure_user_worker(user_id: str):
     async def _worker():
         while True:
             event = message_events[user_id]
-            await event.wait()
+            try:
+                await asyncio.wait_for(event.wait(), timeout=WORKER_IDLE_TIMEOUT)
+            except asyncio.TimeoutError:
+                # 长时间无消息：worker 自退出并清理状态,避免连接断开后协程泄漏
+                logger.info(f"[防抖] worker 空闲超时退出: user={user_id}")
+                debounce_jobs.pop(user_id, None)
+                message_events.pop(user_id, None)
+                last_message_at.pop(user_id, None)
+                is_processing.pop(user_id, None)
+                pending_flush.pop(user_id, None)
+                message_buffer.pop(user_id, None)
+                return
             event.clear()
 
             # 等待“静默窗口”：在窗口内若收到新消息则重置等待。
@@ -805,14 +818,8 @@ async def websocket_chat(websocket: WebSocket):
         logger.exception(f"[WS] 连接异常: {e}")
     finally:
         ACTIVE_CONNECTIONS.get(user_id, set()).discard(websocket)
-        if not ACTIVE_CONNECTIONS.get(user_id):
-            worker = debounce_jobs.pop(user_id, None)
-            if worker and not worker.done():
-                worker.cancel()
-            message_events.pop(user_id, None)
-            last_message_at.pop(user_id, None)
-            is_processing.pop(user_id, None)
-            pending_flush.pop(user_id, None)
+        # 注意：不取消 worker、不清理状态。断线后防抖/生成流程继续跑完并写入 timeline,
+        # 消息不丢失,App 重连后通过 full sync 拉回。worker 空闲超时后自退出(见 _ensure_user_worker)。
 
 
 @app.get("/healthz")

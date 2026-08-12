@@ -7,6 +7,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.text.format.DateUtils
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -113,6 +114,14 @@ fun ChatRoute(
     var messageMenuTargetId by remember { mutableStateOf<String?>(null) }
     var showAttachMenu by remember { mutableStateOf(false) }
     var showEmojiMenu by remember { mutableStateOf(false) }
+
+    // 表情面板/附件面板拉起时，按返回键先收起面板而非退出 App
+    BackHandler(enabled = showEmojiMenu) {
+        showEmojiMenu = false
+    }
+    BackHandler(enabled = showAttachMenu) {
+        showAttachMenu = false
+    }
     val tempCameraUri = remember { mutableStateOf<Uri?>(null) }
     val revealState = LocalThemeRevealState.current
     val keyboardController = LocalSoftwareKeyboardController.current
