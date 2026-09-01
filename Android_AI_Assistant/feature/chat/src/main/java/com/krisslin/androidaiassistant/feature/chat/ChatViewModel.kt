@@ -231,6 +231,8 @@ class ChatViewModel @Inject constructor(
      */
     private fun loadHistoryFromDb() {
         viewModelScope.launch {
+            // 清理历史遗留的空 bot 消息（后端旧版空回复落库的脏数据）
+            runCatching { chatRepository.deleteBlankBotMessages() }
             chatRepository.observeMessagesWithAttachments(sessionId).collect { pairs ->
                 val uiMessages = pairs.map { (entity, attachments) ->
                     entity.toUiModel(
@@ -385,24 +387,26 @@ class ChatViewModel @Inject constructor(
         // 标记用户消息已发送
         chatRepository.markUserMessageSent(requestId)
 
-        val segments = splitBotSegments(payload.content)
-        if (segments.isEmpty()) {
-            chatRepository.saveBotMessage(
-                messageId = payload.messageId,
-                sessionId = sessionId,
-                content = payload.content,
-                isStreaming = false,
-                timestamp = payload.timestamp
-            )
-        } else {
-            segments.forEachIndexed { index, segment ->
+        if (payload.content.isNotBlank()) {
+            val segments = splitBotSegments(payload.content)
+            if (segments.isEmpty()) {
                 chatRepository.saveBotMessage(
-                    messageId = "${payload.messageId}_$index",
+                    messageId = payload.messageId,
                     sessionId = sessionId,
-                    content = segment,
+                    content = payload.content,
                     isStreaming = false,
-                    timestamp = payload.timestamp + index
+                    timestamp = payload.timestamp
                 )
+            } else {
+                segments.forEachIndexed { index, segment ->
+                    chatRepository.saveBotMessage(
+                        messageId = "${payload.messageId}_$index",
+                        sessionId = sessionId,
+                        content = segment,
+                        isStreaming = false,
+                        timestamp = payload.timestamp + index
+                    )
+                }
             }
         }
 
@@ -441,7 +445,6 @@ class ChatViewModel @Inject constructor(
 
                     val finalContent = payload.finalContent ?: cachedContent ?: ""
                     val finalMessageId = payload.messageId ?: "bot_$requestId"
-                    val segments = splitBotSegments(finalContent)
                     val finalTimestamp = payload.timestamp ?: System.currentTimeMillis()
 
                     // 删除流式占位消息（如果存在）
@@ -449,28 +452,31 @@ class ChatViewModel @Inject constructor(
                         chatRepository.deleteMessage(pendingMessageId)
                     }
 
-                    // 保存分条气泡
-                    if (segments.isEmpty()) {
-                        chatRepository.saveBotMessage(
-                            messageId = finalMessageId,
-                            sessionId = sessionId,
-                            content = finalContent,
-                            isStreaming = false,
-                            contentType = payload.contentType ?: ContentType.TEXT,
-                            modelProvider = payload.modelProvider ?: ModelProvider.DEEPSEEK,
-                            timestamp = finalTimestamp
-                        )
-                    } else {
-                        segments.forEachIndexed { index, segment ->
+                    // 保存分条气泡（空内容不落库）
+                    if (finalContent.isNotBlank()) {
+                        val segments = splitBotSegments(finalContent)
+                        if (segments.isEmpty()) {
                             chatRepository.saveBotMessage(
-                                messageId = "${finalMessageId}_$index",
+                                messageId = finalMessageId,
                                 sessionId = sessionId,
-                                content = segment,
+                                content = finalContent,
                                 isStreaming = false,
                                 contentType = payload.contentType ?: ContentType.TEXT,
                                 modelProvider = payload.modelProvider ?: ModelProvider.DEEPSEEK,
-                                timestamp = finalTimestamp + index
+                                timestamp = finalTimestamp
                             )
+                        } else {
+                            segments.forEachIndexed { index, segment ->
+                                chatRepository.saveBotMessage(
+                                    messageId = "${finalMessageId}_$index",
+                                    sessionId = sessionId,
+                                    content = segment,
+                                    isStreaming = false,
+                                    contentType = payload.contentType ?: ContentType.TEXT,
+                                    modelProvider = payload.modelProvider ?: ModelProvider.DEEPSEEK,
+                                    timestamp = finalTimestamp + index
+                                )
+                            }
                         }
                     }
 
@@ -904,6 +910,7 @@ class ChatViewModel @Inject constructor(
                 val messageId = item.getStringOrNull("messageId") ?: return@runCatching
                 val role = item.getStringOrNull("role") ?: return@runCatching
                 val content = item.getStringOrNull("content") ?: return@runCatching
+                if (content.isBlank()) return@runCatching
                 val timestamp = item.getLongOrNull("timestamp") ?: return@runCatching
 
                 if (role == "user") {

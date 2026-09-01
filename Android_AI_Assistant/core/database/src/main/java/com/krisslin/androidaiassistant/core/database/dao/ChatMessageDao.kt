@@ -45,4 +45,7 @@ interface ChatMessageDao {
 
     @Query("DELETE FROM chat_messages WHERE message_id = :messageId")
     suspend fun deleteById(messageId: String)
+
+    @Query("DELETE FROM chat_messages WHERE role = 'bot' AND (content IS NULL OR TRIM(content) = '')")
+    suspend fun deleteBlankBotMessages(): Int
 }
