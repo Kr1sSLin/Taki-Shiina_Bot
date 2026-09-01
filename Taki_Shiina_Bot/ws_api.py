@@ -240,6 +240,35 @@ def _load_memory_timeline() -> list[dict]:
         return []
 
 
+EMPTY_REPLY_FALLBACK = "……"
+
+
+async def _resolve_empty_reply(client, cleaned_reply: str, messages: list[dict]) -> str:
+    """空回复兜底：重采样一次，仍为空则用占位文案，禁止空串写入时间线。"""
+    retry_messages = list(messages)
+    retry_messages.append(
+        {
+            "role": "system",
+            "content": "【空回复兜底】：你刚才的回复经清洗后为空。请用符合人设的自然语气重新回复一句，禁止输出空内容或纯动作描述。",
+        }
+    )
+    try:
+        resp = await client.chat.completions.create(
+            model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
+            messages=retry_messages,
+            temperature=1.0,
+        )
+        retry_raw = (resp.choices[0].message.content or "").strip()
+        if retry_raw:
+            retry_cleaned, _, _ = parse_timer_instruction(retry_raw)
+            retry_final = inject_emojis(sanitize_taki_reply(retry_cleaned))
+            if retry_final.strip():
+                return retry_final
+    except Exception as e:
+        logger.warning(f"[WS] 空回复兜底重采样失败: {e}")
+    return EMPTY_REPLY_FALLBACK
+
+
 async def append_timeline(items: list[dict]):
     async with TIMELINE_LOCK:
         data = _load_timeline()
@@ -559,6 +588,10 @@ async def process_buffered_messages(user_id: str):
             if timer_at_retry and timer_text_retry:
                 timer_at, timer_text = timer_at_retry, timer_text_retry
         final_reply = inject_emojis(sanitize_taki_reply(cleaned_reply))
+        if not final_reply.strip():
+            logger.warning(f"[WS] 空回复兜底重采样: user={user_id}")
+            final_reply = await _resolve_empty_reply(client, cleaned_reply, messages)
+            _trace_text("D_FINAL_FALLBACK", user_id, final_reply)
         _trace_text("D_FINAL", user_id, final_reply)
 
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -901,6 +934,9 @@ async def send_greeting(user_id: str, scenario_type: str):
         )
         raw_reply = response.choices[0].message.content or ""
         final_reply = inject_emojis(sanitize_taki_reply(raw_reply))
+        if not final_reply.strip():
+            logger.warning(f"[问候] 空回复，使用占位文案: user={user_id}")
+            final_reply = EMPTY_REPLY_FALLBACK
 
         greeting_id = f"greeting_{uuid.uuid4().hex}"
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)

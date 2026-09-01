@@ -219,6 +219,13 @@ class ChatRepository @Inject constructor(
     }
 
     /**
+     * 清理历史遗留的空 bot 消息（后端旧版空回复落库的脏数据）
+     */
+    suspend fun deleteBlankBotMessages(): Int {
+        return chatMessageDao.deleteBlankBotMessages()
+    }
+
+    /**
      * 追加流式消息内容（增量）
      */
     suspend fun appendStreamingContent(messageId: String, delta: String) {
