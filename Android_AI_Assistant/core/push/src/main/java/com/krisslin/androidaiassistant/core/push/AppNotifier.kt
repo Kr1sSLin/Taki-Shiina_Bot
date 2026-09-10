@@ -24,12 +24,17 @@ class AppNotifier @Inject constructor(
         const val CHANNEL_CHAT = "chat_messages"
         const val CHANNEL_REMINDER = "chat_reminders"
         const val CHANNEL_GREETING = "greeting_messages"
+        // 互动积分 · 等级体系（PRD FR-16 升级庆祝 / FR-18 断签提前提醒）
+        const val CHANNEL_PROGRESS = "progress_updates"
 
         // 固定通知 ID：保证同类通知替换展示、可被定向取消（1001 为前台服务常驻通知，勿动）
         const val NOTIFICATION_ID_CHAT = 1002
         const val NOTIFICATION_ID_GREETING = 1003
         const val NOTIFICATION_ID_ERROR = 1004
         const val NOTIFICATION_ID_REMINDER = 1005
+        const val NOTIFICATION_ID_LEVEL = 1006
+        const val NOTIFICATION_ID_STREAK = 1007
+        const val NOTIFICATION_ID_PROGRESS = 1008
 
         // 通知未被打点/打开时，系统超时自动移除（兜底防常驻）
         private const val AUTO_DISMISS_TIMEOUT_MS = 10 * 1000L
@@ -65,9 +70,19 @@ class AppNotifier @Inject constructor(
             enableVibration(true)
             vibrationPattern = longArrayOf(0, 300, 200, 300)
         }
+        val progress = NotificationChannel(
+            CHANNEL_PROGRESS,
+            "陪伴与等级",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0, 300, 200, 300)
+        }
         manager.createNotificationChannel(chat)
         manager.createNotificationChannel(reminder)
         manager.createNotificationChannel(greeting)
+        manager.createNotificationChannel(progress)
     }
 
     private fun launchIntent(): PendingIntent {
@@ -167,6 +182,78 @@ class AppNotifier @Inject constructor(
     }
 
     /**
+     * 等级变化通知（PRD FR-16 / EDGE-11 / EDGE-8：推送给该账号全部在线设备）。
+     *
+     * `changeType` 区分文案：首次达成走升级庆祝；补签回溯挽回走克制的“已恢复”；
+     * 断签回落明确告知等级已重置，并提示补签卡可挽回。
+     */
+    fun showLevelChanged(changeType: String?, levelName: String, continuousDays: Int) {
+        if (!canPostNotifications()) return
+        val title: String
+        val body: String
+        when (changeType) {
+            "UPGRADE" -> {
+                title = "🎉 升级啦！"
+                body = "陪立希的第 $continuousDays 天，解锁新称号「$levelName」。"
+            }
+            "RESTORE" -> {
+                title = "等级已恢复"
+                body = "补签成功，称号「$levelName」回来了（连续陪伴 $continuousDays 天）。"
+            }
+            "RESET" -> {
+                title = "连续陪伴中断"
+                body = "等级已重置为初始状态，积分不受影响；使用补签卡可以挽回。"
+            }
+            else -> {
+                title = "陪伴进度更新"
+                body = "当前称号「$levelName」，连续陪伴 $continuousDays 天。"
+            }
+        }
+        post(NOTIFICATION_ID_LEVEL, title, body)
+    }
+
+    /** 断签提前提醒（PRD FR-18：连续 3～4 天未对话，避免因疏忽丢失等级）。 */
+    fun showStreakWarning(levelName: String, remainingDays: Int, deadlineDate: String?) {
+        if (!canPostNotifications()) return
+        val levelText = if (levelName.isBlank()) "当前等级" else "「$levelName」"
+        val deadline = if (deadlineDate.isNullOrBlank()) "" else "\n请在 $deadlineDate 前和立希说句话。"
+        post(
+            NOTIFICATION_ID_STREAK,
+            "⚠️ 立希还在等你",
+            "已经好几天没聊天了，$levelText 将在 $remainingDays 天后归零。$deadline"
+        )
+    }
+
+    /** 补签卡发放/使用提示（PRD FR-19 / FR-21）。 */
+    fun showMakeupCardChanged(reason: String?, available: Int, maxAvailable: Int) {
+        if (!canPostNotifications()) return
+        val body = if (reason == "USED") {
+            "已使用 1 张补签卡，剩余 $available/$maxAvailable 张。"
+        } else {
+            "本月补签卡已到账，当前可用 $available/$maxAvailable 张（可跨月结转）。"
+        }
+        post(NOTIFICATION_ID_PROGRESS, "补签卡", body)
+    }
+
+    private fun post(id: Int, title: String, body: String) {
+        val pi = launchIntent()
+        val notification = NotificationCompat.Builder(context, CHANNEL_PROGRESS)
+            .setSmallIcon(android.R.drawable.btn_star_big_on)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setCategory(NotificationCompat.CATEGORY_SOCIAL)
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .setTimeoutAfter(AUTO_DISMISS_TIMEOUT_MS)
+            .build()
+        NotificationManagerCompat.from(context).notify(id, notification)
+    }
+
+    /**
      * 取消所有消息类通知（App 回到前台时调用）。
      * 注意不使用 cancelAll()：避免误删 WebSocketService 的前台常驻通知（1001）。
      */
@@ -176,6 +263,9 @@ class AppNotifier @Inject constructor(
         manager.cancel(NOTIFICATION_ID_GREETING)
         manager.cancel(NOTIFICATION_ID_ERROR)
         manager.cancel(NOTIFICATION_ID_REMINDER)
+        manager.cancel(NOTIFICATION_ID_LEVEL)
+        manager.cancel(NOTIFICATION_ID_STREAK)
+        manager.cancel(NOTIFICATION_ID_PROGRESS)
     }
 
     private fun canPostNotifications(): Boolean {

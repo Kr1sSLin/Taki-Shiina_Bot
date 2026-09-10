@@ -14,6 +14,13 @@ memory_timeline.json
 refresh_tokens.json
 *.bak
 
+# 互动积分 · 等级体系（PRD 5.1~5.4）：运行时加密数据 + 跨进程锁文件
+points_account.json
+progress_data.json
+*.json.lock
+# 后台可配置项：首次启动由代码默认值生成，运营可直接编辑或走 /api/v1/admin 接口
+config/gamification_config.json
+
 # Python 虚拟环境
 .venv/
 venv/

@@ -93,6 +93,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
 import com.krisslin.androidaiassistant.core.database.repository.MessageStatus
 import com.krisslin.androidaiassistant.core.ui.theme.LocalThemeRevealState
+import com.krisslin.androidaiassistant.feature.interaction.InteractionEntry
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -104,7 +105,8 @@ fun ChatRoute(
     isDarkMode: Boolean = false,
     onToggleTheme: () -> Unit = {},
     onNavigateToLogin: () -> Unit = {},
-    onNavigateToSettings: () -> Unit = {}
+    onNavigateToSettings: () -> Unit = {},
+    onNavigateToProfile: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsState()
@@ -392,6 +394,30 @@ fun ChatRoute(
             Spacer(modifier = Modifier.height(8.dp))
         }
     }
+
+        // ===== 互动礼物 · 积分 · 等级（PRD FR-1 / FR-15）=====
+        // 主界面右下角常驻“+”按钮 + 互动菜单浮层；上方为当前等级/积分入口
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 20.dp, bottom = 104.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            LevelEntryChip(
+                levelName = state.levelName,
+                balance = state.balance,
+                onClick = onNavigateToProfile
+            )
+            InteractionEntry(onSend = { item -> viewModel.sendInteraction(item.id) })
+        }
+    }
+
+    state.levelCelebration?.let { celebration ->
+        LevelCelebrationDialog(
+            celebration = celebration,
+            onDismiss = viewModel::dismissLevelCelebration
+        )
     }
 
     showImagePreview?.let { uri ->

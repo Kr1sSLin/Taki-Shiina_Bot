@@ -10,6 +10,14 @@ build/
 *.apk
 *.aab
 
+# 本地构建环境（沙箱/本机验证用，不属于交付物）
+.gradle-home/
+.android-home/
+.xdg-home/
+.jdk-home/
+.logs/
+.build-android.sh
+
 # IDE
 .idea/
 

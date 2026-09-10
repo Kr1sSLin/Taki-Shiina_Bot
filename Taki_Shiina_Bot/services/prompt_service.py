@@ -3,8 +3,13 @@ import datetime
 import os
 from datetime import timedelta, timezone
 
+from time_utils import next_hour_boundary
+
 
 class PromptService:
+    # 过期兜底重建的最小间隔（秒）：避免生成失败时被反复触发
+    REFRESH_DEBOUNCE_SECONDS = 60
+
     def __init__(self, client, memory_service, notify_owner, scene_cache, user_memo, logger):
         self.client = client
         self.memory_service = memory_service
@@ -12,6 +17,8 @@ class PromptService:
         self.scene_cache = scene_cache
         self.user_memo = user_memo
         self.logger = logger
+        self._refresh_tasks: dict[str, asyncio.Task] = {}
+        self._last_refresh_at: dict[str, float] = {}
 
     async def _notify_safe(self, text):
         """兼容同步/异步 notify_owner 回调,且通知失败不影响主流程。"""
@@ -71,14 +78,63 @@ class PromptService:
             return "【立希当前状态】：\n- 情绪底色：心情平稳，但懒得多说话。\n- 正在做：坐着发呆，手机放在旁边。\n⚠️ 上述状态会影响语气和节奏，但不改变对 Kris 的核心态度。不要直接说出状态，让它自然流露。"
 
     async def get_random_scene(self, user_id):
+        """取当前「立希当前状态」。
+
+        E5（stale-while-revalidate）：缓存过期时**先返回旧心情**，同时后台异步重建，
+        绝不在用户请求链路上等一次 LLM 调用（否则会吃掉 3 秒 SLA / 互动 15 秒预算）。
+        整点主动刷新由 ws_api 的 `scene_refresh_scheduler` 负责，这里是兜底自愈。
+        """
         cache = self.scene_cache.get(user_id)
+        now = datetime.datetime.now(timezone.utc)
         if cache is None:
-            now = datetime.datetime.now(timezone.utc)
-            next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
             scene_text = await self.generate_scene(user_id)
-            self.scene_cache[user_id] = {"scene": scene_text, "expires_at": next_hour}
-            self.logger.info(f"🕐 [初始场景] 下次切换：{next_hour.strftime('%H:%M')} UTC")
-        return self.scene_cache[user_id]["scene"]
+            self.scene_cache[user_id] = {"scene": scene_text, "expires_at": next_hour_boundary(now)}
+            self.logger.info(f"🕐 [初始场景] 下次切换：{self.scene_cache[user_id]['expires_at'].strftime('%H:%M')} UTC")
+            return scene_text
+        if self._is_expired(cache, now):
+            self._schedule_refresh(user_id)
+        return cache["scene"]
+
+    def _is_expired(self, cache: dict, now: datetime.datetime) -> bool:
+        expires_at = cache.get("expires_at")
+        if not isinstance(expires_at, datetime.datetime):
+            return True
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return now >= expires_at
+
+    def _schedule_refresh(self, user_id) -> None:
+        """后台异步重建，带 60 秒防抖，避免生成失败时被反复触发。"""
+        existing = self._refresh_tasks.get(user_id)
+        if existing and not existing.done():
+            return
+        last = self._last_refresh_at.get(user_id)
+        try:
+            now_ts = asyncio.get_running_loop().time()
+        except RuntimeError:  # 非事件循环上下文（测试/同步调用）不做防抖
+            now_ts = 0.0
+        if last is not None and now_ts - last < self.REFRESH_DEBOUNCE_SECONDS:
+            return
+        self._last_refresh_at[user_id] = now_ts
+        self._refresh_tasks[user_id] = asyncio.create_task(self.refresh_scene(user_id))
+
+    async def refresh_scene(self, user_id):
+        """重新生成并写入心情缓存（整点任务、内部接口、过期兜底都走这里）。"""
+        try:
+            scene_text = await self.generate_scene(user_id)
+        except Exception as exc:  # generate_scene 内部已兜底，这里再保一层
+            self.logger.error(f"❌ [场景刷新] 失败，保留旧心情: user={user_id}, err={exc}")
+            return self.scene_cache.get(user_id, {}).get("scene")
+        if not scene_text:
+            return self.scene_cache.get(user_id, {}).get("scene")
+        self.scene_cache[user_id] = {
+            "scene": scene_text,
+            "expires_at": next_hour_boundary(datetime.datetime.now(timezone.utc)),
+        }
+        return scene_text
+
+    def invalidate_scene(self, user_id) -> None:
+        self.scene_cache.pop(user_id, None)
 
     async def get_system_prompt(self, user_id):
         user_dynamic_info = self.memory_service.get_profile(user_id)

@@ -3,6 +3,7 @@ package com.krisslin.androidaiassistant.core.network.di
 import com.krisslin.androidaiassistant.core.network.BuildConfig
 import com.krisslin.androidaiassistant.core.network.api.AuthApi
 import com.krisslin.androidaiassistant.core.network.api.ChatApi
+import com.krisslin.androidaiassistant.core.network.api.GamificationApi
 import com.krisslin.androidaiassistant.core.network.auth.AuthInterceptor
 import com.krisslin.androidaiassistant.core.network.auth.TokenAuthenticator
 import com.krisslin.androidaiassistant.core.network.ws.BotWebSocketClient
@@ -97,6 +98,11 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideChatApi(retrofit: Retrofit): ChatApi = retrofit.create(ChatApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideGamificationApi(retrofit: Retrofit): GamificationApi =
+        retrofit.create(GamificationApi::class.java)
 
     @Provides
     @Singleton

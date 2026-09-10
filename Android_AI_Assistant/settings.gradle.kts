@@ -28,5 +28,7 @@ include(
     ":feature:auth",
     ":feature:chat",
     ":feature:history",
-    ":feature:settings"
+    ":feature:settings",
+    ":feature:interaction",
+    ":feature:profile"
 )
