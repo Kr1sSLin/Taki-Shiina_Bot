@@ -28,6 +28,7 @@ from text_utils import (
     strip_polluted_tail,
     with_history_timestamp,
 )
+from time_utils import build_time_block
 
 _base_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_base_dir, ".env"))
@@ -383,7 +384,7 @@ async def chat(
 
         utc_now = datetime.now(timezone.utc)
         beijing_now = utc_now + timedelta(hours=8)
-        time_str = f"【当前北京时间】：{beijing_now.strftime('%H:%M')}"
+        time_str = build_time_block(beijing_now)
 
         time_enforcement = "\n".join((
             "1. **时间锚定**：你必须无条件信任上述【当前北京时间】，绝不能凭训练数据或常识猜测当前时间。",

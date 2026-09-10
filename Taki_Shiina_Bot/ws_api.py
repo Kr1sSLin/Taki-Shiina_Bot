@@ -14,7 +14,8 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 import google.generativeai as genai
 from openai import AsyncOpenAI
 
@@ -34,6 +35,24 @@ from text_utils import (
     strip_polluted_tail,
     with_history_timestamp,
 )
+
+# ===== 互动礼物 · 积分机制 · 等级体系（PRD 新增功能） =====
+from api.v1.admin import router as admin_router
+from api.v1.deps import AuthRuntime, configure_auth, register_gamification
+from api.v1.interaction import router as interaction_router
+from api.v1.level import router as level_router
+from api.v1.points import router as points_router
+from handlers.interaction_handler import InteractionHandler
+from jobs.points_jobs import PointsJobs
+from services.gamification_service import GamificationService
+from services.debounce_merge import collect_pending_after_quiet_window
+from services.points_events import (
+    level_changed_event,
+    makeup_card_changed_event,
+    points_changed_event,
+)
+from services.progress_store import SOURCE_CHAT
+from time_utils import build_time_block, describe_business_period
 
 _base_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_base_dir, ".env"))
@@ -384,6 +403,122 @@ async def send_error(
     )
 
 
+# ================= 互动礼物 · 积分机制 · 等级体系 接入 =================
+# 说明：积分/等级数据由 ws_api 进程独占持有——用户在 App 内的一切对话都经 WebSocket
+# 抵达本进程，互动回复又必须通过本进程的 ACTIVE_CONNECTIONS 推送，
+# 因此把「积分/等级/补签/互动」全部收敛到这一个进程，避免多进程双写同一份账本。
+# REST 路由挂在同一 FastAPI app 上（反向代理需把 /api/v1/interaction、/api/v1/points、
+# /api/v1/level、/api/v1/admin 指向本服务，见 README 部署说明）。
+
+gamification = GamificationService(
+    base_dir=_base_dir,
+    logger=logger,
+    default_user_id=DEFAULT_USER_ID,
+)
+
+configure_auth(
+    AuthRuntime(
+        jwt_secret=AUTH_JWT_SECRET,
+        device_allowlist=DEVICE_ALLOWLIST,
+        legacy_token_map=DEVICE_TOKEN_MAP,
+        fallback_tokens=[BOT_WS_TOKEN, BOT_HTTP_TOKEN],
+        default_user_id=DEFAULT_USER_ID,
+    )
+)
+register_gamification(gamification)
+
+app.include_router(interaction_router, prefix="/api/v1", tags=["interaction"])
+app.include_router(points_router, prefix="/api/v1", tags=["points"])
+app.include_router(level_router, prefix="/api/v1", tags=["level"])
+app.include_router(admin_router, prefix="/api/v1", tags=["admin"])
+
+
+def _load_alert_sender():
+    """飞书告警为可选依赖（PRD 九·可观测性：互动/积分异常接入既有告警）。"""
+    try:
+        from alert_sender import send_alert
+
+        return send_alert
+    except Exception as exc:  # pragma: no cover - 取决于部署环境
+        logger.warning(f"[积分] 飞书告警不可用，已降级为仅日志: {exc}")
+        return None
+
+
+ALERT_SENDER = _load_alert_sender()
+
+# B 方案：用户「先发文字、防抖没到就送礼物」时，等静默窗口结束并把那批消息摘走一起回答，
+# 使整轮只产生一条回复（被摘消息的 requestId 会随回复下发，客户端据此把气泡标记为已发送）。
+MAX_INTERACTION_MERGE_WAIT = 25.0
+
+
+async def wait_and_collect_pending_texts(user_id: str) -> list[dict]:
+    return await collect_pending_after_quiet_window(
+        user_id,
+        buffer=message_buffer,
+        last_message_at=last_message_at,
+        window_seconds=calc_debounce_window,
+        max_wait_seconds=MAX_INTERACTION_MERGE_WAIT,
+        logger=logger,
+    )
+
+
+gamification.interaction = InteractionHandler(
+    config_service=gamification.config,
+    points_service=gamification.points,
+    makeup_card_service=gamification.makeup,
+    level_service=gamification.level,
+    client=client,
+    prompt_service=prompt_service,
+    weather_service=weather_service,
+    state=state,
+    history_store=history_store,
+    append_timeline=append_timeline,
+    broadcast_json=broadcast_json,
+    # B 方案：用户刚发文字就送礼时，等静默窗口结束并把那些消息摘过来一起回答（只回一条）
+    pending_flush_waiter=wait_and_collect_pending_texts,
+    # 兜底：万一缓冲没被摘走（例如聊天 worker 正在处理），也让礼物回复看到那句文字
+    pending_text_provider=lambda uid: [
+        msg.get("content", "") for msg in message_buffer.get(uid, []) if msg.get("content")
+    ],
+    logger=logger,
+    alert_sender=ALERT_SENDER,
+)
+
+points_jobs = PointsJobs(
+    gamification=gamification,
+    logger=logger,
+    broadcast_json=broadcast_json,
+    alert_sender=ALERT_SENDER,
+)
+
+
+async def record_chat_activity(user_id: str) -> None:
+    """用户主动发起的对话 → 每日有效对话 + 积分结算（PRD FR-10 / 4.3）。
+
+    早安/晚安等系统推送走 ``send_greeting``，不经过本函数，因此天然不计入积分。
+    """
+    try:
+        gamification.touch_user(user_id)
+        result = gamification.points.record_user_activity(user_id, source=SOURCE_CHAT)
+    except Exception as exc:
+        logger.exception(f"[积分] 记录有效对话失败: user={user_id}, err={exc}")
+        return
+
+    try:
+        for entry in result.rewards:
+            await broadcast_json(user_id, points_changed_event(entry))
+        if result.level is not None and result.level.level_changed:
+            await broadcast_json(user_id, level_changed_event(result.level))
+        granted = gamification.makeup.ensure_initial_grant(user_id)
+        if granted:
+            await broadcast_json(
+                user_id,
+                makeup_card_changed_event(gamification.makeup.get_summary(user_id), "MONTHLY_GRANT"),
+            )
+    except Exception as exc:
+        logger.warning(f"[积分] 事件推送失败: user={user_id}, err={exc}")
+
+
 async def process_buffered_messages(user_id: str):
     if is_processing.get(user_id):
         pending_flush[user_id] = True
@@ -411,7 +546,8 @@ async def process_buffered_messages(user_id: str):
 
         utc_now = datetime.now(timezone.utc)
         beijing_now = utc_now + timedelta(hours=8)
-        time_str = f"【当前北京时间】：{beijing_now.strftime('%H:%M')}"
+        # 服务端判定时段后注入（避免模型自己按 HH:MM 猜时段）
+        time_str = build_time_block(beijing_now)
 
         time_enforcement = "\n".join((
             "1. **时间锚定**：你必须无条件信任上述【当前北京时间】，绝不能凭训练数据或常识猜测当前时间。",
@@ -841,6 +977,8 @@ async def websocket_chat(websocket: WebSocket):
                         "payload": {"debounceWindowSec": calc_debounce_window(user_id)},
                     },
                 )
+                # PRD FR-10 / 4.3：用户主动发起的对话计为当日有效对话并结算积分（幂等）
+                await record_chat_activity(user_id)
                 schedule_debounce(user_id)
                 continue
 
@@ -858,6 +996,109 @@ async def websocket_chat(websocket: WebSocket):
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok", "service": "ws_api"}
+
+
+# ================= 心情（立希当前状态）整点刷新 =================
+# 背景：原机制只把 expires_at 写进缓存、从未比对，且整点刷新任务只挂在 bot.py（Telegram）上，
+# 所以在 App 这条链路上，心情从 ws_api 进程启动后就不再变化。这里补上：
+#   S1 进程内整点任务：整点后随机 0~5 分钟主动刷新（用户请求永远命中热缓存，不额外等 LLM）
+#   E5 过期兜底：get_random_scene 发现过期时先返回旧心情、后台异步重建（PromptService 内实现）
+#   S3 内部接口：POST /internal/scene/refresh 供运维手动触发/验证
+
+SCENE_REFRESH_MAX_OFFSET_SECONDS = 300
+
+
+def _scene_target_user_ids() -> list[str]:
+    users = set(gamification.known_user_ids())
+    users.update(str(uid) for uid in state.user_chat_history.keys())
+    users.add(DEFAULT_USER_ID)
+    return sorted(uid for uid in users if uid)
+
+
+async def refresh_all_scenes() -> int:
+    """刷新所有相关用户的「立希当前状态」，返回成功数。"""
+    targets = _scene_target_user_ids()
+    succeeded = 0
+    for uid in targets:
+        try:
+            scene = await prompt_service.refresh_scene(uid)
+            if scene:
+                succeeded += 1
+        except Exception as exc:
+            logger.warning(f"[心情] 刷新失败: user={uid}, err={exc}")
+    if succeeded:
+        logger.info(
+            f"[心情] 已刷新 {succeeded}/{len(targets)} 个用户（当前时段：{describe_business_period()}）"
+        )
+    return succeeded
+
+
+async def scene_refresh_scheduler():
+    """S1：每个自然小时刷新一次心情（整点后随机 0~5 分钟触发，避免整点打 API）。"""
+    current_hour: str | None = None
+    pending_offset: int | None = None
+    while True:
+        try:
+            beijing_now = datetime.now(timezone.utc) + timedelta(hours=8)
+            hour_key = beijing_now.strftime("%Y-%m-%dT%H")
+            if hour_key != current_hour:
+                current_hour = hour_key
+                pending_offset = random.randint(0, SCENE_REFRESH_MAX_OFFSET_SECONDS)
+                logger.info(
+                    f"[心情] {beijing_now.strftime('%H:%M')} 进入新整点，"
+                    f"{pending_offset}s 后刷新立希当前状态"
+                )
+            if pending_offset is not None:
+                elapsed = beijing_now.minute * 60 + beijing_now.second
+                if elapsed >= pending_offset:
+                    pending_offset = None
+                    await refresh_all_scenes()
+        except Exception as exc:
+            logger.exception(f"[心情] 整点刷新调度异常: {exc}")
+            if ALERT_SENDER:
+                try:
+                    ALERT_SENDER(f"❗ 心情整点刷新异常: {exc}")
+                except Exception:
+                    pass
+        await asyncio.sleep(30)
+
+
+@app.post("/internal/scene/refresh")
+async def internal_scene_refresh(
+    request: Request,
+    x_internal_token: str | None = Header(default=None),
+    userId: str | None = None,
+):
+    """S3：手动触发心情刷新（仅本机 + 内部 token）。
+
+    例：curl -X POST "http://127.0.0.1:8001/internal/scene/refresh?userId=kris" \\
+         -H "X-Internal-Token: $BOT_WS_TOKEN"
+    """
+    client_host = (request.client.host if request.client else "") or ""
+    if client_host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=403, detail="仅允许本机调用")
+    allowed = {token for token in (BOT_WS_TOKEN, BOT_HTTP_TOKEN) if token}
+    if not allowed or (x_internal_token or "").strip() not in allowed:
+        raise HTTPException(status_code=401, detail="内部 token 无效")
+
+    if userId:
+        scene = await prompt_service.refresh_scene(userId)
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {"userId": userId, "scene": scene, "period": describe_business_period()},
+        }
+    count = await refresh_all_scenes()
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": {
+            "refreshedUsers": count,
+            "userIds": _scene_target_user_ids(),
+            "period": describe_business_period(),
+            "scenes": {uid: state.scene_cache.get(uid, {}).get("scene") for uid in _scene_target_user_ids()},
+        },
+    }
 
 
 # ================= 定时问候 =================
@@ -898,25 +1139,30 @@ async def send_greeting(user_id: str, scenario_type: str):
 
     beijing_now = datetime.now(timezone.utc) + timedelta(hours=8)
     current_time_str = beijing_now.strftime("%H:%M")
+    current_period = describe_business_period(beijing_now)
+    time_block = build_time_block(beijing_now)
 
     if scenario_type == "morning":
         selected_script = random.choice(MORNING_SCRIPTS)
-        base_instruction = f"现在是北京时间 {current_time_str}。作为立希给用户发早安。"
+        base_instruction = f"现在是北京时间 {current_time_str}（{current_period}）。作为立希给用户发早安。"
     else:
         selected_script = random.choice(NIGHT_SCRIPTS)
         base_instruction = (
-            f"现在是北京时间 {current_time_str} (深夜)。"
+            f"现在是北京时间 {current_time_str}（{current_period}）。"
             "用户还没睡。作为立希，不要发\"晚安\"（因为发了晚安话题就结束了）。"
             "你要发一条消息确认他在干什么，或者吐槽他怎么还醒着，并表示你也还醒着，可以继续陪他。"
         )
 
+    scenario_label = "早安" if scenario_type == "morning" else "深夜问候"
     final_instruction = (
+        f"{time_block}\n\n"
         f"{base_instruction}\n\n"
         f"本次随机到的灵感剧本：\n{selected_script}\n\n"
         f"【强制逻辑修正】：\n"
-        f"1. 时间一致性：结合【当前北京时间 {current_time_str}】来生成台词。\n"
-        f"2. 不要暴露你在扮演，直接进入角色说话。\n"
-        f"3. 语气要符合剧本的情境，且如果情境是匆忙或困倦，句子要短、碎！"
+        f"1. 时间一致性：结合【当前时段：{current_period}】与【当前北京时间 {current_time_str}】来生成台词，不要自己重新判断时段。\n"
+        f"2. 本任务固定为「{scenario_label}」，若时段标签与任务不完全一致（例如延迟到午后才触发早安），以任务为准。\n"
+        f"3. 不要暴露你在扮演，直接进入角色说话。\n"
+        f"4. 语气要符合剧本的情境，且如果情境是匆忙或困倦，句子要短、碎！"
     )
 
     try:
@@ -1019,8 +1265,14 @@ async def _delayed_greeting(user_id: str, scenario_type: str, delay_seconds: int
 async def on_startup():
     asyncio.create_task(greeting_scheduler())
     asyncio.create_task(history_separator_scheduler())
+    # 积分/等级定时任务：断签扫描与提前提醒、月度补签卡发放、纪念日奖励（PRD §3.2 jobs/）
+    asyncio.create_task(points_jobs.run_forever())
+    # 心情整点刷新（S1）：让「立希当前状态」真正每小时变化
+    asyncio.create_task(scene_refresh_scheduler())
     logger.info("[启动] 定时问候调度器已启动")
     logger.info("[启动] 历史分隔调度器已启动")
+    logger.info("[启动] 积分/等级定时任务已启动")
+    logger.info("[启动] 心情整点刷新任务已启动")
 
 
 # ================= 每日历史软切割 =================

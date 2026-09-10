@@ -37,6 +37,8 @@ dependencies {
     implementation(project(":core:network"))
     implementation(project(":core:database"))
     implementation(project(":core:push"))
+    // 互动菜单（PRD FR-1：主界面右下角“+”悬浮按钮 + 互动菜单浮层）
+    implementation(project(":feature:interaction"))
     implementation(libs.androidx.core.ktx)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

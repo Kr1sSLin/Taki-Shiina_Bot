@@ -45,7 +45,72 @@ data class ReplyStreamPayload(
     val requestIds: List<String>? = null,
     val timestamp: Long? = null,
     val messageKind: String? = null,
-    val greetingScenario: String? = null
+    val greetingScenario: String? = null,
+    // 互动礼物（PRD FR-8）：复用同一聊天通道，用 messageKind=interaction 区分
+    val interactionItemId: String? = null,
+    val interactionItemName: String? = null,
+    val interactionItemIcon: String? = null,
+    val interactionFailed: Boolean? = null
+)
+
+// ==================== 互动积分 · 等级体系事件（PRD §8 / 契约文档 3.2~3.5） ====================
+
+/** 积分变动（EDGE-4：每条规则独立事件，不合并金额）。 */
+data class PointsChangedPayload(
+    val ledgerId: Long? = null,
+    val reasonCode: String? = null,
+    val changeAmount: Int = 0,
+    val balanceAfter: Int = 0,
+    val balance: Int? = null,
+    val relatedItemId: String? = null,
+    val businessDate: String? = null,
+    val note: String? = null,
+    val timestamp: Long = 0
+)
+
+/**
+ * 等级变化。
+ * changeType：UPGRADE（首次达成，庆祝）/ RESTORE（补签回溯挽回，克制文案）/ RESET（断签回落）。
+ */
+data class LevelChangedPayload(
+    val levelCode: String = "NONE",
+    val levelName: String = "",
+    val prevLevelCode: String? = null,
+    val continuousDays: Int = 0,
+    val changeType: String? = null,
+    val changeSource: String? = null,
+    val highestLevelCode: String? = null,
+    val lastValidDate: String? = null,
+    val gapDays: Int? = null,
+    val breakDeadlineDate: String? = null,
+    val nextLevelCode: String? = null,
+    val nextLevelName: String? = null,
+    val nextLevelThresholdDays: Int? = null,
+    val daysToNextLevel: Int? = null,
+    val levelUpdatedAt: Long? = null,
+    val timestamp: Long = 0
+)
+
+/** 断签提前提醒（FR-18：连续 3～4 天未对话）。 */
+data class StreakWarningPayload(
+    val levelCode: String = "NONE",
+    val levelName: String = "",
+    val continuousDays: Int = 0,
+    val gapDays: Int = 0,
+    val remainingDays: Int = 0,
+    val deadlineDate: String? = null,
+    val timestamp: Long = 0
+)
+
+/** 补签卡库存变动（reason：MONTHLY_GRANT / USED）。 */
+data class MakeupCardChangedPayload(
+    val reason: String? = null,
+    val available: Int = 0,
+    val used: Int = 0,
+    val totalGranted: Int = 0,
+    val maxAvailable: Int = 12,
+    val lastGrantedMonth: String? = null,
+    val timestamp: Long = 0
 )
 
 data class BotErrorPayload(
@@ -87,6 +152,10 @@ sealed interface IncomingMessage {
     data class MemoryFactCreated(val payload: MemoryFactPayload) : IncomingMessage
     data class UserEcho(val requestId: String?, val payload: UserEchoPayload) : IncomingMessage
     data class Typing(val payload: TypingPayload) : IncomingMessage
+    data class PointsChanged(val payload: PointsChangedPayload) : IncomingMessage
+    data class LevelChanged(val payload: LevelChangedPayload) : IncomingMessage
+    data class StreakWarning(val payload: StreakWarningPayload) : IncomingMessage
+    data class MakeupCardChanged(val payload: MakeupCardChangedPayload) : IncomingMessage
     data object AuthExpired : IncomingMessage
     data class Unknown(val type: String, val raw: String) : IncomingMessage
 }
@@ -147,6 +216,34 @@ class IncomingMessageParser(
                     val payloadJson = gson.toJsonTree(it.payload)
                     IncomingMessage.Typing(
                         payload = gson.fromJson(payloadJson, TypingPayload::class.java)
+                    )
+                }
+            "points.changed" -> gson.fromJson(raw, IncomingEnvelope::class.java)
+                .let {
+                    val payloadJson = gson.toJsonTree(it.payload)
+                    IncomingMessage.PointsChanged(
+                        payload = gson.fromJson(payloadJson, PointsChangedPayload::class.java)
+                    )
+                }
+            "level.changed" -> gson.fromJson(raw, IncomingEnvelope::class.java)
+                .let {
+                    val payloadJson = gson.toJsonTree(it.payload)
+                    IncomingMessage.LevelChanged(
+                        payload = gson.fromJson(payloadJson, LevelChangedPayload::class.java)
+                    )
+                }
+            "streak.warning" -> gson.fromJson(raw, IncomingEnvelope::class.java)
+                .let {
+                    val payloadJson = gson.toJsonTree(it.payload)
+                    IncomingMessage.StreakWarning(
+                        payload = gson.fromJson(payloadJson, StreakWarningPayload::class.java)
+                    )
+                }
+            "makeup_card.changed" -> gson.fromJson(raw, IncomingEnvelope::class.java)
+                .let {
+                    val payloadJson = gson.toJsonTree(it.payload)
+                    IncomingMessage.MakeupCardChanged(
+                        payload = gson.fromJson(payloadJson, MakeupCardChangedPayload::class.java)
                     )
                 }
             "auth.expired" -> IncomingMessage.AuthExpired

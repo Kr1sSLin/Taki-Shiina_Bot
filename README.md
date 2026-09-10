@@ -42,17 +42,20 @@ Android AI 对话助手客户端，多模块架构。
 |---|---|
 | `app` | 主应用入口、`MainActivity`、`WebSocketService` 长连接服务 |
 | `core:common` | 公共组件（协程调度器封装等） |
-| `core:network` | REST API（Auth/Chat）、`TokenManager`/`TokenAuthenticator` 自动续签、WebSocket 客户端 |
-| `core:database` | Room 数据库：Entity / DAO / Repository |
-| `core:push` | 本地通知、`ReminderWorker` 提醒调度 |
+| `core:network` | REST API（Auth/Chat/**Gamification**）、`TokenManager`/`TokenAuthenticator` 自动续签、WebSocket 客户端 |
+| `core:database` | Room 数据库：Entity / DAO / Repository（新增 `user_progress` 积分等级缓存表） |
+| `core:push` | 本地通知（含升级庆祝 / 断签提醒）、`ReminderWorker` 提醒调度 |
 | `core:ui` | 主题与通用 UI 组件 |
 | `feature:auth` | 登录认证 |
-| `feature:chat` | 聊天界面（ViewModel + Compose 路由） |
+| `feature:chat` | 聊天界面（ViewModel + Compose 路由，含互动入口与升级弹窗） |
+| `feature:interaction` | 互动菜单（右下角“+”悬浮按钮 + 平铺物品浮层） |
+| `feature:profile` | 积分/等级主页、积分流水、补签卡 |
 | `feature:history` | 历史记录 |
 | `feature:settings` | 设置（含主题偏好存储） |
 
 ### 当前状态
-核心链路已实现：认证登录、REST 对话、WebSocket 实时消息、Room 本地持久化、提醒与通知、主题设置。
+核心链路已实现：认证登录、REST 对话、WebSocket 实时消息、Room 本地持久化、提醒与通知、主题设置、
+以及「互动礼物 → 积分 → 等级」陪伴养成闭环（互动菜单、积分流水、熊猫等级、补签卡）。
 
 ### 网络地址配置
 位于 `core:network/build.gradle.kts`：
@@ -85,6 +88,10 @@ Python AI 后端服务，为 Android 客户端提供 REST / WebSocket 对话、�
 - 📸 **图片处理**: 图片识别与分析
 - 🌤️ **天气服务**: OpenWeather 实时天气，支持城市设置
 - ⏰ **定时任务**: 定时场景更新与提醒调度
+- 🎁 **互动礼物 · 积分 · 等级**（新增，详见 `TKS_互动积分等级体系_PRD_v2.md` 与 `docs/互动积分等级体系_接口契约.md`）:
+  咖啡/泡面/白龙/手柄/能量棒五种互动物品 → 扣积分并生成拟人回复；
+  每日首次 +1、连续 3 天 +3（循环）、纪念日 +100；熊猫成长等级（初生熊猫 → 传奇熊猫）；
+  断签清零与补签卡保护
 - 🔐 **设备认证**: JWT 登录/刷新、设备白名单（最多 4 台）、密码 PBKDF2-SHA256 哈希
 - 🚨 **飞书告警**: `alert_sender.py` 在服务异常时向飞书群发送告警（60 秒限流）
 - 📡 **实时推送**: WebSocket 防抖合并、断线继续处理、在线实时推送
@@ -101,14 +108,39 @@ Python AI 后端服务，为 Android 客户端提供 REST / WebSocket 对话、�
 ### 目录结构
 | 路径 | 职责 |
 |---|---|
-| `api/v1/` | FastAPI 版本化路由（auth、health） |
+| `api/v1/` | FastAPI 版本化路由（auth、health、**interaction、points、level、admin**） |
 | `core/` | 配置与统一响应 |
-| `handlers/` | 消息处理器（对话、图片、记忆查询、城市设置） |
-| `services/` | 业务服务层（记忆、历史、提示词、天气、认证存储） |
-| `jobs/` | 定时任务调度 |
-| `tests/` | 单元测试 |
+| `handlers/` | 消息处理器（对话、图片、记忆查询、城市设置、**互动发送**） |
+| `services/` | 业务服务层（记忆、历史、提示词、天气、认证存储、**积分/等级/补签卡/互动配置**） |
+| `jobs/` | 定时任务调度（**断签扫描与提醒、月度补签卡发放、纪念日奖励**） |
+| `config/` | 后台可配置项（`gamification_config.json`，首次启动自动生成） |
+| `docs/` | 接口契约与对接说明 |
+| `tests/` | 单元测试与 API 集成测试 |
 | `secure_storage.py` | 落盘数据加密存储 |
 | `alert_sender.py` | 飞书告警模块（详见 `README_alert_sender.md`） |
+
+### 互动积分 · 等级体系（新增）
+
+数据模型与规则见 PRD 第五节；运行时数据落在以下加密文件中（与聊天记录同等保护级别）：
+
+| 文件 | 内容 |
+|---|---|
+| `points_account.json` | 积分余额 + 积分流水（`points_account` / `points_ledger`） |
+| `progress_data.json` | 等级与连续天数 + 每日有效对话流水 + 补签卡库存 |
+| `config/gamification_config.json` | 互动物品、Prompt 模板、等级阈值、积分规则（**明文，可直接编辑**） |
+
+> ⚠️ **这些 REST 接口由 `ws_api.py` 提供**（同一进程持有 WebSocket 连接与对话状态）。
+> 定时任务（断签扫描/补签卡发放/纪念日）也在 `ws_api.py` 启动时拉起。
+> 反向代理需按路径分流，完整 nginx 配置与自检命令见
+> **[`Taki_Shiina_Bot/docs/部署_nginx与多进程路由.md`](Taki_Shiina_Bot/docs/部署_nginx与多进程路由.md)**，最少需要新增：
+
+```nginx
+# 注意：proxy_pass 后面不要带路径，否则会剥掉 /api/v1/ 前缀导致 404
+location /api/v1/interaction/ { proxy_pass http://127.0.0.1:8001; proxy_read_timeout 60s; }
+location /api/v1/points/      { proxy_pass http://127.0.0.1:8001; proxy_read_timeout 60s; }
+location /api/v1/level/       { proxy_pass http://127.0.0.1:8001; proxy_read_timeout 60s; }
+location /api/v1/admin/       { proxy_pass http://127.0.0.1:8001; proxy_read_timeout 60s; }
+```
 
 ### 环境配置
 复制 `.env.example` 为 `.env` 并填写。关键变量：
@@ -139,6 +171,9 @@ AUTH_JWT_SECRET=your_jwt_secret
 
 # 数据加密（32 字节 key，base64 或 hex）
 DATA_ENC_KEY=your_base64_or_hex_key
+
+# 互动积分/等级：自然日判定时区（PRD FR-10，默认 8 即北京时间 UTC+8）
+BIZ_TZ_OFFSET_HOURS=8
 ```
 
 完整变量（含飞书告警、设备白名单、数据迁移开关等）请见 `.env.example`。
@@ -156,6 +191,9 @@ pip install -r requirements.txt
 cd Taki_Shiina_Bot
 python -m pytest tests/
 ```
+> 说明：仓库中 `tests/test_text_utils.py` 为历史遗留用例，引用的 `split_into_bubbles`
+> 已在早前重构中移除，属**改动前就存在**的失败用例；本次新增的积分/等级/互动用例可用
+> `python -m pytest tests/ --ignore=tests/test_text_utils.py` 全量跑通。
 
 ---
 

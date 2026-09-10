@@ -38,6 +38,9 @@ import com.krisslin.androidaiassistant.feature.auth.AuthRoute
 import com.krisslin.androidaiassistant.feature.chat.ChatRoute
 import com.krisslin.androidaiassistant.core.ui.theme.ThemeMode
 import com.krisslin.androidaiassistant.core.ui.theme.ThemeRevealContainer
+import com.krisslin.androidaiassistant.feature.profile.MakeupCardRoute
+import com.krisslin.androidaiassistant.feature.profile.PointsHistoryRoute
+import com.krisslin.androidaiassistant.feature.profile.ProfileRoute
 import com.krisslin.androidaiassistant.feature.settings.SettingsRoute
 import com.krisslin.androidaiassistant.feature.settings.ThemePreferenceStore
 import com.krisslin.androidaiassistant.feature.settings.WeatherSettingsRoute
@@ -146,8 +149,26 @@ private fun AppRoot(
                 ChatRoute(
                     isDarkMode = isDarkMode,
                     onToggleTheme = onToggleTheme,
-                    onNavigateToSettings = { mainPage = MainPage.SETTINGS }
+                    onNavigateToSettings = { mainPage = MainPage.SETTINGS },
+                    onNavigateToProfile = { mainPage = MainPage.PROFILE }
                 )
+            }
+            // ===== 互动积分 · 等级体系（PRD §3.1 feature:profile） =====
+            MainPage.PROFILE -> pageStateHolder.SaveableStateProvider(MainPage.PROFILE) {
+                BackHandler { mainPage = MainPage.CHAT }
+                ProfileRoute(
+                    onBack = { mainPage = MainPage.CHAT },
+                    onNavigateToHistory = { mainPage = MainPage.POINTS_HISTORY },
+                    onNavigateToMakeupCard = { mainPage = MainPage.MAKEUP_CARD }
+                )
+            }
+            MainPage.POINTS_HISTORY -> pageStateHolder.SaveableStateProvider(MainPage.POINTS_HISTORY) {
+                BackHandler { mainPage = MainPage.PROFILE }
+                PointsHistoryRoute(onBack = { mainPage = MainPage.PROFILE })
+            }
+            MainPage.MAKEUP_CARD -> pageStateHolder.SaveableStateProvider(MainPage.MAKEUP_CARD) {
+                BackHandler { mainPage = MainPage.PROFILE }
+                MakeupCardRoute(onBack = { mainPage = MainPage.PROFILE })
             }
             MainPage.SETTINGS -> pageStateHolder.SaveableStateProvider(MainPage.SETTINGS) {
                 BackHandler { mainPage = MainPage.CHAT }
@@ -171,6 +192,9 @@ private object MainPage {
     const val CHAT = "chat"
     const val SETTINGS = "settings"
     const val WEATHER_SETTINGS = "weather_settings"
+    const val PROFILE = "profile"
+    const val POINTS_HISTORY = "points_history"
+    const val MAKEUP_CARD = "makeup_card"
 }
 
 @Composable

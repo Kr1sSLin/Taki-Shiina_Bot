@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.google.gson.Gson
+import com.krisslin.androidaiassistant.core.database.repository.UserProgressRepository
 import com.krisslin.androidaiassistant.core.network.auth.AuthRepository
 import com.krisslin.androidaiassistant.core.network.auth.TokenState
 import com.krisslin.androidaiassistant.core.network.ws.BotWebSocketClient
@@ -43,6 +44,9 @@ class WebSocketService : Service() {
 
     @Inject
     lateinit var appNotifier: AppNotifier
+
+    @Inject
+    lateinit var userProgressRepository: UserProgressRepository
 
     @Inject
     lateinit var gson: Gson
@@ -135,6 +139,57 @@ class WebSocketService : Service() {
             }
             is IncomingMessage.BotError -> {
                 appNotifier.showBotError(msg.payload.errorCode, msg.payload.message)
+            }
+            // ===== 互动积分 · 等级体系（PRD FR-16 / FR-18 / EDGE-8：全部在线设备都会收到） =====
+            is IncomingMessage.LevelChanged -> {
+                val payload = msg.payload
+                appNotifier.showLevelChanged(
+                    changeType = payload.changeType,
+                    levelName = payload.levelName,
+                    continuousDays = payload.continuousDays
+                )
+                serviceScope.launch {
+                    runCatching {
+                        userProgressRepository.applyLevel(
+                            levelCode = payload.levelCode,
+                            levelName = payload.levelName,
+                            continuousDays = payload.continuousDays,
+                            nextLevelName = payload.nextLevelName,
+                            nextLevelThresholdDays = payload.nextLevelThresholdDays,
+                            daysToNextLevel = payload.daysToNextLevel,
+                            highestLevelCode = payload.highestLevelCode,
+                            gapDays = payload.gapDays,
+                            breakDeadlineDate = payload.breakDeadlineDate
+                        )
+                    }
+                }
+            }
+            is IncomingMessage.StreakWarning -> {
+                val payload = msg.payload
+                appNotifier.showStreakWarning(
+                    levelName = payload.levelName,
+                    remainingDays = payload.remainingDays,
+                    deadlineDate = payload.deadlineDate
+                )
+            }
+            is IncomingMessage.PointsChanged -> {
+                val balance = msg.payload.balance ?: msg.payload.balanceAfter
+                serviceScope.launch {
+                    runCatching { userProgressRepository.applyBalance(balance) }
+                }
+            }
+            is IncomingMessage.MakeupCardChanged -> {
+                val payload = msg.payload
+                if (payload.reason != "USED") {
+                    appNotifier.showMakeupCardChanged(
+                        reason = payload.reason,
+                        available = payload.available,
+                        maxAvailable = payload.maxAvailable
+                    )
+                }
+                serviceScope.launch {
+                    runCatching { userProgressRepository.applyMakeupCardCount(payload.available) }
+                }
             }
             is IncomingMessage.AuthExpired -> {
                 // 服务端明确告知 token 失效：刷新后由 tokenState 观察者重连

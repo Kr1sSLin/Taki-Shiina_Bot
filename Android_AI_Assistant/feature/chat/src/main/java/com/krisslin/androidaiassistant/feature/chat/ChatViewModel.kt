@@ -19,7 +19,11 @@ import com.krisslin.androidaiassistant.core.database.repository.MessageRole
 import com.krisslin.androidaiassistant.core.database.repository.MessageStatus
 import com.krisslin.androidaiassistant.core.database.repository.UserFactRepository
 import com.krisslin.androidaiassistant.core.database.repository.ModelProvider
+import com.krisslin.androidaiassistant.core.database.repository.UserProgressRepository
 import com.krisslin.androidaiassistant.core.network.api.ChatApi
+import com.krisslin.androidaiassistant.core.network.api.GamificationApi
+import com.krisslin.androidaiassistant.core.network.api.InteractionSendRequest
+import com.krisslin.androidaiassistant.core.network.api.InteractionSendData
 import com.krisslin.androidaiassistant.core.network.auth.AuthRepository
 import com.krisslin.androidaiassistant.core.network.auth.TokenState
 import com.krisslin.androidaiassistant.core.network.ws.BotWebSocketClient
@@ -95,7 +99,25 @@ data class ChatUiState(
     val input: String = "",
     val error: String? = null,
     val selectedImages: List<ChatAttachmentUi> = emptyList(),
-    val messages: List<ChatMessageUi> = emptyList()
+    val messages: List<ChatMessageUi> = emptyList(),
+    // 互动积分 · 等级体系：离线缓存展示（后端为准，见 UserProgressRepository）
+    val balance: Int = 0,
+    val levelName: String = "",
+    val continuousDays: Int = 0,
+    // 升级庆祝 / 等级恢复提示（PRD FR-16 / EDGE-11）
+    val levelCelebration: LevelCelebrationUi? = null
+)
+
+/**
+ * 升级/等级恢复庆祝信息。
+ * changeType：UPGRADE（首次达成）/ RESTORE（补签回溯挽回）。
+ */
+data class LevelCelebrationUi(
+    val changeType: String,
+    val levelName: String,
+    val continuousDays: Int,
+    val nextLevelName: String? = null,
+    val daysToNextLevel: Int? = null
 )
 
 /**
@@ -110,9 +132,11 @@ sealed interface ChatSideEffect {
 class ChatViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val chatApi: ChatApi,
+    private val gamificationApi: GamificationApi,
     private val chatRepository: ChatRepository,
     private val userFactRepository: UserFactRepository,
     private val botNotificationRepository: BotNotificationRepository,
+    private val userProgressRepository: UserProgressRepository,
     private val authRepository: AuthRepository,
     private val botWebSocketClient: BotWebSocketClient,
     private val reminderScheduler: ReminderScheduler,
@@ -147,6 +171,9 @@ class ChatViewModel @Inject constructor(
     // 追踪已收到首帧的 requestId（用于判断是否切换为 TYPING 状态）
     private val receivedFirstChunk = ConcurrentHashMap.newKeySet<String>()
 
+    // 已由 WS 推送落库的回复 id（互动 HTTP 兜底据此避免重复写入）
+    private val deliveredBotMessageIds = ConcurrentHashMap.newKeySet<String>()
+
     // 流式消息超时时间（毫秒）
     private val streamingTimeoutMs = 150_000L
 
@@ -169,9 +196,29 @@ class ChatViewModel @Inject constructor(
         initializeFactSyncCursor()
         observeAuthState()
         observeWebSocketEvents()
+        observeLocalProgressCache()
         // 进入聊天页即主动补拉历史，不再只依赖 Connected 事件（该事件可能先于订阅者发出而丢失）
         syncHistoryFromServer()
         repairOrphanedAttachments()
+    }
+
+    /**
+     * 观察积分/等级本地缓存（PRD §3.1：后端为唯一数据源，本地仅做展示缓存）。
+     * 供聊天页顶部的等级/积分入口与离线展示使用，真正的数据以后端返回与 WS 事件为准。
+     */
+    private fun observeLocalProgressCache() {
+        viewModelScope.launch {
+            userProgressRepository.observe().collect { cached ->
+                if (cached == null) return@collect
+                _uiState.update {
+                    it.copy(
+                        balance = cached.balance,
+                        levelName = cached.levelName,
+                        continuousDays = cached.continuousDays
+                    )
+                }
+            }
+        }
     }
 
     /**
@@ -348,6 +395,18 @@ class ChatViewModel @Inject constructor(
                 is IncomingMessage.Typing -> {
                     handleTyping(message)
                 }
+                is IncomingMessage.PointsChanged -> {
+                    handlePointsChanged(message)
+                }
+                is IncomingMessage.LevelChanged -> {
+                    handleLevelChanged(message)
+                }
+                is IncomingMessage.StreakWarning -> {
+                    handleStreakWarning(message)
+                }
+                is IncomingMessage.MakeupCardChanged -> {
+                    handleMakeupCardChanged(message)
+                }
                 is IncomingMessage.AuthExpired -> {
                     handleAuthExpired()
                 }
@@ -370,11 +429,183 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    // ==================== 互动礼物 · 积分 · 等级（PRD 4.1 / 4.4 / 4.5） ====================
+
+    /**
+     * 发送互动物品（PRD FR-2 / FR-3 / 6.3）。
+     *
+     * 客户端只做菜单置灰级别的本地校验，最终以后端返回为准；
+     * `requestId` 同时作为服务端幂等键（FR-13），重复点击不会重复扣分。
+     * 回复优先由 WS 推送展示，此处仅在 WS 断线时用 HTTP 响应兜底落库。
+     */
+    fun sendInteraction(itemId: String) {
+        val requestId = UUID.randomUUID().toString()
+        // O5：送礼时把输入框里的文字作为「附言」一起送出（成功后才清空，失败保留让用户可以照常发送）
+        val attachment = _uiState.value.input.trim()
+        viewModelScope.launch {
+            _uiState.update { it.copy(botActivity = BotActivityStatus.SENDING, error = null) }
+            val envelope = runCatching {
+                gamificationApi.interactionSend(
+                    request = InteractionSendRequest(
+                        itemId = itemId,
+                        requestId = requestId,
+                        text = attachment.ifBlank { null }
+                    )
+                )
+            }.getOrNull()
+
+            val data = envelope?.data
+            if (envelope == null) {
+                _sideEffects.tryEmit(ChatSideEffect.ShowToast("互动发送失败，请检查网络后重试"))
+                resetBotActivity()
+                return@launch
+            }
+            if (envelope.code != 0 || data == null || !data.success) {
+                val message = when (data?.errorCode) {
+                    "INSUFFICIENT_POINTS" -> "积分不足，先和立希多聊几句吧"
+                    "ITEM_NOT_FOUND" -> "这个物品已经下架了"
+                    "AI_FAILED_REFUNDED" -> "立希这次没接住，积分已退回"
+                    else -> envelope.message ?: "互动发送失败"
+                }
+                _sideEffects.tryEmit(ChatSideEffect.ShowToast(message))
+                resetBotActivity()
+                return@launch
+            }
+
+            // 附言已随礼物送出，清空输入框（仅当用户没有在这期间改过内容）
+            if (attachment.isNotBlank() && _uiState.value.input.trim() == attachment) {
+                _uiState.update { it.copy(input = "") }
+            }
+            persistInteractionLocally(requestId, data, attachment)
+            // 服务端会通过 WS 推送同一条回复（同 messageId，Room REPLACE 去重）
+            _uiState.update { it.copy(botActivity = BotActivityStatus.SENDING) }
+        }
+    }
+
+    /** 关闭升级/等级恢复庆祝弹窗。 */
+    fun dismissLevelCelebration() {
+        _uiState.update { it.copy(levelCelebration = null) }
+    }
+
+    private fun resetBotActivity() {
+        _uiState.update {
+            it.copy(
+                botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING,
+                botStage = null
+            )
+        }
+    }
+
+    private suspend fun persistInteractionLocally(
+        requestId: String,
+        data: InteractionSendData,
+        attachment: String = ""
+    ) {
+        val item = data.item
+        val itemLabel = listOfNotNull(
+            item?.icon?.takeIf { it.isNotBlank() },
+            item?.name?.takeIf { it.isNotBlank() }
+        ).joinToString(" ")
+        if (itemLabel.isNotBlank()) {
+            // 与服务端 timeline 使用同一 messageId 与同一文案（含附言），历史补拉时不会重复也不会不一致
+            val userMessageId = "interaction_user_$requestId"
+            val content = if (attachment.isBlank()) itemLabel else "$itemLabel · $attachment"
+            chatRepository.saveUserMessage(
+                messageId = userMessageId,
+                sessionId = sessionId,
+                content = content,
+                contentType = ContentType.TEXT
+            )
+            chatRepository.markUserMessageSent(userMessageId)
+        }
+        val reply = data.reply
+        val messageId = data.messageId
+        if (!reply.isNullOrBlank() && !messageId.isNullOrBlank() && messageId !in deliveredBotMessageIds) {
+            // WS 未送达时的兜底；分条规则与 messageId 与 WS/历史补拉完全一致
+            saveBotReply(
+                messageId = messageId,
+                content = reply,
+                timestamp = System.currentTimeMillis()
+            )
+        }
+    }
+
+    /** 积分变动（PRD FR-11）：以后端为准刷新本地缓存。 */
+    private fun handlePointsChanged(message: IncomingMessage.PointsChanged) {
+        val payload = message.payload
+        val balance = payload.balance ?: payload.balanceAfter
+        viewModelScope.launch {
+            runCatching { userProgressRepository.applyBalance(balance) }
+        }
+    }
+
+    /**
+     * 等级变化（PRD FR-16 / EDGE-11）。
+     * 首次达成为“升级庆祝”，补签回溯挽回为“等级已恢复”，两者文案区分。
+     */
+    private fun handleLevelChanged(message: IncomingMessage.LevelChanged) {
+        val payload = message.payload
+        viewModelScope.launch {
+            runCatching {
+                userProgressRepository.applyLevel(
+                    levelCode = payload.levelCode,
+                    levelName = payload.levelName,
+                    continuousDays = payload.continuousDays,
+                    nextLevelName = payload.nextLevelName,
+                    nextLevelThresholdDays = payload.nextLevelThresholdDays,
+                    daysToNextLevel = payload.daysToNextLevel,
+                    highestLevelCode = payload.highestLevelCode,
+                    gapDays = payload.gapDays,
+                    breakDeadlineDate = payload.breakDeadlineDate
+                )
+            }
+        }
+        when (payload.changeType) {
+            "UPGRADE", "RESTORE" -> _uiState.update {
+                it.copy(
+                    levelCelebration = LevelCelebrationUi(
+                        changeType = payload.changeType ?: "UPGRADE",
+                        levelName = payload.levelName,
+                        continuousDays = payload.continuousDays,
+                        nextLevelName = payload.nextLevelName,
+                        daysToNextLevel = payload.daysToNextLevel
+                    )
+                )
+            }
+            "RESET" -> _sideEffects.tryEmit(
+                ChatSideEffect.ShowToast("连续陪伴中断，等级已重置；积分不受影响，可用补签卡挽回")
+            )
+            else -> Unit
+        }
+    }
+
+    /** 断签提前提醒（PRD FR-18）：应用内提示，本地通知由 WebSocketService 负责。 */
+    private fun handleStreakWarning(message: IncomingMessage.StreakWarning) {
+        val payload = message.payload
+        _sideEffects.tryEmit(
+            ChatSideEffect.ShowToast(
+                "已经 ${payload.gapDays} 天没和立希聊天了，${payload.remainingDays} 天后等级会归零"
+            )
+        )
+    }
+
+    /** 补签卡库存变动（PRD FR-19 / FR-21）。 */
+    private fun handleMakeupCardChanged(message: IncomingMessage.MakeupCardChanged) {
+        val payload = message.payload
+        viewModelScope.launch {
+            runCatching { userProgressRepository.applyMakeupCardCount(payload.available) }
+            if (payload.reason == "MONTHLY_GRANT") {
+                _sideEffects.tryEmit(
+                    ChatSideEffect.ShowToast("本月补签卡已到账，当前可用 ${payload.available}/${payload.maxAvailable} 张")
+                )
+            }
+        }
+    }
+
     /**
      * 处理完整回复（非流式）
      */
-    private suspend fun handleReply(message: IncomingMessage.Reply) {
-        val requestId = message.requestId ?: return
+    private suspend fun handleReply(message: IncomingMessage.Reply) {        val requestId = message.requestId ?: return
         val payload = message.payload
 
         // 收到回复，切换为 TYPING 状态
@@ -454,30 +685,14 @@ class ChatViewModel @Inject constructor(
 
                     // 保存分条气泡（空内容不落库）
                     if (finalContent.isNotBlank()) {
-                        val segments = splitBotSegments(finalContent)
-                        if (segments.isEmpty()) {
-                            chatRepository.saveBotMessage(
-                                messageId = finalMessageId,
-                                sessionId = sessionId,
-                                content = finalContent,
-                                isStreaming = false,
-                                contentType = payload.contentType ?: ContentType.TEXT,
-                                modelProvider = payload.modelProvider ?: ModelProvider.DEEPSEEK,
-                                timestamp = finalTimestamp
-                            )
-                        } else {
-                            segments.forEachIndexed { index, segment ->
-                                chatRepository.saveBotMessage(
-                                    messageId = "${finalMessageId}_$index",
-                                    sessionId = sessionId,
-                                    content = segment,
-                                    isStreaming = false,
-                                    contentType = payload.contentType ?: ContentType.TEXT,
-                                    modelProvider = payload.modelProvider ?: ModelProvider.DEEPSEEK,
-                                    timestamp = finalTimestamp + index
-                                )
-                            }
-                        }
+                        saveBotReply(
+                            messageId = finalMessageId,
+                            content = finalContent,
+                            contentType = payload.contentType ?: ContentType.TEXT,
+                            modelProvider = payload.modelProvider ?: ModelProvider.DEEPSEEK,
+                            timestamp = finalTimestamp
+                        )
+                        markBotReplyDelivered(finalMessageId)
                     }
 
                     payload.timerInstruction?.let { timer ->
@@ -842,6 +1057,55 @@ class ChatViewModel @Inject constructor(
             .split('\n')
             .map { it.trim() }
             .filter { it.isNotBlank() }
+    }
+
+    /**
+     * 落库一条 Taki 回复：按换行分条，**统一使用 `${messageId}_$index` 规则**。
+     *
+     * WS 推送（`handleReplyStream`）、HTTP 兜底（`persistInteractionLocally`）与历史补拉
+     * （`applyHistoryItems`）三条路径必须写出完全相同的行，Room 的 REPLACE 才能天然去重；
+     * 任何一条写成「整段内容 + 原始 messageId」都会多出一个气泡
+     * （互动礼物曾因此出现"整段 + 分条"的双重回复）。
+     */
+    /**
+     * 记录「已由 WS 推送落库」的回复 id：互动走 HTTP 时能据此判断是否还需要兜底写入，
+     * 避免 HTTP 兜底用毫秒级新时间戳覆盖 WS 版本（内容相同但会闪一下）。
+     */
+    private fun markBotReplyDelivered(messageId: String) {
+        if (deliveredBotMessageIds.size > 200) deliveredBotMessageIds.clear()
+        deliveredBotMessageIds.add(messageId)
+    }
+
+    private suspend fun saveBotReply(
+        messageId: String,
+        content: String,
+        contentType: String = ContentType.TEXT,
+        modelProvider: String = ModelProvider.DEEPSEEK,
+        timestamp: Long = System.currentTimeMillis()
+    ) {        val segments = splitBotSegments(content)
+        if (segments.isEmpty()) {
+            chatRepository.saveBotMessage(
+                messageId = messageId,
+                sessionId = sessionId,
+                content = content,
+                isStreaming = false,
+                contentType = contentType,
+                modelProvider = modelProvider,
+                timestamp = timestamp
+            )
+        } else {
+            segments.forEachIndexed { index, segment ->
+                chatRepository.saveBotMessage(
+                    messageId = "${messageId}_$index",
+                    sessionId = sessionId,
+                    content = segment,
+                    isStreaming = false,
+                    contentType = contentType,
+                    modelProvider = modelProvider,
+                    timestamp = timestamp + index
+                )
+            }
+        }
     }
 
     private fun syncHistoryFromServer(force: Boolean = false) {

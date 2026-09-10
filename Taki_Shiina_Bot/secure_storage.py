@@ -143,3 +143,24 @@ class SecureJsonStore:
             self._write_atomic(payload)
         except Exception as exc:
             self.logger.error(f"加密保存失败: {exc}")
+
+    # ===== 严格模式（积分/等级等不可静默丢数据的场景使用）=====
+    # save() 为兼容既有调用方会吞掉异常；积分账本/等级进度一旦写入失败必须让上层感知，
+    # 因此额外提供 load_strict / save_strict，语义与 load / save 一致但失败即抛。
+
+    def load_strict(self, default: Any) -> Any:
+        if not os.path.exists(self.path):
+            return default
+        with open(self.path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if _is_encrypted_payload(payload):
+            return self._decrypt(payload)
+        if self.config.auto_migrate:
+            self._backup_plaintext()
+            self._write_atomic(self._encrypt(payload))
+            self.logger.info(f"已迁移明文数据并加密: {os.path.basename(self.path)}")
+        return payload
+
+    def save_strict(self, data: Any) -> None:
+        payload = self._encrypt(data)
+        self._write_atomic(payload)
