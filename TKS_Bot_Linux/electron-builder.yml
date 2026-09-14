@@ -1,0 +1,168 @@
+# electron-builder 配置（§14 打包与分发）
+#
+# 产出：AppImage（主分发形式）/ .deb / .rpm / Flatpak
+#   npm run build:linux        # 全部
+#   npm run build:appimage     # 仅 AppImage
+#
+# NFR-3：AppImage ≤ 120MB —— 启用 asar、裁剪冗余文件、不引入图标库/Markdown 渲染器。
+
+appId: top.takishiinabot.tksdesktop
+productName: TKS Desktop
+copyright: Copyright © TKS Desktop
+
+directories:
+  output: dist
+  buildResources: build
+
+# 把 build/sandbox-launcher.sh 装成包内的 `tks-desktop`，真身改名 `tks-desktop.bin`。
+# Chromium 的沙箱初始化早于主进程 JS，不可用时直接 FATAL，只能在 exec 之前决定模式。
+# 详见 scripts/after-pack.mjs 与 build/sandbox-launcher.sh。
+afterPack: scripts/after-pack.mjs
+
+# 只打进必要文件；把开发期产物、Mock 后端与文档排除在包外（NFR-3）
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+  - '!**/{.eslintrc,.editorconfig,.npmrc,.gitignore}'
+  - '!node_modules/**/{test,tests,__tests__,example,examples,docs,doc}/**'
+  - '!node_modules/**/*.{md,markdown,ts,map}'
+  - '!node_modules/better-sqlite3/{deps,src,build/Release/obj,build/Release/obj.target}/**'
+  - '!node_modules/better-sqlite3/build/Release/*.{o,obj,exp,lib,pdb}'
+
+# 图标与 XDG 元数据随包分发（FR-PKG-5）
+extraResources:
+  - from: resources/icons
+    to: icons
+    filter: ['**/*']
+  - from: resources/linux
+    to: linux
+    filter: ['**/*']
+
+# better-sqlite3 是原生模块，.node 必须落在 asar 之外才能被 dlopen
+asar: true
+asarUnpack:
+  - '**/node_modules/better-sqlite3/**'
+
+# 可执行文件名，需与 `app.setName('TKS Desktop')` / `--class=tks-desktop` 保持一致，
+# 这样 WM_CLASS 与 XDG autostart 的 `tks-desktop.desktop`（FR-DSK-3）才能对上。
+executableName: tks-desktop
+
+electronLanguages:
+  - zh-CN
+  - en-US
+
+linux:
+  # FR-UI-8：多尺寸图标目录（16..512），由 scripts/generate-icons.mjs 生成，
+  # 正式美术资源到位后直接替换同名 PNG 即可。
+  #
+  # ⚠️ 这里**必须**指向只含应用图标的 build/icons。
+  #    若指向 resources/icons（还含托盘 22px、等级徽章 64px、物品图 128px），
+  #    electron-builder 会把每个 PNG 都当作一个尺寸，产出 hicolor/5x5、hicolor/2x2
+  #    这类荒谬目录（已实测复现）。
+  icon: build/icons
+  # `category` 会被拼成 `.desktop` 的 `Categories=`。见 LinuxTargetHelper.js：
+  # `desktopMeta.Categories = `${category};`` 的赋值发生在合并 `desktop` **之后**，
+  # 因此 Categories 只能由本字段给出；写在 `desktop:` 里会被静默覆盖。
+  category: Network;InstantMessaging;Chat
+  synopsis: 椎名立希 AI 陪伴应用的 Linux 桌面客户端
+  # 同理：`.desktop` 的 `Comment=` 由 `description` 覆盖写入，故必须保持单行
+  # （多行文本会被原样写进 Comment，污染桌面条目）。完整描述放在 appdata.xml。
+  description: 椎名立希 AI 陪伴应用的 Linux 桌面客户端
+  desktop:
+    # ⚠️ 这里的键**直接**就是 .desktop 的字段名，**不要**再套一层 `entry:`。
+    #    写成 `desktop.entry.{...}` 时 electron-builder 会把 `entry` 当成一个字段，
+    #    生成字面量 `entry=[object Object]`（已实测复现）。
+    #
+    # StartupWMClass 默认取 productName（"TKS Desktop"），而 Electron 实际设置的
+    # WM_CLASS 来自可执行文件名（tks-desktop），必须显式对齐，否则
+    # 任务栏/托盘无法把运行中的窗口归属到本应用图标。
+    StartupWMClass: tks-desktop
+    StartupNotify: 'false'
+    X-GNOME-UsesNotifications: 'true'
+    Keywords: tks;taki;shiina;chat;assistant;
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+    - target: rpm
+      arch: [x64]
+
+appImage:
+  artifactName: ${productName}-${version}-${arch}.AppImage
+  # ⚠️ 这里**不要**再写 `executableArgs` 指定沙箱开关。
+  #    打包时无从判断目标机器支持哪种沙箱：`--no-sandbox` 白白丢掉防护，
+  #    `--disable-setuid-sandbox` 在 Ubuntu 24.04（默认禁止非特权用户命名空间）上
+  #    直接 "No usable sandbox!" 起不来。且它只影响内嵌 .desktop，
+  #    直接 `./Xxx.AppImage` 经 AppRun 转发时根本不带。
+  #    改由 afterPack 装入的启动包装器在运行时探测决定，它也会剔除这里传进来的开关。
+  # ⚠️ AppImage 的 .desktop 完全复用上面的 `linux.desktop`。
+  #    **不能**在这里再写 `desktop.entry` —— 该键不属于 AppImage 配置，
+  #    electron-builder 会把它序列化成字面量 `entry=[object Object]` 写进 .desktop（已实测）。
+
+deb:
+  artifactName: ${productName}-${version}-${arch}.deb
+  # FR-PKG-2：Debian/Ubuntu 依赖声明
+  depends:
+    - libayatana-appindicator3-1
+    - libsecret-1-0
+    - libnotify4
+    - libnss3
+    - libxtst6
+    - libxss1
+    - libgtk-3-0
+    - libasound2
+  recommends:
+    - gnome-shell-extension-appindicator
+  # ⚠️ 不要在此设置 `category`：electron-builder 会用 deb.category 覆盖
+  #    .desktop 的 Categories 字段（实测变成 `Categories=net;`，
+  #    导致桌面环境把它归到「网络」而非「即时通讯」）。
+  #    deb 的 Section 字段由 linux.category 推导，保持 Network 即可。
+  priority: optional
+  maintainer: TKS Desktop <noreply@takishiinabot.top>
+  # FR-PKG-5：安装 AppStream 元数据到 /usr/share/metainfo（图标由 electron-builder 自行装到 hicolor）
+  afterInstall: build/after-install.tpl
+  afterRemove: build/after-remove.tpl
+
+rpm:
+  artifactName: ${productName}-${version}-${arch}.rpm
+  depends:
+    - libayatana-appindicator-gtk3
+    - libsecret
+    - libnotify
+    - nss
+    - libXtst
+    - libXScrnSaver
+    - gtk3
+  category: Network
+  maintainer: TKS Desktop <noreply@takishiinabot.top>
+
+flatpak:
+  artifactName: ${productName}-${version}-${arch}.flatpak
+  base: org.electronjs.Electron2.BaseApp
+  baseVersion: '23.08'
+  runtime: org.freedesktop.Platform
+  runtimeVersion: '23.08'
+  sdk: org.freedesktop.Sdk
+  # FR-PKG-4：正确声明 portal 权限（网络、通知、文件读取、autostart）
+  finishArgs:
+    - --share=network
+    - --share=ipc
+    - --socket=x11
+    - --socket=wayland
+    - --socket=pulseaudio
+    - --device=dri
+    - --talk-name=org.freedesktop.Notifications
+    - --talk-name=org.freedesktop.portal.Desktop
+    - --talk-name=org.kde.StatusNotifierWatcher
+    - --talk-name=org.gnome.Shell
+    - --talk-name=org.freedesktop.secrets
+    - --filesystem=xdg-run/keyring
+    - --filesystem=xdg-config/autostart:create
+    - --filesystem=xdg-pictures:ro
+    - --filesystem=xdg-download:ro
+    - --env=ELECTRON_OZONE_PLATFORM_HINT=auto
+
+# 不自动下载/安装更新（OQ-6 / FR-PKG-7：仅检查并提示）
+publish: null

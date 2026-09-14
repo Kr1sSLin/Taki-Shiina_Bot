@@ -350,9 +350,33 @@ class InteractionHandlerTestCase(unittest.TestCase):
         self.assertIn("今天好累啊", history[-2]["content"])
         self.assertIn("陪我一会儿", history[-2]["content"])
 
-        # 时间线里的用户气泡只标物品（文字在客户端本来就是独立气泡，避免重复展示）
-        self.assertEqual(self.rig.timeline[0]["content"], "☕ 咖啡")
-        self.assertIsNone(self.rig.timeline[0].get("attachment"))
+        # 时间线里的礼物气泡只标物品（文字在客户端本来就是独立气泡，避免重复展示）
+        #
+        # 注：断言从「timeline[0]」改成按确定性 messageId 查找。
+        # 摘走的文字消息现在**也会各自写一行**（messageId == 客户端 requestId），
+        # 它们在时序上早于礼物，因此排在礼物行之前 —— 用下标取值会随行数变化而脆断，
+        # 而这里真正要锁的是「礼物行内容只标物品」这条语义。
+        gift_row = next(x for x in self.rig.timeline if x["messageId"] == "interaction_user_merge-1")
+        self.assertEqual(gift_row["content"], "☕ 咖啡")
+        self.assertIsNone(gift_row.get("attachment"))
+
+        # 被摘走的文字消息必须逐条写进时间线：客户端本地那几条气泡在 live 帧丢失后
+        # 只能靠 GET /chat/history 和解回 sent，缺行就是永久「发送失败」。
+        merged_rows = [x for x in self.rig.timeline if x["messageId"] in ("chat-1", "chat-2")]
+        self.assertEqual(
+            [(x["messageId"], x["content"]) for x in merged_rows],
+            [("chat-1", "今天好累啊"), ("chat-2", "陪我一会儿")],
+            "被合并的消息必须各写一行，且内容是该条自己的文本",
+        )
+        # 时序：被摘消息 < 礼物行 < Bot 回复，且不得出现时间戳并列
+        stamps = [x["timestamp"] for x in self.rig.timeline]
+        self.assertEqual(len(stamps), len(set(stamps)), f"时间线时间戳不得并列: {stamps}")
+        self.assertLess(
+            next(x["timestamp"] for x in self.rig.timeline if x["messageId"] == "chat-2"),
+            gift_row["timestamp"],
+            "被摘走的文字在时序上必须早于礼物行",
+        )
+        self.assertLess(gift_row["timestamp"], max(stamps), "礼物行必须早于 Bot 回复行")
 
     def test_no_merge_when_client_sends_attachment(self):
         """客户端已把输入框内容作为附言送出时，不再去摘缓冲（两者不叠加）。"""

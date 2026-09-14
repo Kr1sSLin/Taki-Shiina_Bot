@@ -1,0 +1,61 @@
+{
+  "name": "tks-desktop",
+  "version": "1.0.0",
+  "description": "TKS Desktop for Linux — Taki Shiina 桌面客户端（Electron + TypeScript）",
+  "main": "./out/main/index.js",
+  "author": {
+    "name": "TKS Desktop",
+    "email": "noreply@takishiinabot.top"
+  },
+  "homepage": "https://takishiinabot.top",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev": "node scripts/launch.mjs dev",
+    "dev:watch": "node scripts/launch.mjs dev --watch",
+    "start": "node scripts/launch.mjs preview",
+    "fix-sandbox": "bash scripts/fix-sandbox.sh",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run check:i18n",
+    "build": "npm run typecheck && electron-vite build",
+    "postinstall": "electron-builder install-app-deps",
+    "icons": "node scripts/generate-icons.mjs",
+    "mock": "node mock-server/server.mjs",
+    "verify": "node scripts/verify-contract.mjs",
+    "build:linux": "npm run build && electron-builder --linux",
+    "build:appimage": "npm run build && electron-builder --linux AppImage",
+    "build:deb": "npm run build && electron-builder --linux deb",
+    "build:rpm": "npm run build && electron-builder --linux rpm",
+    "build:flatpak": "npm run build && electron-builder --linux flatpak",
+    "release:checksums": "node scripts/checksums.mjs",
+    "pack:dir": "npm run build && electron-builder --linux --dir",
+    "selftest": "electron-vite build && node scripts/selftest.mjs",
+    "check:i18n": "node scripts/check-i18n.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "undici": "^6.21.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.17.6",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/ws": "^8.5.13",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^32.2.7",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "zustand": "^4.5.5"
+  }
+}
