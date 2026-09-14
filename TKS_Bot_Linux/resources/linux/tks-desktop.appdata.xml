@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream 元数据（FR-PKG-5）。
+
+  安装位置（由 electron-builder 的 deb/rpm `extraFiles` 写入）：
+    /usr/share/metainfo/tks-desktop.appdata.xml
+
+  校验：appstreamcli validate resources/linux/tks-desktop.appdata.xml
+-->
+<component type="desktop-application">
+  <id>top.takishiinabot.tksdesktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+
+  <name>TKS Desktop</name>
+  <name xml:lang="zh_CN">TKS 桌面版</name>
+
+  <summary>Taki Shiina AI companion client for Linux</summary>
+  <summary xml:lang="zh_CN">椎名立希 AI 陪伴应用的 Linux 桌面客户端</summary>
+
+  <description>
+    <p>
+      TKS Desktop is the Linux desktop peer of the TKS Android client. It shares the same
+      backend and account, and keeps a persistent WebSocket connection so replies arrive
+      even while the window is hidden in the system tray.
+    </p>
+    <p>
+      Features: streaming replies with multi-bubble splitting, clipboard image paste and
+      vision understanding, scheduled reminders, five notification categories with a
+      do-not-disturb window, global shortcut, autostart, full-text local search, points and
+      level progression with makeup cards, and interaction gifts.
+    </p>
+    <p xml:lang="zh_CN">
+      TKS Desktop 是 TKS Android 客户端的桌面对等物，与手机端共享同一后端与账号，
+      常驻托盘保持 WebSocket 长连接，窗口隐藏时也能即时收到消息。
+    </p>
+    <p xml:lang="zh_CN">
+      主要能力：流式回复与多气泡拆分、剪贴板贴图与识图、定时提醒、
+      五类桌面通知与勿扰时段、全局快捷键、开机自启、本地全文搜索、
+      积分等级与补签卡、互动礼物。
+    </p>
+  </description>
+
+  <launchable type="desktop-id">tks-desktop.desktop</launchable>
+
+  <url type="homepage">https://takishiinabot.top</url>
+  <url type="help">https://takishiinabot.top</url>
+
+  <developer id="top.takishiinabot">
+    <name>TKS Desktop</name>
+  </developer>
+
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+    <category>Chat</category>
+  </categories>
+
+  <keywords>
+    <keyword>tks</keyword>
+    <keyword>taki</keyword>
+    <keyword>shiina</keyword>
+    <keyword>chat</keyword>
+    <keyword>assistant</keyword>
+    <keyword>companion</keyword>
+  </keywords>
+
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+  </content_rating>
+
+  <releases>
+    <release version="1.0.0" date="2026-09-14" urgency="medium">
+      <description>
+        <p>首个版本：对齐 Android 端全部 P0/P1 能力，并叠加桌面试用增强能力。</p>
+        <ul>
+          <li>流式对话、多气泡拆分、图片识图、剪贴板贴图</li>
+          <li>托盘常驻、全局快捷键、开机自启、五类桌面通知</li>
+          <li>定时提醒（本地持久化，重启后重载）</li>
+          <li>积分 / 等级 / 互动礼物 / 补签卡完整闭环</li>
+          <li>AppImage 与 .deb / .rpm 分发</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+</component>

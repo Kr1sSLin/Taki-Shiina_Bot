@@ -81,3 +81,40 @@ def merge_buffered_texts(items: list[dict], limit: int = 200) -> str:
 def buffered_request_ids(items: list[dict]) -> list[str]:
     """摘到的消息对应的 requestId（客户端据此把气泡标记为已发送）。"""
     return [str(item["requestId"]) for item in items if item.get("requestId")]
+
+
+def build_user_timeline_items(items: list[dict], timestamp_ms: int, *, user_id: str) -> list[dict]:
+    """把一批用户消息逐条映射成时间线项。**每条消息一行，messageId == requestId**。
+
+    客户端的和解链路是 `GET /chat/history` → 按 `messageId` 对齐本地行 → 把 `error`
+    就地修成 `sent`。因此写时间线时必须遵守：
+
+    1. **每条消息都要有自己的一行**。若整批只写「合并后那一个 id」一行，那么一旦
+       live 帧丢失（断线、请求超时、应用被杀、丢包），其余消息永远不会被历史同步
+       修复，界面永久停在「发送失败」——而服务端其实早已收到并回复过。
+       重试、重启、全量同步都救不回来。
+    2. `content` 用**该条自己的**文本，不要用合并后的整段文本：否则同步会把客户端
+       最后一条气泡就地改写成整段合并文本（重复显示）。
+    3. `timestamp` 逐条递增且全部 < 回复时间戳：顺序稳定、无并列，也让客户端
+       「`timestamp > since`」的增量过滤能一次取回整批。
+
+    聊天主链路（`ws_api.process_buffered_messages`）与互动礼物链路
+    （`InteractionHandler`：摘走缓冲文字并合进礼物回复）**必须共用本函数**——
+    两条路径都会「摘走」用户消息，漏掉任何一条都会留下永久失败的气泡。
+    """
+    out: list[dict] = []
+    total = len(items)
+    for index, item in enumerate(items):
+        request_id = str(item.get("requestId") or "")
+        if not request_id:
+            continue
+        out.append(
+            {
+                "messageId": request_id,
+                "userId": user_id,
+                "role": "user",
+                "content": str(item.get("content") or ""),
+                "timestamp": timestamp_ms - total + index,
+            }
+        )
+    return out

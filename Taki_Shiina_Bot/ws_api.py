@@ -45,7 +45,7 @@ from api.v1.points import router as points_router
 from handlers.interaction_handler import InteractionHandler
 from jobs.points_jobs import PointsJobs
 from services.gamification_service import GamificationService
-from services.debounce_merge import collect_pending_after_quiet_window
+from services.debounce_merge import build_user_timeline_items, collect_pending_after_quiet_window
 from services.points_events import (
     level_changed_event,
     makeup_card_changed_event,
@@ -244,19 +244,25 @@ def calc_debounce_window(user_id: str):
 
 
 def _load_timeline() -> list[dict]:
-    try:
-        return timeline_store.load([])
-    except Exception as e:
-        logger.error(f"[WS] 读取时间线失败: {e}")
-        return []
+    """读取时间线。⚠️ **只在「文件不存在」时**返回空列表。
+
+    文件存在但读不出来（JSON 损坏 / `DATA_ENC_KEY` 与加密时不一致 / IO 异常）
+    必须抛给调用方，绝不能吞掉后返回 `[]`：
+    `append_timeline` 是「load → extend → save 整份列表」，一旦把「读失败」
+    静默降级成「本来就是空的」，紧接着的 save 就会把整份历史替换成
+    「只有本次追加的那两条」，且立刻用当前密钥重新加密 —— 不可恢复。
+
+    注意 `SecureJsonStore.load()` 有**两条**吞异常的路径，必须一并挡住：
+      ① 加密文件但密钥不匹配 → 抛 DataDecryptError；
+      ② 文件被写坏 / 截断 / json 非法 → `load()` 内部 catch 后返回默认值**而不抛**。
+    `load_strict` 对两者都抛，是 append 路径唯一正确的读取方式。
+    """
+    return timeline_store.load_strict([])
 
 
 def _load_memory_timeline() -> list[dict]:
-    try:
-        return memory_timeline_store.load([])
-    except Exception as e:
-        logger.error(f"[WS] 读取记忆时间线失败: {e}")
-        return []
+    """同上：记忆时间线的严格读取（读失败必须让调用方感知）。"""
+    return memory_timeline_store.load_strict([])
 
 
 EMPTY_REPLY_FALLBACK = "……"
@@ -289,25 +295,49 @@ async def _resolve_empty_reply(client, cleaned_reply: str, messages: list[dict])
 
 
 async def append_timeline(items: list[dict]):
+    """把一批项追加到 `chat_timeline.json`（客户端 `GET /chat/history` 读的就是它）。
+
+    ⚠️ 锁的作用域：`TIMELINE_LOCK` 只是**进程内**的 `asyncio.Lock`。
+    `ws_api`（主通道，`BOT_WS_PORT`）与 `http_api`（REST 兜底通道，`BOT_HTTP_PORT`）
+    是两个独立进程，都会对同一个文件做「读 → 追加 → 整体写回」。进程内锁拦不住
+    另一个进程；`SecureJsonStore` 的原子写（临时文件 + `os.replace`）只保证文件不会
+    被写坏，**不保证不丢写**——两进程同时读、后写者会覆盖前者本次追加的内容
+    （last-writer-wins）。
+
+    现状**接受该残余风险**：REST 只是 WS 连续重连失败后才开放的低频兜底通道，
+    两进程真正并发追加的概率很低。若将来把 REST 提升为主通道，必须改成单写者
+    （所有写入收敛到 ws_api 经队列处理）或换用带跨进程锁的存储（fcntl / SQLite）。
+    注意这与「读失败就放弃写入」是两件事，后者见 `_load_timeline`。
+    """
     async with TIMELINE_LOCK:
-        data = _load_timeline()
+        try:
+            data = _load_timeline()
+        except Exception as e:
+            # 读不出来就绝不写回：宁可这条消息进不了历史，也不能覆盖整份历史
+            logger.error(f"[WS] 读取时间线失败，放弃本次追加以避免覆盖历史: {e}")
+            return
         data.extend(items)
         if len(data) > 3000:
             data = data[-3000:]
         try:
-            timeline_store.save(data)
+            timeline_store.save_strict(data)
         except Exception as e:
             logger.error(f"[WS] 保存时间线失败: {e}")
 
 
 async def append_memory_timeline(items: list[dict]):
+    """记忆时间线；锁作用域与丢写风险同 `append_timeline`。"""
     async with MEMORY_TIMELINE_LOCK:
-        data = _load_memory_timeline()
+        try:
+            data = _load_memory_timeline()
+        except Exception as e:
+            logger.error(f"[WS] 读取记忆时间线失败，放弃本次追加以避免覆盖历史: {e}")
+            return
         data.extend(items)
         if len(data) > 3000:
             data = data[-3000:]
         try:
-            memory_timeline_store.save(data)
+            memory_timeline_store.save_strict(data)
         except Exception as e:
             logger.error(f"[WS] 保存记忆时间线失败: {e}")
 
@@ -603,7 +633,8 @@ async def process_buffered_messages(user_id: str):
 
         full_content = ""
         bot_message_id = str(uuid.uuid4())
-        user_message_id = merged_request_id
+        # 说明：用户消息的时间线行由 `build_user_timeline_items(buffered, ...)` 逐条生成
+        # （每条 messageId == 自己的 requestId），这里不再存在「整批一个 user_message_id」的概念。
 
         user_message = {"role": "user", "content": merged_text}
 
@@ -741,14 +772,11 @@ async def process_buffered_messages(user_id: str):
         history_store.save(state.user_chat_history)
 
         await append_timeline(
-            [
-                {
-                    "messageId": user_message_id,
-                    "userId": user_id,
-                    "role": "user",
-                    "content": merged_record,
-                    "timestamp": now_ms - 1,
-                },
+            # ⚠️ 被防抖合并的**每一条**用户消息都要有自己的一行（messageId == requestId）。
+            #    早前整批只写 merged_request_id 一行，于是断线/丢帧后其余消息
+            #    永远无法被 GET /chat/history 和解回 sent，界面永久停在「发送失败」。
+            build_user_timeline_items(buffered, now_ms, user_id=user_id)
+            + [
                 {
                     "messageId": bot_message_id,
                     "userId": user_id,

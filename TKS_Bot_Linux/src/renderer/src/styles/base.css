@@ -1,0 +1,790 @@
+/**
+ * 基础样式与原语组件样式。
+ *
+ * NFR-11：末尾统一关闭动画（`prefers-reduced-motion: reduce`）。
+ * NFR-5：不引用任何远程资源。
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure {
+  margin: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* NFR-11：键盘可达 + 焦点态可见 */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-faint) 45%, transparent);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--radius-pill);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-faint) 70%, transparent);
+  background-clip: content-box;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ========================================================================== */
+/* 液态玻璃（FR-UI-3，对标 LiquidGlass.kt）                                    */
+/* ========================================================================== */
+
+.glass {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--surface-shadow);
+  backdrop-filter: blur(var(--glass-blur)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(160%);
+}
+
+.glass-strong {
+  background: var(--surface-strong);
+}
+
+/* 渐变边框高光（复刻液态玻璃的边缘折射） */
+.glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    140deg,
+    color-mix(in srgb, #fff 55%, transparent),
+    transparent 42%,
+    color-mix(in srgb, #fff 20%, transparent)
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* ========================================================================== */
+/* 手绘涂鸦背景（FR-UI-2）                                                     */
+/* ========================================================================== */
+
+.doodle-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  color: var(--doodle);
+  pointer-events: none;
+}
+
+/* ========================================================================== */
+/* 按钮                                                                        */
+/* ========================================================================== */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: var(--surface-strong);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+.btn-sm {
+  height: 28px;
+  padding: 0 var(--space-3);
+  font-size: 12.5px;
+}
+.btn-md {
+  height: 36px;
+  padding: 0 var(--space-4);
+  font-size: 13.5px;
+}
+.btn-lg {
+  height: 44px;
+  padding: 0 var(--space-5);
+  font-size: 15px;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--text-inverse);
+  border-color: color-mix(in srgb, var(--accent) 70%, #000);
+}
+.btn-primary:not(:disabled):hover {
+  background: var(--accent-hover);
+}
+
+.btn-secondary {
+  border-color: var(--divider);
+}
+.btn-secondary:not(:disabled):hover {
+  background: var(--bg-elevated);
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+.btn-ghost:not(:disabled):hover {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.btn-danger {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+  color: var(--error);
+}
+.btn-danger:not(:disabled):hover {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.icon-btn:hover {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.icon-btn.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ========================================================================== */
+/* Spinner                                                                     */
+/* ========================================================================== */
+
+.spinner {
+  display: inline-block;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 720ms linear infinite;
+  flex: none;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ========================================================================== */
+/* 表单                                                                        */
+/* ========================================================================== */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.field-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.input {
+  width: 100%;
+  min-height: 36px;
+  padding: 6px var(--space-3);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+
+.input:focus {
+  border-color: var(--accent);
+}
+
+.input.is-error {
+  border-color: var(--error);
+}
+
+.input::placeholder {
+  color: var(--text-faint);
+}
+
+.input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.textarea {
+  resize: none;
+  line-height: 1.6;
+}
+
+.field-hint {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.field-error {
+  font-size: 12px;
+  color: var(--error);
+}
+
+/* Switch */
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  cursor: pointer;
+  padding: var(--space-2) 0;
+}
+
+.switch-row.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.switch-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.switch-label {
+  font-size: 13.5px;
+}
+
+.switch-hint {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.switch {
+  position: relative;
+  flex: none;
+  width: 42px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+  cursor: pointer;
+  transition: background var(--dur-base) var(--ease);
+}
+
+.switch.is-on {
+  background: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 70%, #000);
+}
+
+.switch:disabled {
+  cursor: not-allowed;
+}
+
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform var(--dur-base) var(--ease);
+}
+
+.switch.is-on .switch-knob {
+  transform: translateX(18px);
+}
+
+/* Segmented */
+
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+}
+
+.segmented-item {
+  padding: 5px var(--space-3);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.segmented-item.is-active {
+  background: var(--surface-strong);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
+/* ========================================================================== */
+/* 卡片 / 徽标                                                                 */
+/* ========================================================================== */
+
+.card {
+  overflow: hidden;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--divider);
+}
+
+.card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.card-body {
+  padding: var(--space-4);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.7;
+}
+
+.badge-neutral {
+  background: color-mix(in srgb, var(--text-faint) 20%, transparent);
+  color: var(--text-muted);
+}
+.badge-ok {
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+  color: var(--ok);
+}
+.badge-warn {
+  background: color-mix(in srgb, var(--warn) 20%, transparent);
+  color: var(--warn);
+}
+.badge-error {
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+  color: var(--error);
+}
+.badge-accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ========================================================================== */
+/* 空状态                                                                      */
+/* ========================================================================== */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.empty-icon {
+  color: var(--text-faint);
+  opacity: 0.7;
+}
+
+.empty-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.empty-hint {
+  font-size: 12.5px;
+  color: var(--text-faint);
+  max-width: 42ch;
+}
+
+/* ========================================================================== */
+/* 模态                                                                        */
+/* ========================================================================== */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  background: color-mix(in srgb, var(--bg-sunken) 62%, transparent);
+  backdrop-filter: blur(3px);
+  animation: fade-in var(--dur-base) var(--ease);
+}
+
+.modal {
+  width: min(520px, 100%);
+  max-height: calc(100vh - 96px);
+  display: flex;
+  flex-direction: column;
+  animation: modal-in var(--dur-base) var(--ease);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--divider);
+}
+
+.modal-head h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.modal-body {
+  padding: var(--space-4);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--divider);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+}
+
+/* ========================================================================== */
+/* Toaster（FR-NOTI 相关的应用内反馈）                                          */
+/* ========================================================================== */
+
+.toaster {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: min(420px, 80vw);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  pointer-events: auto;
+  animation: toast-in var(--dur-base) var(--ease);
+}
+
+.toast-icon {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.toast-success .toast-icon {
+  color: var(--ok);
+}
+.toast-error .toast-icon {
+  color: var(--error);
+}
+.toast-warn .toast-icon {
+  color: var(--warn);
+}
+
+.toast-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* ========================================================================== */
+/* 等级徽章 / 进度条（FR-LV-1/2/4）                                            */
+/* ========================================================================== */
+
+.level-badge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  flex: none;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.level-badge-ring {
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, #fff 45%, transparent);
+}
+
+.level-badge.is-default {
+  filter: saturate(0.35);
+  opacity: 0.85;
+}
+
+/* FR-LV-4：传奇熊猫七彩动态特效 */
+.level-badge.is-legendary {
+  background: conic-gradient(from 0deg, #ff6b6b, #ffd93d, #6bcB77, #4d96ff, #b48ce0, #ff6b6b) !important;
+  animation: legendary-spin 6s linear infinite;
+}
+
+@keyframes legendary-spin {
+  to {
+    filter: hue-rotate(360deg);
+  }
+}
+
+.level-badge-emoji {
+  position: relative;
+  z-index: 1;
+}
+
+.level-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.progress {
+  position: relative;
+  width: 100%;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width var(--dur-slow) var(--ease);
+}
+
+.progress-fill.is-legendary {
+  background: linear-gradient(90deg, #ff6b6b, #ffd93d, #6bcb77, #4d96ff);
+  background-size: 300% 100%;
+  animation: legendary-slide 4s linear infinite;
+}
+
+@keyframes legendary-slide {
+  to {
+    background-position: 300% 0;
+  }
+}
+
+/* ========================================================================== */
+/* 主题揭示动画（FR-UI-4，对标 ThemeRevealContainer.kt）                        */
+/* ========================================================================== */
+
+.theme-reveal {
+  position: fixed;
+  z-index: 90;
+  border-radius: 50%;
+  pointer-events: none;
+  animation-name: theme-reveal-grow;
+  animation-timing-function: var(--ease);
+  animation-fill-mode: forwards;
+}
+
+@keyframes theme-reveal-grow {
+  from {
+    transform: scale(0);
+    opacity: 0.9;
+  }
+  to {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+
+/* ========================================================================== */
+/* NFR-11：尊重系统「减少动画」偏好                                             */
+/* ========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* 减少动画时禁用液态玻璃的模糊开销与升级特效 */
+  .glass,
+  .glass-strong {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .level-badge.is-legendary,
+  .progress-fill.is-legendary {
+    animation: none !important;
+  }
+
+  .theme-reveal {
+    display: none;
+  }
+}

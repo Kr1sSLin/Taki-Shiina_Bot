@@ -86,6 +86,7 @@ prompt_service = PromptService(
 app = FastAPI(title="TakiShiina Bot HTTP API")
 TIMELINE_FILE = os.path.join(_base_dir, "chat_timeline.json")
 MEMORY_TIMELINE_FILE = os.path.join(_base_dir, "memory_timeline.json")
+TIMELINE_LOCK = asyncio.Lock()
 MEMORY_TIMELINE_LOCK = asyncio.Lock()
 
 timeline_store = SecureJsonStore(TIMELINE_FILE, logger)
@@ -119,22 +120,66 @@ def _trace_text(label: str, user_id: str, text: str):
     logger.info(f"[TRACE][{user_id}] {label}: {compact}")
 
 
-def _load_memory_timeline() -> list[dict]:
-    try:
-        return memory_timeline_store.load([])
-    except Exception as e:
-        logger.error(f"读取记忆时间线失败: {e}")
-        return []
+def _load_timeline() -> list[dict]:
+    """读取时间线。⚠️ **只在「文件不存在」时**返回空列表。
+
+    文件存在但读不出来必须抛出：调用方是「load → extend → save 整份列表」，
+    拿到 [] 之后一 save 就会把整份历史覆盖掉。
+
+    注意 `SecureJsonStore.load()` 有**两条**吞异常的路径，必须一并挡住：
+      ① 加密文件但 `DATA_ENC_KEY` 不匹配 → 抛 DataDecryptError；
+      ② 文件被写坏 / 截断 / json 非法 → `load()` 内部 catch 后返回默认值**而不抛**。
+    上一版只判了 ①（手工 exists 判断 + `load()`），因此 ② 仍会静默覆盖历史。
+    `load_strict` 对两者都抛，是 append 路径唯一正确的读取方式。
+    """
+    return timeline_store.load_strict([])
 
 
-async def append_memory_timeline(items: list[dict]):
-    async with MEMORY_TIMELINE_LOCK:
-        data = _load_memory_timeline()
+async def append_timeline(items: list[dict]):
+    """把消息写入 chat_timeline.json —— 客户端 GET /chat/history 读的就是这个文件。
+
+    ⚠️ 必须与 ws_api.append_timeline 行为一致：用户项的 messageId 用客户端传来的
+    requestId，客户端才能按 messageId 把本地那条 `error` 记录修复成 `sent`。
+    早前 HTTP 兜底通道漏写此处，导致走 REST 发出的消息永远进不了历史，
+    任何次数的同步都无法把它从「发送失败」修复回来。
+
+    注：ws_api 与 http_api 是两个进程，这把锁只保证进程内互斥；
+    SecureJsonStore 的原子写保证文件不会损坏，但两进程并发追加仍可能丢写。
+    REST 是低频兜底通道，暂接受该残余风险。
+    """
+    async with TIMELINE_LOCK:
+        try:
+            data = _load_timeline()
+        except Exception as e:
+            # 读不出来就绝不写回：宁可这条消息进不了历史，也不能覆盖整份历史
+            logger.error(f"读取时间线失败，放弃本次追加以避免覆盖历史: {e}")
+            return
         data.extend(items)
         if len(data) > 3000:
             data = data[-3000:]
         try:
-            memory_timeline_store.save(data)
+            timeline_store.save_strict(data)
+        except Exception as e:
+            logger.error(f"保存时间线失败: {e}")
+
+
+def _load_memory_timeline() -> list[dict]:
+    """同上：记忆时间线的严格读取（读失败必须让调用方感知）。"""
+    return memory_timeline_store.load_strict([])
+
+
+async def append_memory_timeline(items: list[dict]):
+    async with MEMORY_TIMELINE_LOCK:
+        try:
+            data = _load_memory_timeline()
+        except Exception as e:
+            logger.error(f"读取记忆时间线失败，放弃本次追加以避免覆盖历史: {e}")
+            return
+        data.extend(items)
+        if len(data) > 3000:
+            data = data[-3000:]
+        try:
+            memory_timeline_store.save_strict(data)
         except Exception as e:
             logger.error(f"保存记忆时间线失败: {e}")
 
@@ -267,9 +312,7 @@ async def chat_history(
     auth = _require_http_auth(authorization, trace_id)
 
     try:
-        if not os.path.exists(TIMELINE_FILE):
-            return response_body(0, "ok", {"items": []}, trace_id)
-        items = timeline_store.load([])
+        items = _load_timeline()
         filtered = [
             x
             for x in items
@@ -476,6 +519,34 @@ async def chat(
 
         final_reply = inject_emojis(sanitize_taki_reply(cleaned_reply))
         _trace_text("D_FINAL", user_id, final_reply)
+
+        # 写入时间线，客户端才能通过 GET /chat/history 把本地状态修复为 sent。
+        # 用户项的 messageId 必须是客户端的 requestId（与 ws_api 一致）。
+        user_message_id = payload.requestId or f"http_{uuid.uuid4().hex}"
+        # ⚠️ Bot 回复的 messageId 必须**回给客户端**（见下方 data["messageId"]）：
+        #    客户端本地插入 bot 气泡时用的是这个 id，两边主键口径必须一致，
+        #    否则下一次 GET /chat/history 会因为 `delivered_bot_messages` 里没有这个 id
+        #    而把同一条回复再插一遍 —— 界面出现重复气泡，且是永久性的。
+        bot_message_id = str(uuid.uuid4())
+        await append_timeline(
+            [
+                {
+                    "messageId": user_message_id,
+                    "userId": user_id,
+                    "role": "user",
+                    "content": message_text,
+                    "timestamp": now_ms - 1,
+                },
+                {
+                    "messageId": bot_message_id,
+                    "userId": user_id,
+                    "role": "bot",
+                    "content": final_reply,
+                    "timestamp": now_ms,
+                },
+            ]
+        )
+
         usage = response.usage
         usage_data = {
             "promptTokens": getattr(usage, "prompt_tokens", 0),
@@ -485,6 +556,8 @@ async def chat(
         data = {
             "conversationId": payload.conversationId or f"conv_{user_id}",
             "reply": final_reply,
+            # 与时间线行同源的 bot messageId（客户端据此落库，避免同步时重复插入）
+            "messageId": bot_message_id,
             "model": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
             "usage": usage_data,
             "debounceWindowSec": calc_debounce_window(user_id),

@@ -31,7 +31,11 @@ from text_utils import (
     strip_polluted_tail,
     with_history_timestamp,
 )
-from services.debounce_merge import buffered_request_ids, merge_buffered_texts
+from services.debounce_merge import (
+    buffered_request_ids,
+    build_user_timeline_items,
+    merge_buffered_texts,
+)
 from time_utils import build_time_block, get_business_today_str
 from services.points_events import level_changed_event, makeup_card_changed_event, points_changed_event
 from services.points_service import InsufficientPointsError
@@ -384,7 +388,17 @@ class InteractionHandler:
         if attachment:
             timeline_user_content = f"{timeline_user_content} · {attachment}"
         await self.append_timeline(
-            [
+            # ⚠️ 被摘走（合进本次礼物回复）的聊天消息也**必须逐条写时间线**。
+            #    它们的送达确认此前只存在于 live 帧 `requestIds` 与 HTTP 响应
+            #    `mergedRequestIds` 里；一旦两者都没到达（断线 / 超时 / 应用被杀），
+            #    客户端本地那几条 `error` 气泡就再也无法通过 GET /chat/history 和解，
+            #    界面永久显示「发送失败」，而服务端其实早已把它们答进这条回复了。
+            #
+            #    锚点用 now_ms - 1（而非 now_ms）：这些文字消息在时序上**早于**礼物本身，
+            #    必须落在礼物行（now_ms - 1）之前，否则会与礼物行**时间戳并列**，
+            #    客户端按 timestamp 排序时两条气泡的先后变得不确定。
+            build_user_timeline_items(merged_items, now_ms - 1, user_id=user_id)
+            + [
                 {
                     # 与 requestId 绑定的确定性 messageId：客户端本地乐观插入同一条时可直接去重
                     "messageId": f"interaction_user_{request_id}",
