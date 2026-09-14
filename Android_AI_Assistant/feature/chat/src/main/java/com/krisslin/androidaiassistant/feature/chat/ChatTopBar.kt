@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -57,8 +58,15 @@ import kotlin.math.sin
 private val TopCardShape = RoundedCornerShape(28.dp)
 
 /**
- * 页面顶部悬浮卡片行：居中缩小的联系人卡（图片头像）+ 右侧缩小的操作按钮卡。
- * 两张卡片均为 Liquid Glass 毛玻璃 + 紫色叠加 + 白描边 + 柔和阴影。
+ * 页面顶部悬浮卡片行：左侧「联系人卡 + 等级胶囊」纵向信息块 + 右侧操作按钮卡。
+ * 三张卡片均为 Liquid Glass 毛玻璃 + 紫色叠加 + 白描边 + 柔和阴影。
+ *
+ * 两点结构约束，改动前请先读：
+ * 1. 左列必须用 `weight(1f)` 吃掉剩余宽度，而不是固定 200dp。
+ *    固定宽度的算法是 200 + 140 + 32(padding) = 372dp > 360dp 视口，右侧操作卡会被挤出屏幕约 12dp。
+ *    `weight(1f)` 后左列自动收敛为 360 - 32 - 140 - 8(gap) = 180dp，溢出从根上消失。
+ * 2. 左列高度（56dp 卡 + 6dp 间距 + 胶囊）大于右侧操作卡（56dp），
+ *    因此必须 `verticalAlignment = Alignment.Top`；沿用 CenterVertically 会把操作卡压到左列的垂直中心。
  */
 @Composable
 fun ChatTopBarRow(
@@ -68,27 +76,43 @@ fun ChatTopBarRow(
     isDarkMode: Boolean,
     contactName: String,
     statusText: String,
+    levelName: String,
+    balance: Int,
     onToggleTheme: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onReconnect: () -> Unit,
+    onNavigateToProfile: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Spacer(modifier = Modifier.weight(1f))
-        ContactCard(
-            bgDark = bgDark,
-            bgBitmap = bgBitmap,
-            bgScreenSize = bgScreenSize,
-            contactName = contactName,
-            statusText = statusText,
-            modifier = Modifier.width(200.dp)
-        )
-        Spacer(modifier = Modifier.weight(1f))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalAlignment = Alignment.Start
+        ) {
+            ContactCard(
+                bgDark = bgDark,
+                bgBitmap = bgBitmap,
+                bgScreenSize = bgScreenSize,
+                contactName = contactName,
+                statusText = statusText,
+                modifier = Modifier.fillMaxWidth()
+            )
+            LevelEntryChip(
+                levelName = levelName,
+                balance = balance,
+                onClick = onNavigateToProfile,
+                // 自适应宽度：只包住内容，长称号由 Chip 内部的 ellipsis 收敛，
+                // 不采用与联系人卡同宽的 200dp 方案（长称号会被卡死换行）
+                modifier = Modifier.wrapContentWidth()
+            )
+        }
         ActionsCard(
             bgDark = bgDark,
             bgBitmap = bgBitmap,

@@ -1,7 +1,9 @@
 package com.krisslin.androidaiassistant.feature.settings
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -10,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -17,6 +20,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.LocationOn
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -48,7 +52,8 @@ import com.krisslin.androidaiassistant.core.ui.theme.ThemeMode
 fun SettingsRoute(
     viewModel: SettingsViewModel = hiltViewModel(),
     onBack: () -> Unit = {},
-    onNavigateToWeather: () -> Unit = {}
+    onNavigateToWeather: () -> Unit = {},
+    onNavigateToNotificationCenter: () -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsState()
     var showThemeDialog by remember { mutableStateOf(false) }
@@ -115,6 +120,18 @@ fun SettingsRoute(
                         color = MaterialTheme.colorScheme.error
                     )
                 }
+            }
+
+            // 通知中心入口：独立于「会话」（聊天记录）与「关于」（只读信息），
+            // 语义上是「系统通知」，后续新增通知类开关也归这一组
+            SettingsGroupTitle("通知")
+            SettingsGroupCard {
+                SettingsNavRow(
+                    icon = Icons.Outlined.Notifications,
+                    label = "通知中心",
+                    badgeCount = state.unreadNotificationCount,
+                    onClick = onNavigateToNotificationCenter
+                )
             }
 
             SettingsGroupTitle("关于")
@@ -228,7 +245,8 @@ private fun SettingsGroupCard(content: @Composable () -> Unit) {
 private fun SettingsNavRow(
     icon: ImageVector,
     label: String,
-    value: String,
+    value: String = "",
+    badgeCount: Int = 0,
     onClick: () -> Unit
 ) {
     Row(
@@ -254,7 +272,20 @@ private fun SettingsNavRow(
             )
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            if (value.isNotBlank()) {
+            if (badgeCount > 0) {
+                Box(
+                    modifier = Modifier
+                        .background(MaterialTheme.colorScheme.error, CircleShape)
+                        .padding(horizontal = 7.dp, vertical = 1.dp)
+                ) {
+                    Text(
+                        text = badgeCount.toString(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onError
+                    )
+                }
+                Spacer(modifier = Modifier.width(6.dp))
+            } else if (value.isNotBlank()) {
                 Text(
                     text = value,
                     style = MaterialTheme.typography.bodyMedium,
