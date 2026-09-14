@@ -15,10 +15,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
- * 聊天页右下角的等级/积分入口（PRD FR-15）。
+ * 等级/积分入口胶囊（PRD FR-15）。
+ *
+ * 位置：聊天页顶部左上角，紧贴联系人卡下方（由 [ChatTopBarRow] 的左列承载）。
+ * 整体可点击，进入「我的陪伴」个人页。
  *
  * EDGE-7：等级默认态（`NONE`）不设专属文案，断签回落与从未升级的新用户共用同一套默认展示，
  * 这里统一显示中性的“还没有等级称号”。
@@ -47,13 +51,19 @@ fun LevelEntryChip(
             Text(text = "🐼", style = MaterialTheme.typography.labelLarge)
             Text(
                 text = levelName.ifBlank { "还没有等级称号" },
-                style = MaterialTheme.typography.labelLarge
+                style = MaterialTheme.typography.labelLarge,
+                // 既有隐患修复：原先未约束行数，长称号（如以后的词组称号）会换行撑高胶囊。
+                // weight(1f, fill = false) 让称号在空间不足时优先让位并省略，而不是挤压积分。
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
             )
             Text(
                 text = "$balance 分",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.SemiBold
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
             )
         }
     }

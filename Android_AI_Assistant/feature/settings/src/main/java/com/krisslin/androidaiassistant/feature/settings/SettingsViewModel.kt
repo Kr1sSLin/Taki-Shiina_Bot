@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonObject
+import com.krisslin.androidaiassistant.core.database.repository.BotNotificationRepository
 import com.krisslin.androidaiassistant.core.database.repository.ChatRepository
 import com.krisslin.androidaiassistant.core.network.api.ChatApi
 import com.krisslin.androidaiassistant.core.network.api.CityHttpRequest
@@ -13,6 +14,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -21,14 +23,17 @@ data class SettingsUiState(
     val cityInput: String = "",
     val loading: Boolean = false,
     val message: String? = null,
-    val themeMode: ThemeMode = ThemeMode.SYSTEM
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    /** 「通知中心」入口的未读徽标数（来源：BotNotificationRepository）。 */
+    val unreadNotificationCount: Int = 0
 )
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val chatApi: ChatApi,
-    private val chatRepository: ChatRepository
+    private val chatRepository: ChatRepository,
+    private val botNotificationRepository: BotNotificationRepository
 ) : ViewModel() {
 
     private val themeStore by lazy { ThemePreferenceStore(context) }
@@ -38,6 +43,23 @@ class SettingsViewModel @Inject constructor(
     init {
         _uiState.update { it.copy(themeMode = themeStore.themeMode) }
         loadCity()
+        observeUnreadNotifications()
+    }
+
+    /**
+     * 订阅未读数用于设置页徽标。
+     *
+     * `distinctUntilChanged()` 是必要的：Room 的 Flow 在 bot_notifications 任何写入后都会重新发射，
+     * 不去重会让设置页在一次错误记录写入时无谓重组。
+     */
+    private fun observeUnreadNotifications() {
+        viewModelScope.launch {
+            botNotificationRepository.observeUnreadCount()
+                .distinctUntilChanged()
+                .collect { count ->
+                    _uiState.update { it.copy(unreadNotificationCount = count) }
+                }
+        }
     }
 
     fun onCityInputChange(value: String) {

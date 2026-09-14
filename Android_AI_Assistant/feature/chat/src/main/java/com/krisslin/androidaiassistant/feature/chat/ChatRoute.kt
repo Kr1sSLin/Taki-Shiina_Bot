@@ -11,6 +11,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -21,14 +23,17 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -69,15 +74,20 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -97,6 +107,7 @@ import com.krisslin.androidaiassistant.feature.interaction.InteractionEntry
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -116,6 +127,23 @@ fun ChatRoute(
     var messageMenuTargetId by remember { mutableStateOf<String?>(null) }
     var showAttachMenu by remember { mutableStateOf(false) }
     var showEmojiMenu by remember { mutableStateOf(false) }
+
+    // ===== 变更 2：「+」按钮长按拖动 =====
+    // 位置以比例形式持久化（LayoutPreferenceStore），像素偏移由「比例 × 当前可用范围」实时推导，
+    // 因此键盘弹出 / 表情面板展开 / 旋转屏导致的容器变化都不需要补偿逻辑。
+    val density = LocalDensity.current
+    val layoutStore = remember { LayoutPreferenceStore(context) }
+    val fabMetrics = remember(density) { FabMetrics(density) }
+    var fabFraction by remember {
+        mutableStateOf(Offset(layoutStore.fabFractionX, layoutStore.fabFractionY))
+    }
+    var isDraggingFab by remember { mutableStateOf(false) }
+    // 根容器在 root 坐标系中的顶边（一般恒为 0，但不能假设）
+    var boxOriginY by remember { mutableStateOf(0f) }
+    // 输入条顶边在 root 坐标系中的 Y；-1 表示尚未测量（首帧用兜底值，避免 FAB 被夹到顶部）
+    var inputBarTopPx by remember { mutableStateOf(-1f) }
+    // 「长按可拖动」引导动画位移量（仅为视觉提示，不写回持久化值）
+    val fabHint = remember { Animatable(0f) }
 
     // 表情面板/附件面板拉起时，按返回键先收起面板而非退出 App
     BackHandler(enabled = showEmojiMenu) {
@@ -207,6 +235,18 @@ fun ChatRoute(
         }
     }
 
+    // 变更 2 · 可发现性缓解：首次进聊天页时 FAB 做一次「位移 + 回弹」引导，播完写 flag 不再重播。
+    // 用户不知道能长按拖动是这类手势最大的问题，一次性提示成本低且不打扰。
+    LaunchedEffect(Unit) {
+        if (layoutStore.fabHintShown) return@LaunchedEffect
+        layoutStore.markFabHintShown()
+        val amp = fabMetrics.hintAmplitudePx
+        fabHint.animateTo(amp, tween(560, easing = FastOutSlowInEasing))
+        fabHint.animateTo(0f, tween(560, easing = FastOutSlowInEasing))
+        fabHint.animateTo(amp * 0.5f, tween(420, easing = FastOutSlowInEasing))
+        fabHint.animateTo(0f, tween(420, easing = FastOutSlowInEasing))
+    }
+
     var initialScrollSkipped by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.messages.size) {
@@ -234,6 +274,7 @@ fun ChatRoute(
         modifier = Modifier
             .fillMaxSize()
             .onSizeChanged { bgScreenSize = it }
+            .onGloballyPositioned { boxOriginY = it.boundsInRoot().top }
     ) {
         ChatBackground(
             bitmap = bgBitmap,
@@ -267,9 +308,12 @@ fun ChatRoute(
                     isDarkMode = isDarkMode,
                     contactName = "Taki",
                     statusText = statusText,
+                    levelName = state.levelName,
+                    balance = state.balance,
                     onToggleTheme = onToggleTheme,
                     onNavigateToSettings = onNavigateToSettings,
-                    onReconnect = viewModel::reconnect
+                    onReconnect = viewModel::reconnect,
+                    onNavigateToProfile = onNavigateToProfile
                 )
 
             state.error?.let {
@@ -293,6 +337,10 @@ fun ChatRoute(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
                 state = listState,
+                // 变更 3：顶栏因新增等级胶囊从 56dp 长到约 116dp，给首条消息留出视觉避让。
+                // 注意：ChatRoute 的布局是 Column（列表本身在顶栏下方，不存在覆盖），
+                // 所以这 48dp 是呼吸留白而非遮挡修复；若觉得空隙过大，删掉这一行即可。
+                contentPadding = PaddingValues(top = 48.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(state.messages, key = { it.id }) { msg ->
@@ -367,6 +415,9 @@ fun ChatRoute(
                 modifier = Modifier
                     .fillMaxWidth(0.9f)
                     .align(Alignment.CenterHorizontally)
+                    // 记录输入条顶边位置：FAB 的 Y 下限 = 输入条顶部 - 16dp，
+                    // 表情面板展开会顶起输入条，FAB 会自动跟随上移（缓解「被输入条/表情面板遮挡」）
+                    .onGloballyPositioned { inputBarTopPx = it.boundsInRoot().top }
             )
             AnimatedVisibility(
                 visible = showEmojiMenu,
@@ -396,20 +447,71 @@ fun ChatRoute(
     }
 
         // ===== 互动礼物 · 积分 · 等级（PRD FR-1 / FR-15）=====
-        // 主界面右下角常驻“+”按钮 + 互动菜单浮层；上方为当前等级/积分入口
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 20.dp, bottom = 104.dp),
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            LevelEntryChip(
-                levelName = state.levelName,
-                balance = state.balance,
-                onClick = onNavigateToProfile
+        // 等级胶囊已迁至左上角 ChatTopBarRow（变更 3），此处只剩「+」按钮自由浮动。
+        // 变更 2：长按进入拖动，松手吸附最近左/右边缘，位置以比例持久化。
+        // 用 detectDragGesturesAfterLongPress 而不是 draggable：只有长按 500ms 后才接管手势，
+        // 短按仍由 FAB 自身的 onClick 打开互动菜单，两个行为不冲突。
+        if (bgScreenSize != IntSize.Zero) {
+            InteractionEntry(
+                onSend = { item -> viewModel.sendInteraction(item.id) },
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset {
+                        val limits = fabDragLimits(
+                            container = bgScreenSize,
+                            inputBarTopPx = inputBarTopPx,
+                            boxTopPx = boxOriginY,
+                            metrics = fabMetrics
+                        )
+                        val base = limits.toIntOffset(fabFraction)
+                        IntOffset(base.x - fabHint.value.roundToInt(), base.y)
+                    }
+                    .graphicsLayer {
+                        // 拖动中的视觉反馈：放大 + 微透明 + 抬升阴影，明确「这东西被拿起来了」
+                        val scale = if (isDraggingFab) 1.08f else 1f
+                        scaleX = scale
+                        scaleY = scale
+                        alpha = if (isDraggingFab) 0.90f else 1f
+                        shadowElevation = if (isDraggingFab) 18.dp.toPx() else 6.dp.toPx()
+                        shape = RoundedCornerShape(16.dp)
+                    }
+                    .pointerInput(density.density, density.fontScale) {
+                        // PointerInputScope 本身是 Density，用当前 scope 换算 dp→px，
+                        // 避免闭包捕获到过期的 density；key 只在真实配置变化时重启
+                        val scopeMetrics = FabMetrics(this)
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { isDraggingFab = true },
+                            onDragEnd = {
+                                isDraggingFab = false
+                                // 松手吸附最近左/右边缘（Y 不吸附，保留用户选择的纵向位置）
+                                val snapped = Offset(
+                                    x = if (fabFraction.x < 0.5f) 0f else 1f,
+                                    y = fabFraction.y
+                                )
+                                fabFraction = snapped
+                                layoutStore.saveFabFraction(snapped.x, snapped.y)
+                            },
+                            onDragCancel = { isDraggingFab = false },
+                            onDrag = { change, delta ->
+                                change.consume()
+                                val limits = fabDragLimits(
+                                    container = bgScreenSize,
+                                    inputBarTopPx = inputBarTopPx,
+                                    boxTopPx = boxOriginY,
+                                    metrics = scopeMetrics
+                                )
+                                // 像素增量换算成比例增量：范围本身已被夹在安全区内，
+                                // 因此 coerceIn(0f, 1f) 就等于把 FAB 夹在 [安全边距, 输入条上方]
+                                val spanX = (limits.maxX - limits.minX).coerceAtLeast(1f)
+                                val spanY = (limits.maxY - limits.minY).coerceAtLeast(1f)
+                                fabFraction = Offset(
+                                    x = (fabFraction.x + delta.x / spanX).coerceIn(0f, 1f),
+                                    y = (fabFraction.y + delta.y / spanY).coerceIn(0f, 1f)
+                                )
+                            }
+                        )
+                    }
             )
-            InteractionEntry(onSend = { item -> viewModel.sendInteraction(item.id) })
         }
     }
 
@@ -465,6 +567,69 @@ fun ChatRoute(
             }
         )
     }
+}
+
+// ===== 变更 2：「+」按钮拖动范围 =====
+
+private const val FAB_SIZE_DP = 56f
+private const val FAB_EDGE_DP = 20f
+private const val FAB_INPUT_GAP_DP = 16f
+private const val FAB_MIN_TOP_DP = 96f
+private const val FAB_FALLBACK_INPUT_TOP_DP = 68f
+private const val FAB_HINT_AMPLITUDE_DP = 26f
+
+/** 预先换算成像素的 FAB 尺寸常量，避免在绘制/手势路径里反复做 dp→px。 */
+private class FabMetrics(density: Density) {
+    val fabPx = with(density) { FAB_SIZE_DP.dp.toPx() }
+    val edgePx = with(density) { FAB_EDGE_DP.dp.toPx() }
+    val gapPx = with(density) { FAB_INPUT_GAP_DP.dp.toPx() }
+    val minTopPx = with(density) { FAB_MIN_TOP_DP.dp.toPx() }
+    val fallbackInputTopPx = with(density) { FAB_FALLBACK_INPUT_TOP_DP.dp.toPx() }
+    val hintAmplitudePx = with(density) { FAB_HINT_AMPLITUDE_DP.dp.toPx() }
+}
+
+/** FAB 左上角在容器内的可用像素范围（已含全部安全边距）。 */
+private class FabDragLimits(
+    val minX: Float,
+    val maxX: Float,
+    val minY: Float,
+    val maxY: Float
+) {
+    fun toIntOffset(fraction: Offset): IntOffset = IntOffset(
+        x = (minX + fraction.x * (maxX - minX)).roundToInt(),
+        y = (minY + fraction.y * (maxY - minY)).roundToInt()
+    )
+}
+
+/**
+ * 计算 FAB 可停留的像素范围。
+ *
+ * - X ∈ [20dp, 容器宽 − 56dp − 20dp]：20dp 与改动前的 `padding(end = 20dp)` 一致
+ * - Y ∈ [96dp, 输入条顶边 − 16dp − 56dp]：
+ *   - 上限 96dp 保证不侵入顶栏（联系人卡 + 等级胶囊约 116dp 高）
+ *   - 下限锚定**实测**的输入条顶边，因此表情面板展开顶起输入条时 FAB 会自动跟随上移
+ *
+ * 输入条尚未测量时用 68dp（输入胶囊 60dp + 尾部 Spacer 8dp）兜底，
+ * 避免首帧把 FAB 夹到屏幕顶部而闪一下。
+ */
+private fun fabDragLimits(
+    container: IntSize,
+    inputBarTopPx: Float,
+    boxTopPx: Float,
+    metrics: FabMetrics
+): FabDragLimits {
+    val minX = metrics.edgePx
+    val maxX = (container.width - metrics.fabPx - metrics.edgePx).coerceAtLeast(minX)
+    val minY = metrics.minTopPx.coerceAtMost(
+        (container.height - metrics.fabPx).coerceAtLeast(0f)
+    )
+    val inputTopLocal = if (inputBarTopPx > 0f) {
+        inputBarTopPx - boxTopPx
+    } else {
+        container.height - metrics.fallbackInputTopPx
+    }
+    val maxY = (inputTopLocal - metrics.gapPx - metrics.fabPx).coerceAtLeast(minY)
+    return FabDragLimits(minX, maxX, minY, maxY)
 }
 
 /**

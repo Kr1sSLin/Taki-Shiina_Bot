@@ -41,6 +41,9 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.material3)
+    // 通知中心用 Icons.Outlined.NotificationsNone（扩展图标集）；
+    // 返回箭头 Icons.AutoMirrored.Filled.ArrowBack 属核心图标集，随 material3 传递
+    implementation("androidx.compose.material:material-icons-extended")
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.hilt.navigation.compose)
 }

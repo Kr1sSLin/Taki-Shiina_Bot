@@ -38,6 +38,7 @@ import com.krisslin.androidaiassistant.feature.auth.AuthRoute
 import com.krisslin.androidaiassistant.feature.chat.ChatRoute
 import com.krisslin.androidaiassistant.core.ui.theme.ThemeMode
 import com.krisslin.androidaiassistant.core.ui.theme.ThemeRevealContainer
+import com.krisslin.androidaiassistant.feature.history.NotificationCenterRoute
 import com.krisslin.androidaiassistant.feature.profile.MakeupCardRoute
 import com.krisslin.androidaiassistant.feature.profile.PointsHistoryRoute
 import com.krisslin.androidaiassistant.feature.profile.ProfileRoute
@@ -174,8 +175,15 @@ private fun AppRoot(
                 BackHandler { mainPage = MainPage.CHAT }
                 SettingsRoute(
                     onBack = { mainPage = MainPage.CHAT },
-                    onNavigateToWeather = { mainPage = MainPage.WEATHER_SETTINGS }
+                    onNavigateToWeather = { mainPage = MainPage.WEATHER_SETTINGS },
+                    onNavigateToNotificationCenter = { mainPage = MainPage.NOTIFICATION_CENTER }
                 )
+            }
+            // ===== 通知中心（原错误中心，feature:history）=====
+            // 返回落在设置页而非聊天页：入口在设置页，返回必须回到来源，否则用户会「穿过」设置页
+            MainPage.NOTIFICATION_CENTER -> pageStateHolder.SaveableStateProvider(MainPage.NOTIFICATION_CENTER) {
+                BackHandler { mainPage = MainPage.SETTINGS }
+                NotificationCenterRoute(onBack = { mainPage = MainPage.SETTINGS })
             }
             MainPage.WEATHER_SETTINGS -> pageStateHolder.SaveableStateProvider(MainPage.WEATHER_SETTINGS) {
                 BackHandler { mainPage = MainPage.SETTINGS }
@@ -195,6 +203,7 @@ private object MainPage {
     const val PROFILE = "profile"
     const val POINTS_HISTORY = "points_history"
     const val MAKEUP_CARD = "makeup_card"
+    const val NOTIFICATION_CENTER = "notification_center"
 }
 
 @Composable
