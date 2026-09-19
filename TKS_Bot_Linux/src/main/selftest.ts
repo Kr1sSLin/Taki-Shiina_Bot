@@ -927,6 +927,41 @@ async function run(): Promise<number> {
     { syncOk: afterClearSync.ok, afterResync: afterResyncCount, cursor: clearResult.cursor }
   )
 
+  /*
+   * 回归（问题 1）：同步落库的新消息必须**带消息本体**推送 evt:messagesUpdated。
+   * 曾回归为 emit 空数组：渲染端对空事件不做任何处理，断线重连/休眠唤醒后同步到的
+   * 消息只进 SQLite、界面永远看不到，必须重启程序才出现。
+   * selftest 不创建窗口，这里临时替换 bus.send 捕获广播载荷再还原。
+   */
+  const seedCount = 5
+  await fetch(apiBaseUrl.replace(/\/api\/v1\/?$/, '') + '/__test__/trigger', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${services.auth.getAccessToken() ?? ''}` },
+    body: JSON.stringify({ kind: 'seed_history', count: seedCount })
+  }).catch(() => undefined)
+
+  const { bus } = await import('./app/bus')
+  const { IPC } = await import('@shared/ipc')
+  const originalBusSend = bus.send.bind(bus)
+  const capturedMessagesUpdated: Array<{ messages: Array<{ messageId: string; content: string }> }> = []
+  const interceptingBus = bus as unknown as { send: (channel: string, payload?: unknown) => void }
+  interceptingBus.send = (channel, payload) => {
+    if (channel === IPC.evtMessagesUpdated && payload && typeof payload === 'object') {
+      capturedMessagesUpdated.push(payload as { messages: Array<{ messageId: string; content: string }> })
+    }
+    originalBusSend(channel, payload)
+  }
+  const seededSync = await services.chat.syncHistory(true)
+  interceptingBus.send = originalBusSend
+
+  const pushedBodies = capturedMessagesUpdated.flatMap((event) => event.messages)
+  check('FR-SYNC：同步落库的新消息必须带本体推送 evt:messagesUpdated（而非空事件）',
+    seededSync.ok === true &&
+      pushedBodies.length >= seedCount * 3 &&
+      pushedBodies.every((m) => !!m.messageId && m.content.length > 0),
+    { sync: seededSync, events: capturedMessagesUpdated.length, pushed: pushedBodies.length }
+  )
+
   const factsInserted = await services.chat.pullFacts()
   check('FR-SYNC-7：用户事实独立游标补拉可用', typeof factsInserted === 'number', factsInserted)
 

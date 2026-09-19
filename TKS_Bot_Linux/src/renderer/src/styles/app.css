@@ -967,6 +967,10 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  /* 本卡片用 `.glass`（自带边框与圆角），而 `.glass` 不提供内边距——同级卡片靠
+     `.card-head` / `.card-body` 撑开。这里必须显式补上，否则等级徽章与 `.band`
+     内的进度条会直接顶在圆角边框上，即「部件过大紧贴边框」的成因。 */
+  padding: var(--space-4);
 }
 
 .level-head {

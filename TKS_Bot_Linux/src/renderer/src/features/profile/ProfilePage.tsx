@@ -170,10 +170,12 @@ export function ProfilePage(): JSX.Element {
 
           <section className="level-card glass" aria-label={t('profile.level')}>
             <div className="level-head">
-              <LevelBadge level={level} size={72} />
-              <div>
+              <LevelBadge level={level} size={56} />
+              <div className="level-head-text">
                 <p className="stat-label">{t('profile.level')}</p>
-                <h2 className="card-title">{levelName}</h2>
+                {/* FR-LV-3：等级名用 `.level-name`（18px）而非 `.card-title`（13.5px），
+                    否则与上方 11.5px 的标签几乎同号，层级和基线都看不出来 */}
+                <h2 className="level-name">{levelName}</h2>
               </div>
             </div>
 
@@ -255,7 +257,7 @@ export function ProfilePage(): JSX.Element {
               </p>
             ) : null}
             {/* FR-MC-4：补签入口 */}
-            <Link className="btn btn-primary btn-block" to="/profile/makeup">
+            <Link className="btn btn-primary btn-md btn-block" to="/profile/makeup">
               <IconCalendar size={16} />
               <span>{t('profile.makeupCards.goCalendar')}</span>
             </Link>
@@ -264,11 +266,11 @@ export function ProfilePage(): JSX.Element {
 
         <nav className="band" aria-label={t('nav.profile')}>
           <div className="streak-row">
-            <Link className="btn btn-secondary" to="/profile/ledger">
+            <Link className="btn btn-secondary btn-md" to="/profile/ledger">
               <IconHistory size={16} />
               <span>{t('profile.ledger')}</span>
             </Link>
-            <Link className="btn btn-secondary" to="/profile/levels">
+            <Link className="btn btn-secondary btn-md" to="/profile/levels">
               <IconInfo size={16} />
               <span>{t('profile.levelGuide')}</span>
             </Link>

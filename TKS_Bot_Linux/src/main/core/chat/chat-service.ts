@@ -717,7 +717,7 @@ export class ChatService {
         retries: 2
       })
       const items = data?.items ?? []
-      const { inserted, updated } = this.ingestTimeline(items)
+      const { inserted, updated, touchedIds } = this.ingestTimeline(items)
 
       const maxTs = items.reduce((acc, it) => Math.max(acc, Number(it.timestamp) || 0), cursorBefore)
       if (maxTs > 0) setCursor('chat_history', maxTs)
@@ -726,11 +726,13 @@ export class ChatService {
       const result: SyncStatusEvent = { ok: true, mode, inserted, updated, errorI18nKey: null }
       bus.send(IPC.evtSyncStatus, result)
       /*
-       * 问题 3：不能只在 inserted > 0 时刷新。
-       * 把一条 `error` 消息修复成 `sent` 走的是 UPDATE 分支（inserted 为 0），
-       * 若不刷新，库里已经修好、界面仍显示「发送失败」直到重启。
+       * 同步落库的新消息必须**带着消息本体**推给渲染端：
+       * 这里曾 emit 空数组，渲染端 `if (event.messages.length)` 直接忽略，
+       * 导致断线重连/休眠唤醒后同步到的消息只进了 SQLite、界面永远看不到，
+       * 必须重启（load 重读 SQLite）才出现。
+       * updated 单独成事件的原因见 emitMessages 上方注释（修复 error→sent 也走 UPDATE）。
        */
-      if (inserted > 0 || updated > 0) this.emitMessages([], [])
+      if (touchedIds.length > 0) this.emitMessages(touchedIds, [])
       this.deps.onAfterSync()
       return result
     } catch (err) {
@@ -747,10 +749,14 @@ export class ChatService {
    *
    * FR-SYNC-5：Bot 消息同样按 `\n` 拆分并使用 `{messageId}_{index}` 作为主键，
    * 与实时链路共用 `splitBotContent`，避免同一条消息以两种形态重复入库。
+   *
+   * @returns inserted/updated 计数，以及本次实际写入（含更新）的消息 ID，
+   *          供 `doSync` 推送 `evt:messagesUpdated`——渲染端只认带本体的消息事件。
    */
-  private ingestTimeline(items: TimelineItem[]): { inserted: number; updated: number } {
+  private ingestTimeline(items: TimelineItem[]): { inserted: number; updated: number; touchedIds: string[] } {
     let inserted = 0
     let updated = 0
+    const touchedIds: string[] = []
     for (const item of items) {
       if (!item?.messageId) continue
       // FR-SYNC-9：剥离 `【MM-DD HH:MM】` 前缀
@@ -775,6 +781,7 @@ export class ChatService {
           markDelivered([part.messageId])
           if (created === 'inserted') inserted += 1
           else if (created === 'updated') updated += 1
+          if (created !== 'unchanged') touchedIds.push(part.messageId)
         }
       } else {
         const created = upsertMessage({
@@ -790,9 +797,10 @@ export class ChatService {
         })
         if (created === 'inserted') inserted += 1
         else if (created === 'updated') updated += 1
+        if (created !== 'unchanged') touchedIds.push(item.messageId)
       }
     }
-    return { inserted, updated }
+    return { inserted, updated, touchedIds }
   }
 
   /** FR-SYNC-7：用户事实增量补拉（独立游标）。 */
