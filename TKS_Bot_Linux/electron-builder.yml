@@ -11,7 +11,10 @@ productName: TKS Desktop
 copyright: Copyright © TKS Desktop
 
 directories:
-  output: dist
+  # 发布产物（deb / AppImage / rpm / flatpak）统一输出到桌面的 Release 目录，
+  # 与 Android 的 apk 安装包放在一起，便于分发。
+  # ⚠️ 这是本机约定路径；换机器构建时用 `-c.directories.output=<路径>` 覆盖。
+  output: /home/administrator/Desktop/Release
   buildResources: build
 
 # 把 build/sandbox-launcher.sh 装成包内的 `tks-desktop`，真身改名 `tks-desktop.bin`。

@@ -197,6 +197,66 @@ python -m pytest tests/
 
 ---
 
+## 📦 发布打包
+
+一键发布脚本 `scripts/release.sh` 负责两端构建、版本号递增与产物归档。
+
+```bash
+scripts/release.sh            # deb + apk 全量发布
+scripts/release.sh deb        # 只发 deb
+scripts/release.sh apk        # 只发 apk
+scripts/release.sh --no-bump  # 按当前版本号重新构建，不递增
+```
+
+### 产物输出路径
+
+统一输出到 **`~/Desktop/Release/`**（可用 `TKS_RELEASE_DIR` 覆盖）：
+
+| 产物 | 文件名 |
+|---|---|
+| Linux 安装包 | `TKS-Desktop-<version>-linux-amd64.deb` |
+| Android 安装包 | `TKS-Android-<versionName>-<versionCode>.apk` |
+
+- Linux 侧路径由 `TKS_Bot_Linux/electron-builder.yml` 的 `directories.output` 指定；
+  `TKS_Bot_Linux/scripts/checksums.mjs`（`npm run release:checksums`）跟随同一目录。
+- electron-builder 的 `linux-unpacked/` 与 `builder-*.yml` 中间文件由发布脚本自动清理，
+  目录内只留可分发产物。
+
+### 版本号规则
+
+**每次发布前自动递增**，两端独立计数（补丁位 +1）：
+
+| 端 | 版本来源 | 本次 |
+|---|---|---|
+| Linux | `TKS_Bot_Linux/package.json` → `version` | 1.0.0 → **1.0.1** |
+| Android | `TKS_Bot_Android/app/build.gradle.kts` → `versionName` + `versionCode` | 1.2.0(2) → **1.2.1(3)** |
+
+### Android 签名
+
+release 变体的签名密钥**不进仓库**，由环境变量注入
+（`TKS_Bot_Android/app/build.gradle.kts` 顶部的 `signingConfigs`）：
+
+```bash
+TKS_ANDROID_KEYSTORE=~/1.jks       # 密钥库路径
+TKS_ANDROID_KEYSTORE_PASS=...      # storePassword 与 keyPassword
+TKS_ANDROID_KEY_ALIAS=1            # 别名，默认 "1"
+```
+
+发布脚本内置上述默认值。缺任一变量时不创建 signingConfig，
+release 产物退化为 `app-release-unsigned.apk`，构建依然可跑通。
+**沿用同一密钥（CN=KrisSLin）才能覆盖安装已装的旧版本。**
+
+### 构建环境
+
+| 依赖 | 位置 |
+|---|---|
+| Android SDK | `/home/administrator/Android/Sdk`（`platforms;android-34` + `build-tools;34.0.0`），可用 `ANDROID_HOME` 覆盖 |
+| JDK 17 | 仓库内 `.jdk-home/jdk-17.0.20.1+1`（`TKS_Bot_Android/local.properties` 指向该 SDK） |
+| Gradle 目录 | 仓库内 `.gradle-home` / `.android-home` / `.xdg-home`（由发布脚本导出） |
+
+> 首次在缺少 SDK 的机器上构建，需先装 SDK：
+> `sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"`
+
 ## 🚀 快速开始
 
 ### 前置要求

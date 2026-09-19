@@ -5,6 +5,23 @@ plugins {
     alias(libs.plugins.hilt.android)
 }
 
+/**
+ * 发布签名（构建约定）。
+ *
+ * 密钥信息一律由环境变量注入，**不进仓库**（见仓库根 `scripts/release.sh`）：
+ *   TKS_ANDROID_KEYSTORE      密钥库绝对路径（如 /home/administrator/1.jks）
+ *   TKS_ANDROID_KEYSTORE_PASS storePassword 与 keyPassword
+ *   TKS_ANDROID_KEY_ALIAS     密钥别名（默认 "1"）
+ *
+ * 缺少密钥变量时不创建 signingConfig，release 变体退化为未签名产物
+ * （app-release-unsigned.apk）—— 这样在没有密钥的机器上依然能跑通构建。
+ */
+val releaseKeystorePath: String? = System.getenv("TKS_ANDROID_KEYSTORE")
+val releaseKeystorePass: String? = System.getenv("TKS_ANDROID_KEYSTORE_PASS")
+val releaseKeyAlias: String = System.getenv("TKS_ANDROID_KEY_ALIAS") ?: "1"
+val hasReleaseSigning: Boolean =
+    !releaseKeystorePath.isNullOrBlank() && !releaseKeystorePass.isNullOrBlank()
+
 android {
     namespace = "com.krisslin.androidaiassistant"
     compileSdk = 34
@@ -13,16 +30,29 @@ android {
         applicationId = "com.krisslin.androidaiassistant"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.2.0"
+        versionCode = 3
+        versionName = "1.2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseKeystorePass
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeystorePass
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            // 有密钥才挂签名；否则产出 app-release-unsigned.apk
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

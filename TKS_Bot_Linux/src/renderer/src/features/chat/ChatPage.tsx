@@ -71,6 +71,18 @@ function pathsFromDataTransfer(dataTransfer: DataTransfer | null): string[] {
   return paths
 }
 
+/** 增量同步节流：30s 内切页/聚焦不重复打接口（主进程另有 in-flight 去重兜底）。 */
+const SYNC_THROTTLE_MS = 30_000
+let lastIncrementalSyncAt = 0
+
+/** 返回聊天页或窗口聚焦时拉一次增量（轻量 GET，missed 帧与断线期间的消息靠它补齐）。 */
+function requestIncrementalSync(): void {
+  const now = Date.now()
+  if (now - lastIncrementalSyncAt < SYNC_THROTTLE_MS) return
+  lastIncrementalSyncAt = now
+  void window.tks.sync.syncHistory(false).catch(() => undefined)
+}
+
 export function ChatPage(): JSX.Element {
   const { t } = useTranslation()
   const loaded = useChatStore((s) => s.loaded)
@@ -95,6 +107,13 @@ export function ChatPage(): JSX.Element {
   useEffect(() => {
     if (!loaded) void load()
   }, [loaded, load])
+
+  // 切页返回 / 窗口聚焦时补一次增量同步，避免停留在启动时的旧数据
+  useEffect(() => {
+    requestIncrementalSync()
+    window.addEventListener('focus', requestIncrementalSync)
+    return () => window.removeEventListener('focus', requestIncrementalSync)
+  }, [])
 
   // FR-NOTI-4：`#/chat?messageId=xxx` 也要能定位（主进程直接 setScrollTarget 的补充路径）
   const messageIdParam = searchParams.get('messageId')

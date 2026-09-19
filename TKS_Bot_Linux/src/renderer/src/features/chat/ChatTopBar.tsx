@@ -3,7 +3,8 @@
  *
  * - 联系人卡片 + 手绘涂鸦背景（FR-UI-2，`DoodleBackground` 的 8 种图形）
  * - 连接状态药丸：连接中 / 已连接 / 已断开 / 正在重连 / 正在续签登录 / 连接失败（FR-CONN-5）
- * - 断开时提供「重新连接」按钮（FR-CONN-5/6：手动重连会触发全量历史同步）
+ * - 「重新连接」常驻（需求方确认）：已连接时也可强制重连，走 FR-CONN-6 全量历史同步；
+ *   连接处于过渡态时禁用，避免连点反复拆建连接
  * - 清空会话：与设置页共用 `chat.clearConversation` 同一实现，避免清空后被历史立即拉回
  *   （FR-CHAT-12 / FR-SET-4 明确要求两个入口共用实现）
  * - 搜索（FR-CHAT-17）与设置入口
@@ -39,6 +40,8 @@ export function ChatTopBar({ onOpenSearch }: ChatTopBarProps): JSX.Element {
   const seed = useMemo(doodleSeed, [])
   const status = connection.status
   const connected = status === 'connected'
+  /** 连接已处于过渡态（连接中/重连中/续签中）：此时再点「重新连接」只会把连接拆了重建。 */
+  const connBusy = status === 'connecting' || status === 'reconnecting' || status === 'refreshing'
 
   // FR-CONN-5：六种状态文案（`unauthenticated` 属于过渡态，也给出明确文案）
   const statusKey = `conn.status.${status}`
@@ -98,16 +101,15 @@ export function ChatTopBar({ onOpenSearch }: ChatTopBarProps): JSX.Element {
         </span>
 
         <div className="chat-topbar-actions">
-          {!connected ? (
-            <IconButton
-              label={t('conn.reconnect')}
-              title={t('conn.reconnect')}
-              disabled={reconnecting}
-              onClick={() => void handleReconnect()}
-            >
-              <IconRefresh size={18} />
-            </IconButton>
-          ) : null}
+          {/* FR-CONN-5/6：常驻手动重连。已连接时点它 = 强制重建连接并全量同步一次历史。
+              过渡态（连接中/重连中/续签中）禁用，否则连点会把刚建好的连接反复拆掉。 */}
+          <IconButton
+            label={t('conn.reconnect')}
+            disabled={reconnecting || connBusy}
+            onClick={() => void handleReconnect()}
+          >
+            <IconRefresh size={18} />
+          </IconButton>
           <IconButton label={t('chat.search')} onClick={onOpenSearch}>
             <IconSearch size={18} />
           </IconButton>

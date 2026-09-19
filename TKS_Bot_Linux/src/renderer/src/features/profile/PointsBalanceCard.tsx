@@ -24,7 +24,7 @@ export function PointsBalanceCard({ balance, refreshing = false, onRefresh }: Po
   const { t } = useTranslation()
 
   return (
-    <section className="balance-card glass" aria-label={t('profile.balance')}>
+    <section className="card glass balance-card" aria-label={t('profile.balance')}>
       <header className="card-head">
         <h3 className="card-title">{t('profile.balance')}</h3>
         <IconButton
@@ -36,7 +36,10 @@ export function PointsBalanceCard({ balance, refreshing = false, onRefresh }: Po
           {refreshing ? <Spinner size={16} /> : <IconRefresh size={18} />}
         </IconButton>
       </header>
-      <p className="balance-value">{balance}</p>
+      {/* 与 `.card-head` 同用 `.card-body` 的内边距，余额数字才和标题左对齐 */}
+      <div className="card-body">
+        <p className="balance-value">{balance}</p>
+      </div>
     </section>
   )
 }

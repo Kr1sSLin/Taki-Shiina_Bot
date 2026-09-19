@@ -72,6 +72,7 @@ export function MessageList({ highlightId, onTargetHandled, onRetry, onOpenImage
   /** 向上分页时的视口锚点（scrollHeight + 当时的消息条数）。 */
   const loadAnchorRef = useRef<{ scrollHeight: number; count: number } | null>(null)
   const countRef = useRef(0)
+  const lastIdRef = useRef<string | null>(null)
   const scrolledTargetRef = useRef<string | null>(null)
 
   const streamingText = Object.values(streaming).join('')
@@ -80,8 +81,16 @@ export function MessageList({ highlightId, onTargetHandled, onRetry, onOpenImage
   const scrollToBottom = (): void => {
     const el = listRef.current
     if (!el) return
-    // 直接赋值（不带动画），因此不涉及 `prefers-reduced-motion`
-    el.scrollTop = el.scrollHeight
+    /*
+     * 双 rAF：提交后的同步 `scrollHeight` 可能还是 0（窗口尚未显示 / 布局未完成），
+     * 此时赋值是空操作且不会再有补滚机会，视图就永远停在顶部。
+     * 推迟两帧等浏览器完成布局，另由 ResizeObserver 兜底保持贴底。
+     */
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight
+      })
+    })
   }
 
   // 首屏加载完成后直接落到最新一条
@@ -92,17 +101,79 @@ export function MessageList({ highlightId, onTargetHandled, onRetry, onOpenImage
     }
   }, [loaded])
 
-  // 新消息到达：仅在用户本就贴底时跟随（不抢用户向上翻阅的位置）
+  // 新消息到达：仅在用户本就贴底时跟随（不抢用户向上翻阅的位置）。
+  // 「有新消息」看条数**或最后一条 messageId**：二者其一变化才算，避免首屏滚动落空后
+  // countRef 已更新、后续同步再无变化时永远不补滚。
   useEffect(() => {
-    const grew = messages.length !== countRef.current
+    const lastId = messages.length > 0 ? messages[messages.length - 1].messageId : null
+    const changed = messages.length !== countRef.current || lastId !== lastIdRef.current
     countRef.current = messages.length
-    if (grew && atBottomRef.current) scrollToBottom()
+    lastIdRef.current = lastId
+    if (changed && atBottomRef.current) scrollToBottom()
   }, [messages])
 
   // 流式增量导致最后一行变高时同样保持贴底
   useEffect(() => {
     if (atBottomRef.current) scrollToBottom()
   }, [streamingLength])
+
+  /*
+   * 贴底跟随的兜底：行内容高度变化（图片加载完成、字体就绪、新行插入）会把
+   * 已滚到底部的视图顶离底部，这里监听行尺寸变化，贴底时重新滚到底。
+   * 用户向上翻阅时（atBottom=false）绝不抢滚动位置。
+   */
+  useEffect(() => {
+    const el = listRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      if (atBottomRef.current) el.scrollTop = el.scrollHeight
+    })
+    const observed = new WeakSet<Element>()
+    const observeChildren = (): void => {
+      for (const child of Array.from(el.children)) {
+        if (observed.has(child)) continue
+        observed.add(child)
+        observer.observe(child)
+      }
+    }
+    observeChildren()
+    // 行随 messages / 流式占位增删，childList 变化时把新行纳入观察
+    const mutation = new MutationObserver(observeChildren)
+    mutation.observe(el, { childList: true })
+    return () => {
+      observer.disconnect()
+      mutation.disconnect()
+    }
+  }, [])
+
+  /*
+   * 视口几何补偿：本列表顶边被推走时必须自己补 `scrollTop`。
+   *
+   * 上方的状态条（排队 / 打字 / 拖拽提示 / 离线横幅）都是流内元素，出现或消失时会把本列表
+   * 整体推下、并压缩掉同样的高度，而 `scrollTop` 不会自动补偿 —— 于是整屏消息跟着上下跳动。
+   * 实测：一条状态条 = 37px，发送消息后服务端先后下发 `chat.queued` 与 `chat.typing`，
+   * 两条叠加即 74px，回复结束两条同时消失又整体弹回，就是「发送消息后主页面位移」。
+   *
+   * 浏览器自带的滚动锚定只处理**内容变化**，不处理滚动容器**自身几何变化**，故只能手动补。
+   * 补偿量恰好等于顶边位移 `deltaTop`，对贴底与未贴底两种情形同时成立：
+   *   - 未贴底：内容随顶边下移多少，就把 scrollTop 补多少，阅读位置原地不动
+   *   - 贴底：顶边下移 h 时最大滚动量恰好也增加 h，补完仍停在底部，画面同样不动
+   * 不用 `scrollTop = scrollHeight` 贴底：那一项受 `content-visibility` 估算影响会过冲，
+   * 而本补偿只依赖顶边位移，与 scrollHeight 无关。
+   */
+  useEffect(() => {
+    const el = listRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let prevTop = el.getBoundingClientRect().top
+    const observer = new ResizeObserver(() => {
+      const top = el.getBoundingClientRect().top
+      const deltaTop = top - prevTop
+      prevTop = top
+      if (deltaTop !== 0) el.scrollTop += deltaTop
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
 
   // 分页加载后恢复视口锚点（避免用户正在看的消息被推走）。
   // ⚠️ 锚点必须在请求**结束后**消费掉：若那一页为空（`hasMore` 耗尽）或请求失败，

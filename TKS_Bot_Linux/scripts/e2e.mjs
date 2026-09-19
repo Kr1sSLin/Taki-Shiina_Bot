@@ -455,6 +455,73 @@ async function main() {
   check('EDGE-L4：自己发送的消息收到自身 echo 后**不重复上屏**', afterEcho?.mineCount === 1, afterEcho)
   check('EDGE-L21：Bot 回复无重复 messageId', afterEcho?.dup === 0, afterEcho)
 
+  /* --------------------- 回归：状态条不得推动消息内容 ------------------- */
+  /*
+   * 状态条（排队 / 打字 / 拖拽提示 / 离线横幅）是 `.chat-body` 里的流内元素，
+   * 出现时会把它下面的 `.message-list` 整块推下并压缩同样的高度。滚动容器**自身几何变化**
+   * 不触发浏览器自带的滚动锚定，若不手动补 `scrollTop`，整屏消息会跟着上下跳动 ——
+   * 发送消息时服务端先后下发 `chat.queued` 与 `chat.typing`（两条 = 74px），
+   * 回复结束后同时消失又弹回，表现为「发送后主页面轻度上移」。
+   *
+   * 前置：本回归只在 `.message-list` **可滚动**时有意义（不可滚动时 `scrollTop` 不能为负，
+   * 几何补偿没有着力点）。这里先借 Mock 的测试触发口把历史播种到铺满整页。
+   * 播种用的独立 REST 登录不影响 App 会话：Mock 的 `KICK_ON_LOGIN` 默认关闭。
+   */
+  section('§12 边界：状态条出现时消息内容不得位移（FR-CHAT 视口几何补偿）')
+  const seedAuth = await fetch(`http://127.0.0.1:${MOCK_PORT}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      username: 'kris',
+      password: 'taki',
+      deviceId: 'device_e2e0seed-0000-0000-0000-000000000000'
+    })
+  }).then((r) => r.json())
+  await fetch(`http://127.0.0.1:${MOCK_PORT}/__test__/trigger`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${seedAuth.accessToken}` },
+    body: JSON.stringify({ kind: 'seed_history', count: 50 })
+  })
+  const seededSync = await cdp.eval('return await window.tks.sync.syncHistory(true)')
+  check('前置：播种历史后全量同步成功（让聊天页可滚动）', seededSync?.ok === true, seededSync)
+
+  const barShift = await cdp.eval(`
+    const list = document.querySelector('.message-list');
+    const body = document.querySelector('.chat-body');
+    if (!list || !body) return { skipped: 'no chat page' };
+    const rowsOf = () => Array.from(list.querySelectorAll('.message-row'));
+    if (rowsOf().length === 0) return { skipped: 'no messages' };
+    list.scrollTop = list.scrollHeight;
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    if (list.scrollHeight <= list.clientHeight) return { skipped: 'list not scrollable' };
+    const before = new Map();
+    const lr0 = list.getBoundingClientRect();
+    for (const r of rowsOf()) {
+      const b = r.getBoundingClientRect();
+      if (b.bottom > lr0.top && b.top < lr0.bottom) before.set(r.dataset.messageId, b.top);
+    }
+    // 贴底场景
+    const bar = document.createElement('div');
+    bar.className = 'chat-activity';
+    bar.innerHTML = '<span>回归探针</span>';
+    body.insertBefore(bar, list);
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const barHeight = +bar.getBoundingClientRect().height.toFixed(2);
+    let maxShift = 0;
+    for (const r of rowsOf()) {
+      const was = before.get(r.dataset.messageId);
+      if (was === undefined) continue;
+      maxShift = Math.max(maxShift, Math.abs(r.getBoundingClientRect().top - was));
+    }
+    bar.remove();
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    return { measured: before.size, barHeight, maxShift: +maxShift.toFixed(2) };
+  `)
+  check('回归：37px 状态条插入时可见消息零位移（贴底场景）',
+    barShift?.skipped !== undefined || barShift?.maxShift <= 1,
+    barShift
+  )
+
   /* ------------------------------ 历史同步 ---------------------------- */
   section('§6.5 历史同步（FR-SYNC）')
   const syncResult = await cdp.eval('return await window.tks.sync.syncHistory(false)')
