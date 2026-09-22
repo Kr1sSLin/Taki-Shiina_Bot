@@ -25,7 +25,7 @@
           shared visible focus style.
     -->
 
-    <Grid Margin="24">
+    <Grid x:Name="RootGrid" Margin="24">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />

@@ -495,6 +495,23 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ThemeApplied?.Invoke(this, _settings.IsDarkThemeEffective);
     }
 
+    /// <summary>设置关闭行为；RadioButton 只读派生属性使用 OneWay 显示，由命令回写源值。</summary>
+    [RelayCommand]
+    private void SetCloseBehavior(string? behavior)
+    {
+        var normalized = NormalizeCloseBehavior(behavior);
+        CloseBehavior = !IsTrayAvailable && normalized == CloseBehaviorTray
+            ? CloseBehaviorQuit
+            : normalized;
+    }
+
+    /// <summary>设置发送键；RadioButton 只读派生属性使用 OneWay 显示，由命令回写源值。</summary>
+    [RelayCommand]
+    private void SetSendKey(string? sendKey)
+        => SendKey = string.Equals(sendKey, SendKeyCtrlEnter, StringComparison.Ordinal)
+            ? SendKeyCtrlEnter
+            : "enter";
+
     /// <summary>由 REST 地址推导 WS 地址（FR-W-CFG-4）。</summary>
     [RelayCommand]
     private void DeriveWsBaseUrl() => WsBaseUrl = UrlPolicy.DeriveWsBaseUrl(ApiBaseUrl);

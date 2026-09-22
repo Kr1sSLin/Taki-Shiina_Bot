@@ -199,7 +199,7 @@ public sealed class WindowChromeService : IWindowChrome, IDisposable
     /// 否则回退主屏居中。使用 P/Invoke 枚举显示器，**不引入 WinForms**。
     /// </remarks>
     public (double X, double Y, double Width, double Height) EnsureOnScreen(
-        double x, double y, double width, double height)
+        double x, double y, double width, double height, IntPtr windowHandle = default)
     {
         // 尺寸本身非法时先给一个可用下限，避免返回 0 尺寸窗口。
         var safeWidth = width > 0 ? width : 1;
@@ -207,18 +207,18 @@ public sealed class WindowChromeService : IWindowChrome, IDisposable
 
         try
         {
-            var workAreas = EnumerateWorkAreas();
+            var workAreas = EnumerateWorkAreas(windowHandle);
             if (workAreas.Count > 0 && IntersectsAny(workAreas, x, y, safeWidth, safeHeight))
             {
                 return (x, y, safeWidth, safeHeight);
             }
 
-            return CenterOnPrimary(workAreas, safeWidth, safeHeight);
+            return CenterOnPrimary(workAreas, safeWidth, safeHeight, windowHandle);
         }
         catch (Exception)
         {
             // 枚举失败（无桌面会话 / API 受限）→ 用 WPF 的单屏兜底（PRD 允许）。
-            return CenterOnPrimary([], safeWidth, safeHeight);
+            return CenterOnPrimary([], safeWidth, safeHeight, windowHandle);
         }
     }
 
@@ -250,9 +250,9 @@ public sealed class WindowChromeService : IWindowChrome, IDisposable
     /// 枚举所有显示器的工作区（排除任务栏区域 —— FR-W-UI-6 要求「不相交则回退主屏居中」，
     /// 用工作区而非全屏矩形才能避开任务栏遮挡）。
     /// </summary>
-    private static List<NativeMethods.Rect> EnumerateWorkAreas()
+    private static List<LogicalWorkArea> EnumerateWorkAreas(IntPtr windowHandle)
     {
-        var results = new List<NativeMethods.Rect>();
+        var results = new List<LogicalWorkArea>();
 
         // 回调期间的异常不能跨 P/Invoke 边界抛出，因此内部全部吞掉并只收集成功项。
         var callback = new NativeMethods.MonitorEnumProc((IntPtr monitor, IntPtr hdc, ref NativeMethods.Rect rect, IntPtr data) =>
@@ -268,7 +268,7 @@ public sealed class WindowChromeService : IWindowChrome, IDisposable
 
             if (NativeMethods.GetMonitorInfo(monitor, ref info))
             {
-                results.Add(info.Work);
+                results.Add(new LogicalWorkArea(info.Work, GetMonitorScale(monitor, windowHandle)));
             }
 
             return true;
@@ -281,15 +281,16 @@ public sealed class WindowChromeService : IWindowChrome, IDisposable
         return results;
     }
 
-    private static bool IntersectsAny(List<NativeMethods.Rect> workAreas, double x, double y, double width, double height)
+    private static bool IntersectsAny(List<LogicalWorkArea> workAreas, double x, double y, double width, double height)
     {
         var right = x + width;
         var bottom = y + height;
 
         foreach (var area in workAreas)
         {
+            var work = area.ToLogical();
             // 严格相交（仅接触边界不算，因为窗口可能完全贴在屏幕边缘外）。
-            if (x < area.Right && right > area.Left && y < area.Bottom && bottom > area.Top)
+            if (x < work.Right && right > work.Left && y < work.Bottom && bottom > work.Top)
             {
                 return true;
             }
@@ -303,17 +304,20 @@ public sealed class WindowChromeService : IWindowChrome, IDisposable
     /// <c>SystemParameters.WorkArea</c>（单屏兜底，PRD 明确允许）。
     /// </summary>
     private static (double X, double Y, double Width, double Height) CenterOnPrimary(
-        List<NativeMethods.Rect> workAreas, double width, double height)
+        List<LogicalWorkArea> workAreas, double width, double height, IntPtr windowHandle)
     {
-        var work = TryGetPrimaryWorkArea() ?? workAreas.FirstOrDefault();
+        var work = TryGetPrimaryWorkArea(windowHandle) ?? workAreas.FirstOrDefault();
 
-        if (work is { Right: > 0, Bottom: > 0 })
+        if (work is { } logicalWork
+            && logicalWork.Pixels.Right > logicalWork.Pixels.Left
+            && logicalWork.Pixels.Bottom > logicalWork.Pixels.Top)
         {
-            var areaWidth = work.Right - work.Left;
-            var areaHeight = work.Bottom - work.Top;
+            var workRect = logicalWork.ToLogical();
+            var areaWidth = workRect.Right - workRect.Left;
+            var areaHeight = workRect.Bottom - workRect.Top;
 
-            var x = work.Left + Math.Max(0, (areaWidth - width) / 2);
-            var y = work.Top + Math.Max(0, (areaHeight - height) / 2);
+            var x = workRect.Left + Math.Max(0, (areaWidth - width) / 2);
+            var y = workRect.Top + Math.Max(0, (areaHeight - height) / 2);
             return (x, y, width, height);
         }
 
@@ -327,9 +331,9 @@ public sealed class WindowChromeService : IWindowChrome, IDisposable
     }
 
     /// <summary>主显示器工作区；找不到返回 <c>null</c>。</summary>
-    private static NativeMethods.Rect? TryGetPrimaryWorkArea()
+    private static LogicalWorkArea? TryGetPrimaryWorkArea(IntPtr windowHandle)
     {
-        NativeMethods.Rect? primary = null;
+        LogicalWorkArea? primary = null;
 
         var callback = new NativeMethods.MonitorEnumProc((IntPtr monitor, IntPtr hdc, ref NativeMethods.Rect rect, IntPtr data) =>
         {
@@ -345,7 +349,7 @@ public sealed class WindowChromeService : IWindowChrome, IDisposable
             if (NativeMethods.GetMonitorInfo(monitor, ref info)
                 && (info.Flags & NativeMethods.MonitorinfofPrimary) != 0)
             {
-                primary = info.Work;
+                primary = new LogicalWorkArea(info.Work, GetMonitorScale(monitor, windowHandle));
 
                 // 找到主屏即停止枚举。
                 return false;
@@ -357,6 +361,64 @@ public sealed class WindowChromeService : IWindowChrome, IDisposable
         _ = NativeMethods.EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, callback, IntPtr.Zero);
         GC.KeepAlive(callback);
         return primary;
+    }
+
+    private static double GetMonitorScale(IntPtr monitor, IntPtr windowHandle)
+    {
+        try
+        {
+            if (NativeMethods.GetDpiForMonitor(
+                    monitor,
+                    NativeMethods.MonitorDpiType.Effective,
+                    out var dpiX,
+                    out _)
+                == 0 && dpiX > 0)
+            {
+                return dpiX / 96d;
+            }
+        }
+        catch (DllNotFoundException)
+        {
+            // Windows 10+ has shcore.dll; retain the fallback for restricted images.
+        }
+        catch (EntryPointNotFoundException)
+        {
+            // Retain the fallback for older Windows images.
+        }
+        catch (Exception)
+        {
+            // DPI is advisory for geometry validation; fallback below is safe.
+        }
+
+        try
+        {
+            if (windowHandle != IntPtr.Zero)
+            {
+                var dpi = NativeMethods.GetDpiForWindow(windowHandle);
+                if (dpi > 0)
+                {
+                    return dpi / 96d;
+                }
+            }
+
+            var systemDpi = NativeMethods.GetDpiForSystem();
+            return systemDpi > 0 ? systemDpi / 96d : 1d;
+        }
+        catch (Exception)
+        {
+            return 1d;
+        }
+    }
+
+    private readonly record struct LogicalWorkArea(NativeMethods.Rect Pixels, double Scale)
+    {
+        internal NativeMethods.Rect ToLogical() => new()
+        {
+            Left = (int)Math.Round(Pixels.Left / Scale),
+            Top = (int)Math.Round(Pixels.Top / Scale),
+            Right = (int)Math.Round(Pixels.Right / Scale),
+            Bottom = (int)Math.Round(Pixels.Bottom / Scale),
+        };
     }
 
     private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
