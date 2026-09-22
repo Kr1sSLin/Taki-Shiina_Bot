@@ -6,9 +6,18 @@
 .gradle-old/
 build.old/
 **/build.old/
-build/
 *.apk
 *.aab
+
+# 注意：这里**不能**写裸 `build/`。裸模式会命中任意层级的 build 目录，
+# 包括 TKS_Bot_Linux/build/——而那里面放的是 Linux 打包必需的
+# sandbox-launcher.sh / after-install.tpl / after-remove.tpl
+# （electron-builder.yml 与 scripts/after-pack.mjs 都指向它们）。
+# 一旦裸 `build/` 命中该目录，git 就无法再二次包含其中的文件，会导致
+# 这三个文件无法入库、克隆后 Linux 打包断裂。
+# Android 各模块的 build/ 由 TKS_Bot_Android/.gitignore:21 的 `build/` 负责，
+# 无需在根级重复；此处只锚定仓库根自身的 build/。
+/build/
 
 # 本地构建环境（沙箱/本机验证用，不属于交付物）
 .gradle-home/
@@ -18,9 +27,34 @@ build/
 .logs/
 .build-android.sh
 
+# Python 虚拟环境（Windows 为 Scripts/，POSIX 为 bin/）
+.venv/
+venv/
+ENV/
+env/
+
+# Electron 客户端运行时残留（浏览器 profile、单实例锁，不应入库）
+TKS_Bot_Linux/.aitest/
+TKS_Bot_Linux/.t1/
+TKS_Bot_Linux/.t2/
+TKS_Bot_Linux/.e2e/
+TKS_Bot_Linux/.dbg/
+TKS_Bot_Linux/.home/
+TKS_Bot_Linux/.probe-home/
+TKS_Bot_Linux/SingletonCookie
+TKS_Bot_Linux/SingletonLock
+TKS_Bot_Linux/SingletonSocket
+
+# 发布产物（默认输出到桌面 Release 目录；若在本仓库内输出则忽略）
+/release-out/
+*.AppImage
+*.deb
+*.rpm
+
 # IDE
 .idea/
 
 # 系统文件
 .DS_Store
 Thumbs.db
+desktop.ini

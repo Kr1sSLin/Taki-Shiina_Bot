@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>TKSDesktop.Tests</RootNamespace>
+    <AssemblyName>TKSDesktop.Tests</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!-- 测试工程允许在断言中写中文（i18n 扫描只针对产品代码）。 -->
+    <NoWarn>$(NoWarn);CA1707;CA2007;CS0649</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      ⚠️ WPF 项目的隐式 using 集合不含 System.IO / System.Reflection，
+      而门禁测试大量使用 File/Path/Directory 与反射。与产品工程保持一致，在此统一声明。
+    -->
+    <Using Include="System.IO" />
+    <Using Include="System.Globalization" />
+    <Using Include="System.Reflection" />
+    <Using Include="TKSDesktop.Contracts" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\TKSDesktop\TKSDesktop.csproj" />
+  </ItemGroup>
+
+</Project>

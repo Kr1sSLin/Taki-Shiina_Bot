@@ -73,7 +73,8 @@ async function main() {
     }
   }
 
-  const electronBin = join(ROOT, 'node_modules/electron/dist/electron')
+  // Windows 上 Electron 的可执行文件名为 electron.exe（Linux/macOS 无后缀）
+  const electronBin = join(ROOT, 'node_modules/electron/dist', process.platform === 'win32' ? 'electron.exe' : 'electron')
   if (!existsSync(electronBin)) {
     console.error('未找到 Electron 可执行文件，请先执行 npm install')
     return 1

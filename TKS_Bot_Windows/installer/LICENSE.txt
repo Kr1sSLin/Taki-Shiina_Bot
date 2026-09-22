@@ -1,0 +1,41 @@
+TKS Desktop for Windows —— 最终用户许可与使用须知
+TKS Desktop for Windows - End User Notice
+
+本软件为个人自用 / 内测用途（PRD 决策 7：仅 Kris 自用）。
+This software is for personal / internal testing use.
+
+1. 未做代码签名（FR-W-PKG-4）
+   本安装包与便携版均**未做代码签名**。在全新 Windows 上首次运行时，
+   SmartScreen 可能提示「Windows 已保护你的电脑 / 不常见的应用」。
+   请点击「更多信息」→「仍要运行」以继续安装。
+
+2. 数据与凭据位置（§14.4 / FR-W-AUTH-3）
+   安装版：%APPDATA%\TKS Desktop\
+     - credentials.bin   登录凭据（**DPAPI 加密，仅当前 Windows 用户可解密**）
+     - settings.json     应用设置
+     - data\tks.db       本地聊天记录（SQLite，含全文索引）
+     - data\attachments\ 聊天图片附件
+     - state\logs\       运行日志（JSON 行，保留 7 天）
+   便携版：以上全部位于 <解压目录>\data\ 下，不写入 %APPDATA%。
+
+   ⚠️ 凭据始终为密文；任何情况下不会以明文写入磁盘。
+
+3. 通知（§14.3）
+   Windows 通知中心集成需要安装版创建的「开始菜单快捷方式」（携带 AUMID）。
+   便携版未创建该快捷方式，通知将自动降级为**托盘气泡**。
+   若需要通知中心集成，请运行一次安装包。
+
+4. 已知限制（FR-W-PKG-12 / §2.3）
+   - 「检查更新」仅提示不下载；**未配置更新源**，不会发起任何网络请求。
+   - 服务端聊天记录只保留 300 条，本地库保留更长时间（可导出）。
+   - 离线时**禁止发送消息**（不做离线队列）。
+   - 服务端默认单账号，不支持注册 / 改密 / 找回。
+   - 发布前需完成的运维侧检查：nginx 补 /healthz location、
+     client_max_body_size 调大、积分四组路由分流至 :8001。
+
+5. 隐私（NFR-W-7 / FR-W-SEC-7）
+   本软件**不做任何遥测、崩溃上报或外部网络请求**。
+   唯一允许的外部域名是你在设置中配置的后端地址（默认为生产后端）。
+
+6. 无担保
+   本软件按「现状」提供，作者不对使用后果承担任何责任。

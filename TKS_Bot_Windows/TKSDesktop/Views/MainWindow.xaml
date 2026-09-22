@@ -1,0 +1,221 @@
+<Window x:Class="TKSDesktop.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:TKSDesktop.Views"
+        Title="{Binding WindowTitle}"
+        Height="720"
+        Width="900"
+        MinHeight="640"
+        MinWidth="520"
+        Background="{DynamicResource Tks.Brush.Background}"
+        Foreground="{DynamicResource Tks.Brush.TextPrimary}"
+        FontFamily="{DynamicResource Tks.FontFamily}"
+        FontSize="{DynamicResource Tks.Font.Body}"
+        WindowStartupLocation="CenterScreen"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        AutomationProperties.Name="{Binding WindowTitle}">
+
+    <!--
+        Shell layout (FR-W-UI-1): the top contact card plus action strip, then the
+        ChatView which itself contains the virtualized message list and the composer
+        (list above, composer below).
+
+        FR-W-UI-6 : MinWidth 520 / MinHeight 640, geometry persisted and re-validated
+                    with IWindowChrome.EnsureOnScreen before the window is shown.
+        FR-W-UI-3 : the glass panels below degrade to the opaque gradient fallback
+                    when the system blur is unavailable (Tks.Style.GlassPanel trigger).
+        FR-W-UI-4 : ThemeRevealPath is the reveal overlay; MainWindow.xaml.cs animates
+                    its EllipseGeometry radii for about 400 ms.
+        FR-W-UI-11: animations are skipped entirely when IsAnimationReduced is true.
+        FR-W-HIS-* : the toolbar buttons below are the REQUIRED reachable entry points
+                    for the history / memory page (the other client shipped the page
+                    without an entry point : that defect is not copied here).
+    -->
+
+    <Grid x:Name="RootGrid">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- ============ Top: contact card + action strip ============ -->
+        <Border Grid.Row="0"
+                Style="{StaticResource Tks.Style.GlassPanel}"
+                Margin="10,10,10,6"
+                Padding="{DynamicResource Tks.Space.Md}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <local:PandaBadge Grid.Column="0"
+                                  x:Name="ContactBadge"
+                                  Diameter="44"
+                                  Style="{StaticResource Tks.PandaBadge}"
+                                  LevelCode="{Binding Chat.LevelCode}"
+                                  IsAnimated="{Binding IsCelebrationAnimationEnabled}"
+                                  Margin="0,0,10,0"
+                                  AutomationProperties.Name="{Binding Chat.ContactName}" />
+
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock Style="{StaticResource Tks.Text.Title}"
+                               Text="{Binding Chat.ContactName}" />
+
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                   Text="{Binding Chat.ConnectionStatusText}" />
+                        <Button Style="{StaticResource Tks.Button.Ghost}"
+                                Margin="8,0,0,0"
+                                Command="{Binding Chat.ReconnectCommand}"
+                                Content="{Binding Chat.ReconnectText}"
+                                Visibility="{Binding Chat.IsDisconnected, Converter={StaticResource Tks.BoolToVisibility}}" />
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                   Margin="10,0,0,0"
+                                   Text="{Binding Chat.TypingText}"
+                                   Visibility="{Binding Chat.IsTypingVisible, Converter={StaticResource Tks.BoolToVisibility}}" />
+                    </StackPanel>
+
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                               Margin="0,2,0,0"
+                               Foreground="{DynamicResource Tks.Brush.Danger}"
+                               Text="{Binding Chat.OfflineNoticeText}"
+                               Visibility="{Binding Chat.OfflineNoticeText, Converter={StaticResource Tks.NullToVisibility}}" />
+
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                               Margin="0,2,0,0"
+                               Foreground="{DynamicResource Tks.Brush.Danger}"
+                               Text="{Binding TrayUnavailableText}"
+                               Visibility="{Binding TrayUnavailableText, Converter={StaticResource Tks.NullToVisibility}}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="2"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <Button Style="{StaticResource Tks.Button.Base}"
+                            Command="{Binding OpenHistoryCommand}"
+                            Content="{Binding HistoryEntryText}"
+                            ToolTip="{Binding HistoryEntryText}"
+                            Margin="0,0,4,0" />
+                    <Button Style="{StaticResource Tks.Button.Base}"
+                            Command="{Binding OpenMemoryArchiveCommand}"
+                            Content="{Binding MemoryArchiveEntryText}"
+                            ToolTip="{Binding MemoryArchiveEntryText}"
+                            Margin="0,0,4,0" />
+                    <Button Style="{StaticResource Tks.Button.Base}"
+                            Command="{Binding OpenProfileCommand}"
+                            Content="{Binding ProfileEntryText}"
+                            ToolTip="{Binding ProfileEntryText}"
+                            Margin="0,0,4,0" />
+                    <Button Style="{StaticResource Tks.Button.Base}"
+                            Command="{Binding OpenPointsLedgerCommand}"
+                            Content="{Binding PointsLedgerEntryText}"
+                            ToolTip="{Binding PointsLedgerEntryText}"
+                            Margin="0,0,4,0" />
+                    <Button Style="{StaticResource Tks.Button.Base}"
+                            Command="{Binding OpenRemindersCommand}"
+                            Content="{Binding RemindersEntryText}"
+                            ToolTip="{Binding RemindersEntryText}"
+                            Margin="0,0,4,0" />
+                    <Button Style="{StaticResource Tks.Button.Base}"
+                            Command="{Binding OpenSearchCommand}"
+                            Content="{Binding SearchEntryText}"
+                            ToolTip="{Binding SearchEntryText}"
+                            Margin="0,0,4,0" />
+                    <Button Style="{StaticResource Tks.Button.Base}"
+                            Command="{Binding OpenSettingsCommand}"
+                            Content="{Binding SettingsEntryText}"
+                            ToolTip="{Binding SettingsEntryText}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ============ Middle + bottom: chat (list + composer) ============ -->
+        <Border Grid.Row="1"
+                Style="{StaticResource Tks.Style.GlassPanel}"
+                Margin="10,0,10,10">
+            <Grid>
+                <!-- Low contrast doodle texture (FR-W-UI-1 / FR-W-UI-12 vector only). -->
+                <Rectangle Fill="{DynamicResource Tks.Brush.DoodleTile}"
+                           IsHitTestVisible="False"
+                           Opacity="0.30" />
+
+                <local:ChatView x:Name="ChatPane"
+                                DataContext="{Binding Chat}"
+                                Background="Transparent" />
+
+                <!-- Offline cache banner (FR-W-PROG-4: interaction menu disabled entirely). -->
+                <Border VerticalAlignment="Top"
+                        HorizontalAlignment="Left"
+                        Style="{StaticResource Tks.Badge}"
+                        Margin="8"
+                        Background="{DynamicResource Tks.Brush.BubbleFailed}"
+                        Visibility="{Binding Chat.IsOfflineCache, Converter={StaticResource Tks.BoolToVisibility}}">
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                               Foreground="{DynamicResource Tks.Brush.Danger}"
+                               Text="{Binding Chat.OfflineNoticeText}" />
+                </Border>
+
+                <!-- Transient notice strip: failures and rejections are never silent (NFR-W-8). -->
+                <Border HorizontalAlignment="Center"
+                        VerticalAlignment="Top"
+                        Style="{StaticResource Tks.Badge}"
+                        Margin="0,8,0,0"
+                        Background="{DynamicResource Tks.Brush.AccentSoft}"
+                        Visibility="{Binding Chat.IsNoticeVisible, Converter={StaticResource Tks.BoolToVisibility}}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                   Text="{Binding Chat.NoticeText}" />
+                        <Button Style="{StaticResource Tks.Button.Ghost}"
+                                Margin="8,0,0,0"
+                                Content="{Binding Chat.CloseText}"
+                                Click="DismissNotice_Click" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+
+        <!-- ============ Theme reveal overlay (FR-W-UI-4, about 400 ms) ============ -->
+        <Path Grid.Row="0"
+              Grid.RowSpan="2"
+              x:Name="ThemeRevealPath"
+              IsHitTestVisible="False"
+              Opacity="0"
+              Fill="{DynamicResource Tks.Brush.Background}">
+            <Path.Data>
+                <EllipseGeometry x:Name="ThemeRevealGeometry"
+                                 Center="0,0"
+                                 RadiusX="0"
+                                 RadiusY="0" />
+            </Path.Data>
+        </Path>
+
+        <!-- ============ Interaction sheet (FR-W-INT-1: bottom-right "+" opens it) ============ -->
+        <Button Grid.Row="1"
+                x:Name="InteractionLauncher"
+                Style="{StaticResource Tks.Button.Primary}"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Bottom"
+                Margin="0,0,26,96"
+                Width="42"
+                Height="42"
+                Padding="0"
+                Content="+"
+                ToolTip="{Binding Chat.InteractionText}"
+                Command="{Binding Chat.OpenInteractionMenuCommand}"
+                AutomationProperties.Name="{Binding Chat.InteractionText}" />
+
+        <Grid Grid.Row="0"
+              Grid.RowSpan="2"
+              x:Name="InteractionOverlay"
+              Visibility="Collapsed"
+              Background="{DynamicResource Tks.Brush.Scrim}">
+            <local:InteractionMenu x:Name="InteractionPane"
+                                   HorizontalAlignment="Right"
+                                   VerticalAlignment="Bottom"
+                                   Margin="0,0,20,20" />
+        </Grid>
+    </Grid>
+</Window>

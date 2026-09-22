@@ -1,0 +1,141 @@
+<UserControl x:Class="TKSDesktop.Views.InteractionMenu"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Width="420"
+             MaxHeight="520">
+
+    <!--
+        Interaction sheet (FR-W-INT-1..9).
+
+        * Items are ordered by the server `sortOrder` (ordering happens in the view model).
+        * The icon falls back in three steps: `iconUrl` -> `icon` (emoji) -> programmatic
+          placeholder (FR-W-INT-9 / EDGE-W-23). The placeholder is drawn by AssetProvider,
+          so a missing art asset never throws (FR-W-UI-12).
+        * Greying out uses ONLY the server `affordable` flag; the shortfall is shown through
+          `interaction.insufficient` (FR-W-INT-4 / FR-W-INT-5).
+        * Offline cache state disables the whole sheet (FR-W-PROG-4).
+    -->
+
+    <Border Style="{StaticResource Tks.Style.GlassPanel}" Padding="{DynamicResource Tks.Space.Lg}">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0"
+                       Style="{StaticResource Tks.Text.Title}"
+                       Text="{Binding TitleText}" />
+
+            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,6,0,8">
+                <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                           Text="{Binding PointsLabel}" />
+                <TextBlock Style="{StaticResource Tks.Text.Body}"
+                           Margin="6,0,0,0"
+                           Text="{Binding Balance}" />
+                <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                           Margin="12,0,0,0"
+                           Foreground="{DynamicResource Tks.Brush.Danger}"
+                           Text="{Binding OfflineNoticeText}"
+                           Visibility="{Binding OfflineNoticeText, Converter={StaticResource Tks.NullToVisibility}}" />
+            </StackPanel>
+
+            <ScrollViewer Grid.Row="2" Style="{StaticResource Tks.ScrollViewer}">
+                <ItemsControl ItemsSource="{Binding Items}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Width="120" Margin="0,0,8,8">
+                                <Button Style="{StaticResource Tks.Button.Base}"
+                                        Height="84"
+                                        Padding="6"
+                                        CommandParameter="{Binding}"
+                                        Click="Item_Click"
+                                        IsEnabled="{Binding CanSend}"
+                                        AutomationProperties.Name="{Binding Name}">
+                                    <StackPanel>
+                                        <!-- Second fallback level: emoji from the server. -->
+                                        <TextBlock FontSize="26"
+                                                   HorizontalAlignment="Center"
+                                                   Text="{Binding DisplayGlyph}"
+                                                   Visibility="{Binding UsePlaceholder,
+                                                                        Converter={StaticResource Tks.InverseBool},
+                                                                        ConverterParameter=visible}" />
+                                        <!-- Third fallback level: programmatic placeholder. -->
+                                        <Image Width="28"
+                                               Height="28"
+                                               HorizontalAlignment="Center"
+                                               Source="{Binding Name, Converter={StaticResource Tks.AssetPlaceholder}}"
+                                               Visibility="{Binding UsePlaceholder,
+                                                                    Converter={StaticResource Tks.BoolToVisibility}}" />
+                                        <TextBlock Style="{StaticResource Tks.Text.Body}"
+                                                   Margin="0,4,0,0"
+                                                   HorizontalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Text="{Binding Name}" />
+                                        <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                                   HorizontalAlignment="Center"
+                                                   Text="{Binding CostText}" />
+                                    </StackPanel>
+                                </Button>
+
+                                <!-- Shortfall is shown explicitly, never greyed out silently (FR-W-INT-5). -->
+                                <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                           HorizontalAlignment="Center"
+                                           Foreground="{DynamicResource Tks.Brush.Danger}"
+                                           Text="{Binding InsufficientText}"
+                                           Visibility="{Binding InsufficientText, Converter={StaticResource Tks.NullToVisibility}}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+
+            <!-- Empty state and progress feedback. -->
+            <TextBlock Grid.Row="2"
+                       Style="{StaticResource Tks.Text.Caption}"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Text="{Binding EmptyText}"
+                       Visibility="{Binding IsEmpty, Converter={StaticResource Tks.BoolToVisibility}}" />
+
+            <TextBlock Grid.Row="2"
+                       Style="{StaticResource Tks.Text.Caption}"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Text="{Binding LoadingText}"
+                       Visibility="{Binding IsLoading, Converter={StaticResource Tks.BoolToVisibility}}" />
+
+            <StackPanel Grid.Row="3" Margin="0,6,0,0">
+                <TextBlock Style="{StaticResource Tks.Text.SectionHeader}"
+                           Text="{Binding TitleText}" />
+                <TextBox Style="{StaticResource Tks.TextBox.Base}"
+                         Text="{Binding MessageText, UpdateSourceTrigger=PropertyChanged}" />
+            </StackPanel>
+
+            <TextBlock Grid.Row="4"
+                       Style="{StaticResource Tks.Text.Caption}"
+                       Margin="0,6,0,0"
+                       Foreground="{DynamicResource Tks.Brush.Danger}"
+                       Text="{Binding StatusText}"
+                       Visibility="{Binding IsStatusVisible, Converter={StaticResource Tks.BoolToVisibility}}" />
+
+            <StackPanel Grid.Row="4"
+                        Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        Margin="0,8,0,0">
+                <Button Style="{StaticResource Tks.Button.Base}"
+                        Margin="0,0,8,0"
+                        Content="{Binding CloseText}"
+                        Command="{Binding CloseCommand}" />
+            </StackPanel>
+        </Grid>
+    </Border>
+</UserControl>

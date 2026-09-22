@@ -1,0 +1,208 @@
+﻿; TKS Desktop for Windows —— NSIS 安装脚本（PRD §14.1 / §14.3 / FR-W-PKG-1）
+;
+; ⚠️ 本脚本是「通知能弹出来」的唯一前提（§14.3）：
+;     必须在开始菜单创建带 AppUserModelID 属性的快捷方式，
+;     其值必须与 SetCurrentProcessExplicitAppUserModelID("TKSDesktop") 逐字一致。
+;
+; 构建参数（由 build.ps1 传入）：
+;   /DAPP_VERSION=<version>    版本号（唯一来源：TKSDesktop.csproj 的 <Version>）
+;   /DPUBLISH_DIR=<dir>        dotnet publish 输出目录
+;   /DOUT_FILE=<path>          产出的 setup.exe 路径
+
+Unicode true
+
+!include "MUI2.nsh"
+!include "FileFunc.nsh"
+!include "WinVer.nsh"
+!include "x64.nsh"
+!include "LogicLib.nsh"
+
+; 中文安装界面（PRD §11.2 前置条件）：SimpChinese 语言文件随 NSIS 安装包提供，
+; 但位于 Contrib\Language files 下，需显式加入包含目录，否则 !include 找不到。
+; ⚠️ ${NSISDIR} 由 makensis 在编译期注入，无需手工配置。
+!addincludedir "${NSISDIR}\Contrib\Language files"
+!include "SimpChinese.nsh"
+
+!define APP_NAME        "TKS Desktop"
+!define APP_EXE         "TKSDesktop.exe"
+!define APP_PUBLISHER   "Taki Shiina"
+!define APP_AUMID       "TKSDesktop"
+!define APP_REGKEY      "Software\Microsoft\Windows\CurrentVersion\Uninstall\TKSDesktop"
+!define APP_RUNKEY      "Software\Microsoft\Windows\CurrentVersion\Run"
+!define APP_RUNVALUE    "TKS Desktop"
+
+!ifndef APP_VERSION
+  !define APP_VERSION "1.0.0"
+!endif
+!ifndef PUBLISH_DIR
+  !error "必须通过 /DPUBLISH_DIR=<dotnet publish 输出目录> 指定源文件目录"
+!endif
+!ifndef OUT_FILE
+  !define OUT_FILE "TKS-Desktop-setup.exe"
+!endif
+!ifndef NSI_DIR
+  ; 未显式传入时取本 nsi 所在目录（${__FILEDIR__} 为编译期字面量），
+  ; 供随包带入 Set-ShortcutAumid.ps1 使用。
+  !define NSI_DIR "${__FILEDIR__}"
+!endif
+
+Name "${APP_NAME} ${APP_VERSION}"
+OutFile "${OUT_FILE}"
+InstallDir "$LOCALAPPDATA\Programs\${APP_NAME}"
+InstallDirRegKey HKCU "Software\${APP_NAME}" "InstallDir"
+RequestExecutionLevel user          ; 全程 HKCU，禁止 HKLM（§8.4）
+SetCompressor /SOLID lzma
+
+VIProductVersion "${APP_VERSION}.0"
+VIAddVersionKey "ProductName"     "${APP_NAME}"
+VIAddVersionKey "CompanyName"     "${APP_PUBLISHER}"
+VIAddVersionKey "FileDescription" "${APP_NAME} 安装程序"
+VIAddVersionKey "FileVersion"     "${APP_VERSION}"
+VIAddVersionKey "ProductVersion"  "${APP_VERSION}"
+VIAddVersionKey "LegalCopyright"  "Copyright (c) 2026 ${APP_PUBLISHER}"
+
+; ---- 界面 ----
+!define MUI_ABORTWARNING
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
+!define MUI_FINISHPAGE_RUN_TEXT "立即启动 ${APP_NAME}"
+!define MUI_FINISHPAGE_SHOWREADME ""
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "创建开机自启（静默启动到托盘）"
+!define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED   ; 默认不勾选（FR-W-PKG-1 ⑤）
+
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_LICENSE "LICENSE.txt"
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+
+!insertmacro MUI_LANGUAGE "SimpChinese"
+
+; --------------------------------------------------------------------------
+; 安装
+; --------------------------------------------------------------------------
+Section "主程序" SecMain
+  SectionIn RO
+
+  ; 目标系统：Windows 10 1809（17763）及以上 / Windows 11，仅 x64（NFR-W-9）
+  ${IfNot} ${AtLeastWin10}
+    MessageBox MB_ICONSTOP "TKS Desktop 需要 Windows 10 1809 或更高版本。"
+    Abort
+  ${EndIf}
+  ${IfNot} ${RunningX64}
+    MessageBox MB_ICONSTOP "TKS Desktop 仅支持 64 位 Windows。"
+    Abort
+  ${EndIf}
+
+  SetOutPath "$INSTDIR"
+  ; 复制 dotnet publish 的全部输出（自包含，用户侧无需 .NET 运行时 —— FR-W-PKG-7）
+  File /r "${PUBLISH_DIR}\*.*"
+
+  ; 随包带入 AUMID 写入脚本（安装时由 SecStartMenu 调用；卸载时随 $INSTDIR 一起删除）。
+  ; ⚠️ 必须与 tks-desktop.nsi 处于同一目录层级，安装段引用的相对路径才成立。
+  SetOutPath "$INSTDIR\installer"
+  File "/oname=Set-ShortcutAumid.ps1" "${NSI_DIR}\Set-ShortcutAumid.ps1"
+  SetOutPath "$INSTDIR"
+
+  WriteRegStr HKCU "Software\${APP_NAME}" "InstallDir" "$INSTDIR"
+  WriteRegStr HKCU "Software\${APP_NAME}" "Version" "${APP_VERSION}"
+
+  ; Toast 的正文/回复按钮通过协议激活，消息标识经 CLI 转发给唯一实例。
+  WriteRegStr HKCU "Software\Classes\tksdesktop" "" "URL:TKS Desktop notification"
+  WriteRegStr HKCU "Software\Classes\tksdesktop" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\tksdesktop\shell\open\command" "" '$\"$INSTDIR\${APP_EXE}$\" $\"%1$\"'
+
+  ; 卸载信息
+  WriteRegStr   HKCU "${APP_REGKEY}" "DisplayName"     "${APP_NAME}"
+  WriteRegStr   HKCU "${APP_REGKEY}" "DisplayVersion"  "${APP_VERSION}"
+  WriteRegStr   HKCU "${APP_REGKEY}" "Publisher"       "${APP_PUBLISHER}"
+  WriteRegStr   HKCU "${APP_REGKEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr   HKCU "${APP_REGKEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
+  WriteRegStr   HKCU "${APP_REGKEY}" "DisplayIcon"     "$INSTDIR\${APP_EXE}"
+  WriteRegDWORD HKCU "${APP_REGKEY}" "NoModify" 1
+  WriteRegDWORD HKCU "${APP_REGKEY}" "NoRepair" 1
+
+  ; 预估体积（KB），供「应用和功能」展示
+  ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
+  IntFmt $0 "0x%08X" $0
+  WriteRegDWORD HKCU "${APP_REGKEY}" "EstimatedSize" "$0"
+
+  CreateDirectory "$SMPROGRAMS\${APP_NAME}"
+  WriteUninstaller "$INSTDIR\uninstall.exe"
+SectionEnd
+
+; --------------------------------------------------------------------------
+; 开始菜单快捷方式（§14.3 —— Toast 的唯一前提，P0 / V-W-B4）
+; --------------------------------------------------------------------------
+Section "开始菜单快捷方式" SecStartMenu
+  SectionIn RO
+  CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
+  CreateShortcut "$SMPROGRAMS\${APP_NAME}\卸载 ${APP_NAME}.lnk" "$INSTDIR\uninstall.exe"
+
+  ; ⚠️ 关键（§14.3 第 2 步 / FR-W-PKG-9 / V-W-B4）：
+  ;    Toast 对未打包 Win32 应用的硬前提是「.lnk 的 AppUserModelID 属性 = 进程声明的 AUMID」。
+  ;    · CreateShortCut **不支持**写该属性；
+  ;    · `System::Call 'shell32::SetCurrentProcessExplicitAppUserModelID(...)'`
+  ;      设置的是**当前进程**的 AUMID，**不是** .lnk 文件的属性 —— 二者不可互替
+  ;      （这是早期版本的实际缺陷：装了 NSIS 也弹不出 Toast）。
+  ;    因此改调随包脚本写入该属性，并**读回校验**；失败即中止安装，不静默降级。
+  DetailPrint "写入开始菜单快捷方式的 AppUserModelID..."
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\installer\Set-ShortcutAumid.ps1" -ShortcutPath "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" -Aumid "${APP_AUMID}" -Verify'
+  Pop $0
+  ${If} $0 != 0
+    MessageBox MB_ICONSTOP "无法为开始菜单快捷方式写入 AppUserModelID（退出码 $0）。$\r$\n$\r$\n通知将无法进入 Windows 通知中心（会降级为托盘气泡）。请检查 PowerShell 是否可用后重试。"
+    Abort
+  ${EndIf}
+SectionEnd
+
+Section "桌面快捷方式" SecDesktop
+  CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
+SectionEnd
+
+; --------------------------------------------------------------------------
+; 可选：开机自启（默认不勾选 —— FR-W-PKG-1 ⑤）
+; --------------------------------------------------------------------------
+Section /o "开机自启（静默启动到托盘）" SecAutoStart
+  WriteRegStr HKCU "${APP_RUNKEY}" "${APP_RUNVALUE}" '"$INSTDIR\${APP_EXE}" --hidden'
+SectionEnd
+
+; --------------------------------------------------------------------------
+; 卸载
+; --------------------------------------------------------------------------
+Section "Uninstall"
+  ; 结束正在运行的实例，避免文件占用
+  ExecWait 'taskkill /IM ${APP_EXE} /F' $0
+
+  Delete "$DESKTOP\${APP_NAME}.lnk"
+  Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"
+  Delete "$SMPROGRAMS\${APP_NAME}\卸载 ${APP_NAME}.lnk"
+  RMDir  "$SMPROGRAMS\${APP_NAME}"
+
+  ; ⚠️ 必须清理自启注册表项（FR-W-PKG-1 ③）
+  DeleteRegValue HKCU "${APP_RUNKEY}" "${APP_RUNVALUE}"
+
+  DeleteRegKey HKCU "${APP_REGKEY}"
+  DeleteRegKey HKCU "Software\${APP_NAME}"
+  DeleteRegKey HKCU "Software\Classes\tksdesktop"
+
+  RMDir /r "$INSTDIR"
+
+  ; ⚠️ 用户数据（%APPDATA%\TKS Desktop\）**刻意不删除**：
+  ;    其中含 DPAPI 加密凭据与本地聊天记录，需由用户显式决定（设置页「退出登录 + 清除本地数据」）。
+  MessageBox MB_ICONINFORMATION "程序已卸载。$\r$\n$\r$\n用户数据（含加密凭据与本地聊天记录）保留在：$\r$\n$APPDATA\${APP_NAME}$\r$\n如需彻底清除，请手动删除该目录。"
+SectionEnd
+
+; --------------------------------------------------------------------------
+; 初始化：单实例安装（安装前检测已安装）
+; --------------------------------------------------------------------------
+Function .onInit
+  ; 若已安装则提示升级
+  ReadRegStr $R0 HKCU "${APP_REGKEY}" "UninstallString"
+  ${If} $R0 != ""
+    ReadRegStr $R1 HKCU "${APP_REGKEY}" "DisplayVersion"
+    MessageBox MB_OKCANCEL|MB_ICONQUESTION "${APP_NAME} 已安装（版本 $R1）。$\r$\n$\r$\n确定要覆盖安装 ${APP_VERSION} 吗？" IDOK +2
+    Abort
+  ${EndIf}
+FunctionEnd

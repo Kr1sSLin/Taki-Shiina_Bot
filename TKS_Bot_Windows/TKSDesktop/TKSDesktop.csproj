@@ -1,0 +1,73 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>TKSDesktop</RootNamespace>
+    <AssemblyName>TKSDesktop</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!--
+      不使用 WPF 自动生成的 Main（App.xaml 的 ApplicationDefinition）。
+      本端需要一个能在**无图形界面**下跑 selftest 的入口（NFR-W-15 / FR-W-TEST-1），
+      因此由 Program.cs 显式提供 [STAThread] Main 并自行决定是否创建 Application/Window。
+    -->
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <StartupObject>TKSDesktop.Program</StartupObject>
+
+    <!-- PRD §14.2：版本号单一来源。打包脚本读取此值，不得另存一份。 -->
+    <Version>1.0.0</Version>
+    <Product>TKS Desktop</Product>
+    <Company>Taki Shiina</Company>
+    <Description>TKS Desktop for Windows (WPF + .NET 8)</Description>
+    <Copyright>Copyright (c) 2026 Taki Shiina</Copyright>
+
+    <ApplicationIcon>Resources\Assets\tks-desktop.ico</ApplicationIcon>
+
+    <!-- AUMID：必须与开始菜单快捷方式一致（§14.2 / §14.3）。 -->
+    <DefineConstants>$(DefineConstants);TKS_AUMID</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      ⚠️ WPF 项目的隐式 using 集合（System / Collections.Generic / Linq / Threading / Threading.Tasks）
+      **不含 System.IO 与 System.Globalization**，而本端大量使用 Path/File/Directory 与 ISO 时间格式化。
+      在此统一声明为全局 using，避免每个文件重复写 using（也避免漏写导致的编译错误）。
+    -->
+    <Using Include="System.IO" />
+    <Using Include="System.Globalization" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- MVVM（决策 11）。 -->
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+
+    <!-- 宿主与 DI（决策 11 / §3.2）。 -->
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
+
+    <!-- 本地库（决策 12）。 -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.31" />
+
+    <!-- 凭据加密：DPAPI（OQ-W-1 定案，P0；.NET 8 需显式引用该包）。 -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+
+    <!-- 托盘（OQ-W-4 定案）。
+         ⚠️ 版本必须锁定 2.3.2：2.4.1 只提供 net10.0-windows / net462 资产，
+            在 net8.0-windows 下会触发 NU1701 降级警告并与 V-W-C4「无警告即失败」冲突。
+            2.3.2 提供 net8.0-windows7.0 资产，见 M0 实测报告（docs/M0_实测报告.md）。 -->
+    <PackageReference Include="H.NotifyIcon.Wpf" Version="2.3.2" />
+
+    <!-- Toast（§14.3）。 -->
+    <PackageReference Include="CommunityToolkit.WinUI.Notifications" Version="7.1.2" />
+
+    <!-- 系统托盘图标包自带的 P/Invoke 封装（Shell_NotifyIcon / TaskbarCreated）由 H.NotifyIcon 承担。 -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Resources\Assets\asset-manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <Resource Include="Resources\Assets\**\*.xaml" />
+  </ItemGroup>
+
+</Project>

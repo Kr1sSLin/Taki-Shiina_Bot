@@ -1,0 +1,25 @@
+# ===== 开发/测试依赖（运行时依赖见 requirements.txt，两个文件都要装） =====
+#
+# 最小集说明（已核对 tests/ 实际用法，不做冗余声明）：
+#   * pytest        —— 全部用例都是标准 unittest.TestCase（异步代码用 asyncio.run 驱动），
+#                      没有 @pytest.mark.asyncio / anyio 标记，故不需要 pytest-asyncio；
+#   * httpx         —— tests/test_api_endpoints.py 用到 fastapi.testclient.TestClient，已在 requirements.txt；
+#   * anyio         —— starlette（fastapi 依赖）自动带入，无需显式声明。
+#
+# 安装（Windows PowerShell）：
+#   cd Taki_Shiina_Bot
+#   py -3.14 -m venv .venv                                  # 或 python -m venv .venv
+#   .\.venv\Scripts\python.exe -m pip install -U pip
+#   .\.venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-dev.txt
+#
+# 安装（Linux / macOS）：
+#   cd Taki_Shiina_Bot
+#   python3 -m venv .venv
+#   ./.venv/bin/python -m pip install -U pip
+#   ./.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
+#
+# 跑测试（两端一致；--ignore 的历史用例引用了已移除的 split_into_bubbles）：
+#   <venv python> -m pytest tests/ -q --ignore=tests/test_text_utils.py
+#
+# 本地开发启动：Windows 用 scripts/run_dev.ps1（内置前置检查），Linux 见 docs/部署_nginx与多进程路由.md
+pytest

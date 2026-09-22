@@ -1,0 +1,53 @@
+<Window x:Class="TKSDesktop.Views.ImageViewerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{Binding ViewerTitle}"
+        Width="900" Height="700"
+        MinWidth="480" MinHeight="360"
+        Background="{DynamicResource Tks.Brush.Background}"
+        Foreground="{DynamicResource Tks.Brush.TextPrimary}"
+        FontFamily="{DynamicResource Tks.FontFamily}"
+        WindowStartupLocation="CenterOwner">
+
+    <!--
+        Large-image viewer (FR-W-IMG-9).
+
+        * Wheel zoom and reset, plus "save as".
+        * The path shown was validated against the app-private attachment directory
+          before being handed over (FR-W-SEC-6 / EDGE-W-29), so out-of-bounds paths
+          never reach this window.
+    -->
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ScrollViewer x:Name="ImageScroll" Grid.Row="0"
+                      HorizontalScrollBarVisibility="Auto"
+                      VerticalScrollBarVisibility="Auto"
+                      Background="Transparent"
+                      MouseWheel="ImageScroll_MouseWheel">
+            <Image x:Name="PreviewImage"
+                   Stretch="None"
+                   RenderOptions.BitmapScalingMode="HighQuality" />
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal"
+                    HorizontalAlignment="Center" Margin="0,8,0,8">
+            <Button Style="{StaticResource Tks.Button.Ghost}"
+                    Content="{Binding ZoomOutText}" Click="ZoomOut_Click" />
+            <Button Style="{StaticResource Tks.Button.Ghost}"
+                    Content="{Binding ZoomResetText}" Click="ZoomReset_Click" />
+            <Button Style="{StaticResource Tks.Button.Ghost}"
+                    Content="{Binding ZoomInText}" Click="ZoomIn_Click" />
+            <Button Style="{StaticResource Tks.Button.Primary}"
+                    Margin="16,0,0,0"
+                    Content="{Binding SaveAsText}" Click="SaveAs_Click" />
+            <Button Style="{StaticResource Tks.Button.Ghost}"
+                    Margin="8,0,0,0"
+                    Content="{Binding CloseText}" Click="Close_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

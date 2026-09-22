@@ -10,10 +10,11 @@ import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { readdir, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 
 // 产物输出目录已改到桌面的 Release（见 electron-builder.yml 的 directories.output），
-// 这里跟随同一路径，可用 TKS_RELEASE_DIR 覆盖。
-const DIST = process.env.TKS_RELEASE_DIR ?? '/home/administrator/Desktop/Release'
+// 这里跟随同一路径，可用 TKS_RELEASE_DIR 覆盖；默认值跨平台（Windows/Linux 均为 ~/Desktop/Release）。
+const DIST = process.env.TKS_RELEASE_DIR ?? join(homedir(), 'Desktop', 'Release')
 const PATTERNS = /\.(AppImage|deb|rpm|flatpak|zip|tar\.gz)$/i
 
 function sha256(file) {

@@ -1,0 +1,148 @@
+{
+  "$comment": "TKS Desktop for Windows —— 美术资源单一清单（PRD FR-W-UI-12 / V-W-S12）。代码只引用 logicalName，不得写死文件名。替换正式资源时：覆盖同名文件并把 status 改为 final，无需改代码或 XAML。",
+  "schemaVersion": 1,
+  "generatedAt": "2026-01-01T00:00:00+08:00",
+  "assets": [
+    {
+      "logicalName": "app.icon",
+      "fileName": "tks-desktop.ico",
+      "expectedSizes": [16, 24, 32, 48, 64, 128, 256],
+      "kind": "icon",
+      "status": "placeholder",
+      "note": "程序化生成的占位图标（熊猫意象 + PANDA_LV4 配色）。OQ-W-8 答复「等后续」，正式 .ico 属后置交付物（FR-W-UI-8 已由 P0 降为 P1）。"
+    },
+    {
+      "logicalName": "tray.online",
+      "fileName": "tray-online.ico",
+      "expectedSizes": [16, 32],
+      "kind": "icon",
+      "status": "placeholder",
+      "note": "在线态托盘图标；正式资源到位前由程序化生成（复用 app.icon 叠加绿色指示）。"
+    },
+    {
+      "logicalName": "tray.offline",
+      "fileName": "tray-offline.ico",
+      "expectedSizes": [16, 32],
+      "kind": "icon",
+      "status": "placeholder",
+      "note": "离线态托盘图标。"
+    },
+    {
+      "logicalName": "tray.unread",
+      "fileName": "tray-unread.ico",
+      "expectedSizes": [16, 32],
+      "kind": "icon",
+      "status": "placeholder",
+      "note": "有未读消息的托盘图标（FR-W-DSK-1 未读标记）。"
+    },
+    {
+      "logicalName": "level.PANDA_LV1.badge",
+      "fileName": "badge-lv1.svg",
+      "expectedSizes": [64, 128],
+      "kind": "badge",
+      "status": "placeholder",
+      "note": "初生熊猫 🥚 徽章；占位期由 PandaBadge 自绘（配 LevelVisuals 的 accent 渐变）。"
+    },
+    {
+      "logicalName": "level.PANDA_LV2.badge",
+      "fileName": "badge-lv2.svg",
+      "expectedSizes": [64, 128],
+      "kind": "badge",
+      "status": "placeholder"
+    },
+    {
+      "logicalName": "level.PANDA_LV3.badge",
+      "fileName": "badge-lv3.svg",
+      "expectedSizes": [64, 128],
+      "kind": "badge",
+      "status": "placeholder"
+    },
+    {
+      "logicalName": "level.PANDA_LV4.badge",
+      "fileName": "badge-lv4.svg",
+      "expectedSizes": [64, 128],
+      "kind": "badge",
+      "status": "placeholder"
+    },
+    {
+      "logicalName": "level.PANDA_LV5.badge",
+      "fileName": "badge-lv5.svg",
+      "expectedSizes": [64, 128],
+      "kind": "badge",
+      "status": "placeholder"
+    },
+    {
+      "logicalName": "level.PANDA_LV6.badge",
+      "fileName": "badge-lv6.svg",
+      "expectedSizes": [64, 128],
+      "kind": "badge",
+      "status": "placeholder"
+    },
+    {
+      "logicalName": "level.PANDA_LV7.badge",
+      "fileName": "badge-lv7.svg",
+      "expectedSizes": [64, 128],
+      "kind": "badge",
+      "status": "placeholder",
+      "note": "传奇熊猫 🌈；七彩动态特效（FR-W-LV-4）。"
+    },
+    {
+      "logicalName": "level.NONE.badge",
+      "fileName": "badge-none.svg",
+      "expectedSizes": [64, 128],
+      "kind": "badge",
+      "status": "placeholder",
+      "note": "中性兜底徽章 🐾（FR-W-LV-3：不得渲染空徽章）。"
+    },
+    {
+      "logicalName": "item.coffee.icon",
+      "fileName": "item-coffee.svg",
+      "expectedSizes": [48, 96],
+      "kind": "itemIcon",
+      "status": "placeholder",
+      "note": "服务端 iconUrl 当前恒为空串，实际回退到 icon（emoji ☕），本项为最终兜底（FR-W-INT-9 / EDGE-W-23）。"
+    },
+    {
+      "logicalName": "item.noodles.icon",
+      "fileName": "item-noodles.svg",
+      "expectedSizes": [48, 96],
+      "kind": "itemIcon",
+      "status": "placeholder"
+    },
+    {
+      "logicalName": "item.gamepad.icon",
+      "fileName": "item-gamepad.svg",
+      "expectedSizes": [48, 96],
+      "kind": "itemIcon",
+      "status": "placeholder"
+    },
+    {
+      "logicalName": "item.white_dragon.icon",
+      "fileName": "item-white-dragon.svg",
+      "expectedSizes": [48, 96],
+      "kind": "itemIcon",
+      "status": "placeholder"
+    },
+    {
+      "logicalName": "item.energy_bar.icon",
+      "fileName": "item-energy-bar.svg",
+      "expectedSizes": [48, 96],
+      "kind": "itemIcon",
+      "status": "placeholder"
+    },
+    {
+      "logicalName": "avatar.taki",
+      "fileName": "avatar-taki.png",
+      "expectedSizes": [128, 256],
+      "kind": "image",
+      "status": "placeholder",
+      "note": "顶部联系人卡片头像；占位期由 PandaBadge 自绘。"
+    }
+  ],
+  "summary": {
+    "total": 18,
+    "final": 0,
+    "placeholder": 18,
+    "note": "全部为 placeholder（OQ-W-8 答复「等后续」）。V-W-S12 要求如实计数，不得标记为 final；发布构建的「正式资源检查」不得把这些列入通过清单。"
+  }
+}

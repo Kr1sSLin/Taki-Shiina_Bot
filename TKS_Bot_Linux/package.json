@@ -17,7 +17,7 @@
     "dev": "node scripts/launch.mjs dev",
     "dev:watch": "node scripts/launch.mjs dev --watch",
     "start": "node scripts/launch.mjs preview",
-    "fix-sandbox": "bash scripts/fix-sandbox.sh",
+    "fix-sandbox": "node scripts/fix-sandbox.mjs",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run check:i18n",

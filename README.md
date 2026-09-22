@@ -1,12 +1,14 @@
 # TKS (Taki Shiina)
 
-TKS 项目仓库，包含 Android 客户端与 Python AI 后端两个子项目：Android 应用通过 REST / WebSocket 接入后端，获取智能对话、记忆与实时推送能力。
+TKS 项目仓库，包含 Python AI 后端与两个客户端（Android / Linux 桌面）：客户端通过 REST / WebSocket 接入后端，获取智能对话、记忆与实时推送能力。
+
+> 🪟 **在 Windows 上开发请先看 [docs/开发环境_Windows.md](docs/开发环境_Windows.md)** —— 依赖版本要求、已知坑与一键脚本都在那里。
 
 ## 项目结构
 
 ```
 Taki-Shiina_Bot/
-├── Android_AI_Assistant/    # Android AI 对话助手（Kotlin / Compose，多模块）
+├── TKS_Bot_Android/         # Android AI 对话助手（Kotlin / Compose，多模块）
 └── Taki_Shiina_Bot/         # Python 后端（FastAPI / WebSocket AI 服务）
 ```
 
@@ -14,19 +16,19 @@ Taki-Shiina_Bot/
 
 ```
 ┌──────────────────────┐   REST (8000) / WebSocket (8001)
-│ Android_AI_Assistant │ ──────────────────────────────▶
+│ Android / Linux 客户端 │ ──────────────────────────────▶
 └──────────────────────┘
                                                        ▼
 ┌──────────────────────────────────┐   ┌─────────────────────┐
 │      Taki_Shiina_Bot (Python)    │──▶│ DeepSeek / Gemini   │
-│  main.py / http_api.py / ws_api  │   │ OpenWeather 等外部服务│
+│  main.py / http_api.py / ws_api  │   │ QWeather 等外部服务  │
 │    （对话 / 记忆 / 定时任务）        │   └─────────────────────┘
 └──────────────────────────────────┘
 ```
 
 ---
 
-## 📱 Android_AI_Assistant
+## 📱 TKS_Bot_Android
 
 Android AI 对话助手客户端，多模块架构。
 
@@ -66,8 +68,8 @@ Android AI 对话助手客户端，多模块架构。
 
 ### 构建
 ```bash
-cd Android_AI_Assistant
-./gradlew assembleDebug
+cd TKS_Bot_Android
+.\gradlew.bat assembleDebug      # Windows；Linux 用 ./gradlew assembleDebug
 ```
 
 ---
@@ -86,7 +88,7 @@ Python AI 后端服务，为 Android 客户端提供 REST / WebSocket 对话、�
 - 🗣️ **智能对话**: DeepSeek / Gemini 双模型支持，情感化回复与表情注入
 - 💭 **记忆管理**: 用户记忆存储、检索与查询命令
 - 📸 **图片处理**: 图片识别与分析
-- 🌤️ **天气服务**: OpenWeather 实时天气，支持城市设置
+- 🌤️ **天气服务**: 和风天气 QWeather 实时天气，支持城市设置
 - ⏰ **定时任务**: 定时场景更新与提醒调度
 - 🎁 **互动礼物 · 积分 · 等级**（新增，详见 `TKS_互动积分等级体系_PRD_v2.md` 与 `docs/互动积分等级体系_接口契约.md`）:
   咖啡/泡面/白龙/手柄/能量棒五种互动物品 → 扣积分并生成拟人回复；
@@ -260,13 +262,27 @@ release 产物退化为 `app-release-unsigned.apk`，构建依然可跑通。
 ## 🚀 快速开始
 
 ### 前置要求
-- **Android 端**: Android Studio, JDK 11+
-- **后端**: Python 3.8+, pip；配置好 `.env`
+- **后端**: Python 3.11+（实测 3.14），pip；配置好 `.env`
+- **Android 端**: Android Studio + **JDK 17 或 21**（⚠️ 不要用 JDK 26，Gradle 8.13 不支持）
+- **桌面端**: Node.js ≥ 20
 
 ### 启动顺序
-1. 启动后端：`uvicorn main:app`（认证服务），并按需启动 `http_api.py` / `ws_api.py`（对话 API）
-2. 修改 Android 端 `API_BASE_URL` / `WS_BASE_URL` 指向后端
-3. `cd Android_AI_Assistant && ./gradlew assembleDebug` 构建安装
+1. 配置 `.env`：从 `.env.example` 复制，至少填 `DATA_ENC_KEY`、`AUTH_JWT_SECRET`、`AUTH_USERNAME`、`AUTH_PASSWORD`
+2. 启动后端：`uvicorn main:app`（认证服务），并按需启动 `http_api.py` / `ws_api.py`（对话 API）
+3. 修改客户端 `API_BASE_URL` / `WS_BASE_URL` 指向后端
+4. 构建客户端（见上文各子项目说明）
+
+### Windows 快捷方式
+
+仓库为 Windows 新增了两个 PowerShell 脚本，**与原有 Linux 脚本并存**：
+
+| 用途 | Windows | Linux |
+|---|---|---|
+| 后端环境体检 | `.\Taki_Shiina_Bot\scripts\run_dev.ps1 check` | — |
+| 启动后端 | `.\Taki_Shiina_Bot\scripts\run_dev.ps1 auth\|http\|ws\|all` | `python http_api.py` 等 |
+| 构建发布 | `.\scripts\release.ps1` | `scripts/release.sh` |
+
+> 完整步骤、依赖版本与踩坑记录见 **[docs/开发环境_Windows.md](docs/开发环境_Windows.md)**。
 
 ---
 
