@@ -1,0 +1,40 @@
+# TKS Desktop for Windows —— 格式化基准（V-W-C4：dotnet format --verify-no-changes 必须通过）
+#
+# 背景：仓库根 .gitattributes 的「跨平台源码：统一 LF」清单只列了 .py/.kt/.ts/.json 等，**没有 .cs / .xaml**。
+# Windows 上 Git 默认 core.autocrlf=true，工作区的 .cs 行尾不确定（本目录同时出现过 CRLF 与 LF 两种文件），
+# 于是 `dotnet format --verify-no-changes` 的 WHITESPACE 规则会随机报错，门禁不可复现（V-W-C4 要求可复现）。
+# 这里显式固定为 LF，与仓库「跨平台源码统一 LF」的既有约定一致。
+#
+# ⚠️ 本文件只固定行尾与编码，**不放宽任何分析器**（Directory.Build.props 已启用
+#    TreatWarningsAsErrors / EnforceCodeStyleInBuild / AnalysisLevel=latest，安全网保持有效）。
+
+root = true
+
+# 兜底：本目录下未单独声明的文本文件一律 LF
+[*]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+
+[*.{cs,csx}]
+end_of_line = lf
+indent_style = space
+indent_size = 4
+
+[*.xaml]
+end_of_line = lf
+indent_style = space
+indent_size = 4
+
+[*.{csproj,props,targets,json,xml,config}]
+end_of_line = lf
+indent_style = space
+indent_size = 2
+
+# Windows 脚本必须 CRLF（与根 .gitattributes 约定一致），否则 PowerShell 5.1 解析可能出错
+[*.{ps1,psm1,bat,cmd}]
+end_of_line = crlf
+
+# NSIS 脚本按安装器工具链惯例使用 CRLF
+[*.nsi]
+end_of_line = crlf

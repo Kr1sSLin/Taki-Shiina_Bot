@@ -1,0 +1,233 @@
+<UserControl x:Class="TKSDesktop.Views.ProfileView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:TKSDesktop.Views"
+             Background="Transparent">
+
+    <!--
+        Profile page (FR-W-LV-1/2/3/4/5/5a/6/8, FR-W-PT-1/2/3/7, FR-W-MC-1..7, FR-W-PROG-4).
+
+        * Badge + title + continuous days + progress bar + days-to-next-level (FR-W-LV-1).
+        * `IsDefaultLevel` or an empty `LevelName` shows profile.level.justStarted (FR-W-LV-3).
+        * A reset streak shows profile.pointsUnaffected (FR-W-LV-8).
+        * Makeup candidates come ONLY from GetMakeupCandidatesAsync (FR-W-MC-2): the calendar
+          never invents dates locally.
+        * A makeup click asks for confirmation first (FR-W-MC-3) and the failure message is
+          derived from the server error code through ErrorCatalog (FR-W-MC-6).
+        * Three-state level feedback (FR-W-LV-4/5/5a): celebration only on UPGRADE;
+          RESTORE/RESET use the lightweight strip only and never animate.
+    -->
+
+    <ScrollViewer Style="{StaticResource Tks.ScrollViewer}">
+        <StackPanel Margin="{DynamicResource Tks.Space.Lg}">
+
+            <!-- ============ Level card ============ -->
+            <Border Style="{StaticResource Tks.Card}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <local:PandaBadge Grid.Column="0"
+                                      Diameter="84"
+                                      Style="{StaticResource Tks.PandaBadge}"
+                                      LevelCode="{Binding LevelCode}"
+                                      IsAnimated="{Binding IsCelebrationAnimatable}" />
+
+                    <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center">
+                        <TextBlock Style="{StaticResource Tks.Text.Title}"
+                                   Text="{Binding LevelName}" />
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                   Margin="0,2,0,0"
+                                   Text="{Binding ContinuousDaysText}" />
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                   Text="{Binding ProgressToNextText}" />
+                        <ProgressBar Style="{StaticResource Tks.ProgressBar.Level}"
+                                     Margin="0,6,0,0"
+                                     Value="{Binding ProgressPercent}" />
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                   Margin="0,4,0,0"
+                                   Foreground="{DynamicResource Tks.Brush.Danger}"
+                                   Text="{Binding PointsUnaffectedText}"
+                                   Visibility="{Binding PointsUnaffectedText, Converter={StaticResource Tks.NullToVisibility}}" />
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                   Foreground="{DynamicResource Tks.Brush.Danger}"
+                                   Text="{Binding BreakDeadlineText}"
+                                   Visibility="{Binding BreakDeadlineText, Converter={StaticResource Tks.NullToVisibility}}" />
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                   Foreground="{DynamicResource Tks.Brush.Danger}"
+                                   Text="{Binding OfflineNoticeText}"
+                                   Visibility="{Binding OfflineNoticeText, Converter={StaticResource Tks.NullToVisibility}}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- Balances -->
+            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding PointsLabel}" />
+                <TextBlock Style="{StaticResource Tks.Text.Body}" Margin="6,0,0,0" Text="{Binding Balance}" />
+                <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="16,0,0,0" Text="{Binding MakeupCardsText}" />
+                <Button Style="{StaticResource Tks.Button.Ghost}"
+                        Margin="12,0,0,0"
+                        Content="{Binding RefreshText}"
+                        Command="{Binding RefreshCommand}" />
+            </StackPanel>
+
+            <!-- ============ Level feedback (three states) ============ -->
+            <Border Style="{StaticResource Tks.Card}"
+                    Margin="0,10,0,0"
+                    Background="{DynamicResource Tks.Brush.AccentSoft}"
+                    Visibility="{Binding IsCelebrationVisible, Converter={StaticResource Tks.BoolToVisibility}}">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource Tks.Text.Title}" Text="{Binding CelebrationTitle}" />
+                    <TextBlock Style="{StaticResource Tks.Text.Body}" Margin="0,4,0,0" Text="{Binding CelebrationBody}" />
+                    <Button Style="{StaticResource Tks.Button.Base}"
+                            HorizontalAlignment="Right"
+                            Margin="0,8,0,0"
+                            Content="{Binding CloseText}"
+                            Command="{Binding DismissCelebrationCommand}" />
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Tks.Card}"
+                    Margin="0,10,0,0"
+                    Visibility="{Binding IsFeedbackVisible, Converter={StaticResource Tks.BoolToVisibility}}">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource Tks.Text.Body}" Text="{Binding FeedbackText}" />
+                    <Button Style="{StaticResource Tks.Button.Base}"
+                            HorizontalAlignment="Right"
+                            Margin="0,6,0,0"
+                            Content="{Binding MakeupTitleText}"
+                            Visibility="{Binding IsMakeupGuideVisible, Converter={StaticResource Tks.BoolToVisibility}}" />
+                    <Button Style="{StaticResource Tks.Button.Ghost}"
+                            HorizontalAlignment="Right"
+                            Margin="0,4,0,0"
+                            Content="{Binding CloseText}"
+                            Command="{Binding DismissFeedbackCommand}" />
+                </StackPanel>
+            </Border>
+
+            <!-- ============ Points ledger (FR-W-PT-2/3/7) ============ -->
+            <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Margin="0,16,0,0" Text="{Binding LedgerTitleText}" />
+
+            <Border Style="{StaticResource Tks.Card}">
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="90" />
+                            <ColumnDefinition Width="110" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Style="{StaticResource Tks.Text.SectionHeader}" Text="{Binding LedgerTimeColumnText}" />
+                        <TextBlock Grid.Column="1" Style="{StaticResource Tks.Text.SectionHeader}" Text="{Binding LedgerReasonColumnText}" />
+                        <TextBlock Grid.Column="2" Style="{StaticResource Tks.Text.SectionHeader}" Text="{Binding LedgerChangeColumnText}" />
+                        <TextBlock Grid.Column="3" Style="{StaticResource Tks.Text.SectionHeader}" Text="{Binding LedgerBalanceColumnText}" />
+                    </Grid>
+
+                    <ItemsControl ItemsSource="{Binding Ledger}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,3">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="140" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="90" />
+                                        <ColumnDefinition Width="110" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Style="{StaticResource Tks.Text.Caption}" Text="{Binding TimeText}" />
+                                    <TextBlock Grid.Column="1" Style="{StaticResource Tks.Text.Body}" Text="{Binding ReasonText}" />
+                                    <!-- Signed amount, coloured by direction. -->
+                                    <TextBlock Grid.Column="2" Text="{Binding ChangeText}">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock" BasedOn="{StaticResource Tks.Text.Body}">
+                                                <Setter Property="Foreground" Value="{DynamicResource Tks.Brush.Loss}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsGain}" Value="True">
+                                                        <Setter Property="Foreground" Value="{DynamicResource Tks.Brush.Gain}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Grid.Column="3" Style="{StaticResource Tks.Text.Body}" Text="{Binding BalanceAfterText}" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                               Margin="0,6,0,0"
+                               Text="{Binding EmptyTextPlaceholder}"
+                               Visibility="{Binding IsLedgerEmpty, Converter={StaticResource Tks.BoolToVisibility}}" />
+
+                    <Button Style="{StaticResource Tks.Button.Ghost}"
+                            HorizontalAlignment="Left"
+                            Margin="0,6,0,0"
+                            Content="{Binding LoadMoreText}"
+                            Command="{Binding LoadMoreLedgerCommand}"
+                            Visibility="{Binding HasMoreLedger, Converter={StaticResource Tks.BoolToVisibility}}" />
+                </StackPanel>
+            </Border>
+
+            <!-- ============ Makeup card calendar (FR-W-MC-1..7) ============ -->
+            <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Margin="0,16,0,0" Text="{Binding MakeupTitleText}" />
+
+            <Border Style="{StaticResource Tks.Card}">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding MakeupRuleText}" />
+
+                    <ItemsControl ItemsSource="{Binding MakeupCandidates}" Margin="0,6,0,0">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <!-- Click asks for confirmation before the server is called (FR-W-MC-3). -->
+                                <Button Style="{StaticResource Tks.Button.Base}"
+                                        Margin="0,0,6,6"
+                                        Content="{Binding}"
+                                        Click="MakeupDate_Click" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                               Text="{Binding MakeupEmptyText}"
+                               Visibility="{Binding IsMakeupEmpty, Converter={StaticResource Tks.BoolToVisibility}}" />
+
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                               Margin="0,6,0,0"
+                               Foreground="{DynamicResource Tks.Brush.Danger}"
+                               Text="{Binding MakeupStatusText}"
+                               Visibility="{Binding MakeupStatusText, Converter={StaticResource Tks.NullToVisibility}}" />
+                </StackPanel>
+            </Border>
+
+            <!-- ============ Level config (FR-W-LV-2) ============ -->
+            <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Margin="0,16,0,0" Text="{Binding LevelConfigTitleText}" />
+
+            <Border Style="{StaticResource Tks.Card}">
+                <ItemsControl ItemsSource="{Binding LevelConfigs}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal" Margin="0,3">
+                                <TextBlock Style="{StaticResource Tks.Text.Body}" Width="34" Text="{Binding Emoji}" />
+                                <TextBlock Style="{StaticResource Tks.Text.Body}" Width="160" Text="{Binding DisplayName}" />
+                                <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                           Width="120"
+                                           Text="{Binding ThresholdText}" />
+                                <Border Style="{StaticResource Tks.Badge}">
+                                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding LevelCode}" />
+                                </Border>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

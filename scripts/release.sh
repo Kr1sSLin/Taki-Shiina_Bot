@@ -119,8 +119,18 @@ build_deb() {
 
 build_apk() {
   log "构建 Android APK（release，含签名）"
-  if [ ! -f "$TKS_ANDROID_KEYSTORE" ]; then
-    warn "未找到签名密钥 $TKS_ANDROID_KEYSTORE —— 将产出未签名 APK"
+  # ⚠️ 关键坑（Windows 侧实测同源，Gradle 行为与平台无关）：
+  # TKS_Bot_Android/app/build.gradle.kts 判定 hasReleaseSigning 时**只看环境变量是否有值**，
+  # 并不校验密钥文件是否存在：
+  #     val hasReleaseSigning = !releaseKeystorePath.isNullOrBlank() && !releaseKeystorePass.isNullOrBlank()
+  # 因此密钥文件缺失时必须把这些变量**清掉**，否则 Gradle 会创建出 signingConfig 并在
+  # :app:validateSigningRelease 直接硬失败（Keystore file '...' not found for signing config 'release'），
+  # 而不是按设计退化为未签名产物。脚本顶部（第 48-51 行）默认导出这些变量，所以必须在这里撤销。
+  # 注意 `set -u` 下 unset 后不能再引用，故先取副本用于提示。
+  ks_path="${TKS_ANDROID_KEYSTORE:-}"
+  if [ -z "$ks_path" ] || [ ! -f "$ks_path" ]; then
+    warn "未找到签名密钥 ${ks_path:-（未设置）} —— 已清除签名环境变量，将产出未签名 APK"
+    unset TKS_ANDROID_KEYSTORE TKS_ANDROID_KEYSTORE_PASS TKS_ANDROID_KEY_ALIAS
   fi
   ( cd "$ANDROID_DIR" && ./gradlew :app:assembleRelease --console=plain \
       -Dkotlin.compiler.execution.strategy=in-process )

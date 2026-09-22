@@ -256,7 +256,8 @@ async function main() {
   if (!mockUp) throw new Error('Mock 后端启动失败')
 
   /* ---------------------------- 启动真实客户端 -------------------------- */
-  const electronBin = join(ROOT, 'node_modules/electron/dist/electron')
+  // Windows 上 Electron 的可执行文件名为 electron.exe（Linux/macOS 无后缀）
+  const electronBin = join(ROOT, 'node_modules/electron/dist', process.platform === 'win32' ? 'electron.exe' : 'electron')
   launch(
     electronBin,
     [

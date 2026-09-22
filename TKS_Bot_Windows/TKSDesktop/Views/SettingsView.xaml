@@ -1,0 +1,255 @@
+<UserControl x:Class="TKSDesktop.Views.SettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:TKSDesktop.Views"
+             Background="Transparent">
+
+    <!--
+        Settings page (FR-W-SET-1..12 / FR-W-NOTI-7 / FR-W-SEC-5).
+
+        Sections, in the order the PRD lists them:
+          * Appearance (theme, three states incl. follow-system).
+          * Server (REST/WS base URL, derive-from-REST, connectivity test).
+          * Behaviour (city, autostart, close behaviour, global hotkey, send key).
+          * Notifications (five categories + do-not-disturb, cross-midnight).
+          * Data & storage (credential status, attachment size/cleanup, export,
+            open logs/data dirs, clear local conversation).
+          * About (version, build date, distribution kind, backend, device id,
+            update check that is purely local and never opens a socket).
+          * Logout (with "also clear local data").
+    -->
+
+    <ScrollViewer Style="{StaticResource Tks.ScrollViewer}">
+        <StackPanel Margin="{DynamicResource Tks.Space.Lg}">
+
+            <!-- ============ Header ============ -->
+            <Grid Margin="0,0,0,16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Style="{StaticResource Tks.Text.Title}" Text="{Binding TitleText}" />
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Style="{StaticResource Tks.Button.Primary}"
+                            Content="{Binding SaveText}" Command="{Binding SaveCommand}" />
+                    <Button Style="{StaticResource Tks.Button.Ghost}"
+                            Content="{Binding CloseText}" Click="Close_Click" />
+                </StackPanel>
+            </Grid>
+
+            <!-- ============ Appearance ============ -->
+            <Border Style="{StaticResource Tks.Card}" Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Text="{Binding ThemeSectionText}" />
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksTheme"
+                                     Content="{Binding ThemeSystemText}" IsChecked="{Binding IsThemeSystem}"
+                                     Command="{Binding SetThemeCommand}" CommandParameter="system" />
+                        <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksTheme" Margin="16,0,0,0"
+                                     Content="{Binding ThemeLightText}" IsChecked="{Binding IsThemeLight}"
+                                     Command="{Binding SetThemeCommand}" CommandParameter="light" />
+                        <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksTheme" Margin="16,0,0,0"
+                                     Content="{Binding ThemeDarkText}" IsChecked="{Binding IsThemeDark}"
+                                     Command="{Binding SetThemeCommand}" CommandParameter="dark" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ============ Server ============ -->
+            <Border Style="{StaticResource Tks.Card}" Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Text="{Binding ServerSectionText}" />
+
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,8,0,4" Text="{Binding ApiBaseUrlLabel}" />
+                    <TextBox Style="{StaticResource Tks.TextBox.Base}"
+                             Text="{Binding ApiBaseUrl, UpdateSourceTrigger=PropertyChanged}" />
+
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,8,0,4" Text="{Binding WsBaseUrlLabel}" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBox Style="{StaticResource Tks.TextBox.Base}" MinWidth="360"
+                                 Text="{Binding WsBaseUrl, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Style="{StaticResource Tks.Button.Ghost}" Margin="8,0,0,0"
+                                Content="{Binding DeriveWsText}" Command="{Binding DeriveWsBaseUrlCommand}" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                        <Button Style="{StaticResource Tks.Button.Ghost}"
+                                Content="{Binding TestConnectionText}" Command="{Binding TestConnectionCommand}" />
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="12,0,0,0"
+                                   VerticalAlignment="Center"
+                                   Text="{Binding TestConnectionResultText}" TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <!-- Plaintext warning: shown only when the user typed a non-loopback http/ws URL (FR-W-SEC-4). -->
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,8,0,0"
+                               Foreground="{DynamicResource Tks.Brush.Danger}"
+                               Text="{Binding PlaintextWarningText}" TextWrapping="Wrap"
+                               Visibility="{Binding HasPlaintextWarning, Converter={StaticResource Tks.BoolToVisibility}}" />
+                </StackPanel>
+            </Border>
+
+            <!-- ============ Behaviour ============ -->
+            <Border Style="{StaticResource Tks.Card}" Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Text="{Binding BehaviourSectionText}" />
+
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,8,0,4" Text="{Binding CityLabel}" />
+                    <TextBox Style="{StaticResource Tks.TextBox.Base}"
+                             Text="{Binding City, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding CityHintText}" TextWrapping="Wrap" />
+
+                    <CheckBox Style="{StaticResource Tks.CheckBox}" Margin="0,12,0,0"
+                              Content="{Binding AutostartLabel}" IsChecked="{Binding Autostart}" />
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,4,0,0"
+                               Text="{Binding AutostartCurrentText}" TextWrapping="Wrap" />
+
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,12,0,4" Text="{Binding CloseBehaviourLabel}" />
+                    <StackPanel Orientation="Horizontal">
+                        <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksClose"
+                                     Content="{Binding CloseBehaviorTrayText}" IsChecked="{Binding IsCloseToTray}" />
+                        <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksClose" Margin="16,0,0,0"
+                                     Content="{Binding CloseBehaviorQuitText}" IsChecked="{Binding IsCloseToQuit}" />
+                    </StackPanel>
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,4,0,0"
+                               Foreground="{DynamicResource Tks.Brush.Danger}"
+                               Text="{Binding TrayUnavailableText}" TextWrapping="Wrap"
+                               Visibility="{Binding IsTrayAvailable, Converter={StaticResource Tks.InverseBool}}" />
+
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,12,0,4" Text="{Binding HotkeyLabel}" />
+                    <StackPanel Orientation="Horizontal">
+                        <CheckBox Style="{StaticResource Tks.CheckBox}"
+                                  Content="{Binding HotkeyEnabledLabel}" IsChecked="{Binding GlobalShortcutEnabled}" />
+                        <TextBox Style="{StaticResource Tks.TextBox.Base}" MinWidth="200" Margin="16,0,0,0"
+                                 Text="{Binding GlobalShortcut, UpdateSourceTrigger=PropertyChanged}" />
+                    </StackPanel>
+                    <!-- Registration failure is surfaced verbatim; the app never silently
+                         falls back to the default combination (EDGE-W-8). -->
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,4,0,0"
+                               Foreground="{DynamicResource Tks.Brush.Danger}"
+                               Text="{Binding HotkeyStatusText}" TextWrapping="Wrap"
+                               Visibility="{Binding IsHotkeyStatusVisible, Converter={StaticResource Tks.BoolToVisibility}}" />
+
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,12,0,4" Text="{Binding SendKeyLabel}" />
+                    <StackPanel Orientation="Horizontal">
+                        <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksSend"
+                                     Content="{Binding SendKeyEnterText}" IsChecked="{Binding IsSendKeyEnter}" />
+                        <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksSend" Margin="16,0,0,0"
+                                     Content="{Binding SendKeyCtrlEnterText}" IsChecked="{Binding IsSendKeyCtrlEnter}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ============ Notifications ============ -->
+            <Border Style="{StaticResource Tks.Card}" Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Text="{Binding NotificationsSectionText}" />
+
+                    <CheckBox Style="{StaticResource Tks.CheckBox}" Margin="0,8,0,0"
+                              Content="{Binding NotifyChatText}" IsChecked="{Binding NotifyChat}" />
+                    <CheckBox Style="{StaticResource Tks.CheckBox}"
+                              Content="{Binding NotifyGreetingText}" IsChecked="{Binding NotifyGreeting}" />
+                    <CheckBox Style="{StaticResource Tks.CheckBox}"
+                              Content="{Binding NotifyReminderText}" IsChecked="{Binding NotifyReminder}" />
+                    <CheckBox Style="{StaticResource Tks.CheckBox}"
+                              Content="{Binding NotifyErrorText}" IsChecked="{Binding NotifyError}" />
+                    <CheckBox Style="{StaticResource Tks.CheckBox}"
+                              Content="{Binding NotifyProgressText}" IsChecked="{Binding NotifyProgress}" />
+
+                    <!-- Capability is reported honestly: a portable build without the
+                         Start-menu shortcut degrades to tray balloons (EDGE-W-10). -->
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,8,0,0"
+                               Text="{Binding NotificationCapability}" TextWrapping="Wrap" />
+
+                    <CheckBox Style="{StaticResource Tks.CheckBox}" Margin="0,12,0,0"
+                              Content="{Binding DndEnabledText}" IsChecked="{Binding DndEnabled}" />
+
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}" VerticalAlignment="Center"
+                                   Text="{Binding DndStartText}" />
+                        <TextBox Style="{StaticResource Tks.TextBox.Base}" Width="80" Margin="8,0,0,0"
+                                 Text="{Binding DndStart, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}" VerticalAlignment="Center" Margin="16,0,0,0"
+                                   Text="{Binding DndEndText}" />
+                        <TextBox Style="{StaticResource Tks.TextBox.Base}" Width="80" Margin="8,0,0,0"
+                                 Text="{Binding DndEnd, UpdateSourceTrigger=PropertyChanged}" />
+                    </StackPanel>
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,4,0,0"
+                               Text="{Binding DndHintText}" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
+            <!-- ============ Data & storage ============ -->
+            <Border Style="{StaticResource Tks.Card}" Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Text="{Binding DataSectionText}" />
+
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,8,0,0"
+                               Text="{Binding StorageStatusText}" TextWrapping="Wrap" />
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                               Text="{Binding CredentialFilePath}" TextWrapping="Wrap" />
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                               Text="{Binding AttachmentsSizeText}" />
+
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}" VerticalAlignment="Center"
+                                   Text="{Binding CleanupText}" />
+                        <TextBox Style="{StaticResource Tks.TextBox.Base}" Width="60" Margin="8,0,0,0"
+                                 Text="{Binding CleanupOlderThanDays, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Style="{StaticResource Tks.Button.Ghost}" Margin="8,0,0,0"
+                                Content="{Binding RefreshText}" Command="{Binding CleanupAttachmentsCommand}" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                        <Button Style="{StaticResource Tks.Button.Ghost}"
+                                Content="{Binding ExportJsonText}" Command="{Binding ExportJsonCommand}" />
+                        <Button Style="{StaticResource Tks.Button.Ghost}" Margin="8,0,0,0"
+                                Content="{Binding ExportTextText}" Command="{Binding ExportTextCommand}" />
+                        <Button Style="{StaticResource Tks.Button.Ghost}" Margin="8,0,0,0"
+                                Content="{Binding OpenLogsText}" Command="{Binding OpenLogsDirectoryCommand}" />
+                        <Button Style="{StaticResource Tks.Button.Ghost}" Margin="8,0,0,0"
+                                Content="{Binding OpenDataDirText}" Command="{Binding OpenDataDirectoryCommand}" />
+                    </StackPanel>
+
+                    <Button Style="{StaticResource Tks.Button.Danger}" Margin="0,12,0,0"
+                            HorizontalAlignment="Left"
+                            Content="{Binding ClearLocalText}" Command="{Binding ClearLocalCommand}" />
+                </StackPanel>
+            </Border>
+
+            <!-- ============ About ============ -->
+            <Border Style="{StaticResource Tks.Card}" Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Text="{Binding AboutSectionText}" />
+
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,8,0,0" Text="{Binding VersionText}" />
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding BuildDateText}" />
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding DistributionText}" />
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding BackendText}" TextWrapping="Wrap" />
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding DeviceIdText}" TextWrapping="Wrap" />
+
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                        <Button Style="{StaticResource Tks.Button.Ghost}"
+                                Content="{Binding CheckUpdateText}" Command="{Binding CheckUpdateCommand}" />
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="12,0,0,0"
+                                   VerticalAlignment="Center"
+                                   Text="{Binding UpdateStatusText}" TextWrapping="Wrap" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ============ Logout ============ -->
+            <Border Style="{StaticResource Tks.Card}">
+                <StackPanel>
+                    <CheckBox Style="{StaticResource Tks.CheckBox}"
+                              Content="{Binding LogoutClearDataText}" IsChecked="{Binding LogoutClearLocalData}" />
+                    <Button Style="{StaticResource Tks.Button.Danger}" Margin="0,8,0,0"
+                            HorizontalAlignment="Left"
+                            Content="{Binding LogoutText}" Command="{Binding LogoutCommand}" />
+                </StackPanel>
+            </Border>
+
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

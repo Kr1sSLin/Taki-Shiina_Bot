@@ -1,0 +1,28 @@
+# TKS Desktop for Windows —— 构建与发布产物（V-W-C6：含 .exe/.zip/.db 的提交必须被拒）
+#
+# 背景：仓库根 .gitignore 只覆盖了 Linux/Android 的产物，**没有** TKS_Bot_Windows 的
+# bin/obj/dist/artifacts。缺失时 `git add TKS_Bot_Windows` 会把 ~165MB 的
+# 自包含发布产物与编译中间件一起入库，直接违反 V-W-C6。
+#
+# ⚠️ 与根 .gitignore 相同的教训：这里写的是**锚定到本目录**的模式，
+#    不要写裸 `build/`，否则会命中任意层级同名目录。
+
+# ---- 编译中间件与输出 ----
+bin/
+obj/
+
+# ---- 打包产物（build.ps1 的输出） ----
+dist/
+artifacts/
+
+# ---- 运行时数据（若因调试落在程序目录下） ----
+# 便携版会在此写 data/ 与 portable.flag；这些是**本机运行态**，不入库。
+# 注意：portable.flag 由 build.ps1 在打包时生成并塞进 zip，不在源码树里。
+data/
+
+# ---- 测试与自检残留 ----
+*.trx
+TestResults/
+.vs/
+*.user
+*.suo

@@ -1,0 +1,86 @@
+# 统一换行符策略（关键：Windows 开发环境必需）
+#
+# 背景：本仓库原先只在 Linux 上开发，没有 .gitattributes。Windows 上 Git 默认
+# core.autocrlf=true，会把检出内容全部转成 CRLF，于是 sh 脚本的行尾变成
+# `#!/bin/sh\r`，在 Git Bash / WSL 下执行会直接报：
+#     bash: ./gradlew: /bin/sh^M: bad interpreter: No such file or directory
+# 影响 `gradlew`、`scripts/release.sh`、`TKS_Bot_Linux/scripts/fix-sandbox.sh`。
+#
+# 约定：
+#   - 入库（index）一律 LF，保证 Linux 侧行为不变；
+#   - shell 脚本在工作区也强制 LF（否则无法执行）；
+#   - Windows 批处理与 PowerShell 强制 CRLF；
+#   - 二进制文件不做任何转换。
+
+* text=auto
+
+# ---- Shell 脚本：必须 LF，否则 Git Bash / WSL 无法执行 ----
+*.sh            text eol=lf
+gradlew         text eol=lf
+*.bash          text eol=lf
+
+# ---- Windows 脚本：必须 CRLF ----
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+*.ps1           text eol=crlf
+*.psm1          text eol=crlf
+
+# ---- 跨平台源码：统一 LF，与 Linux 侧保持一致 ----
+*.py            text eol=lf
+*.pyi           text eol=lf
+*.kt            text eol=lf
+*.kts           text eol=lf
+*.java          text eol=lf
+*.ts            text eol=lf
+*.tsx           text eol=lf
+*.js            text eol=lf
+*.mjs           text eol=lf
+*.cjs           text eol=lf
+*.json          text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.toml          text eol=lf
+*.css           text eol=lf
+*.scss          text eol=lf
+*.html          text eol=lf
+*.xml           text eol=lf
+*.properties    text eol=lf
+*.md            text eol=lf
+*.env           text eol=lf
+.env.example    text eol=lf
+Dockerfile      text eol=lf
+*.pro           text eol=lf
+
+# ---- 仓库元文件：保持 LF，避免 Windows 下反复出现 "LF will be replaced by CRLF" 噪音 ----
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+
+# ---- 二进制：禁止换行符与编码转换 ----
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.webp          binary
+*.gif           binary
+*.ico           binary
+*.icns          binary
+*.ttf           binary
+*.otf           binary
+*.woff          binary
+*.woff2         binary
+*.jar           binary
+*.apk           binary
+*.aab           binary
+*.deb           binary
+*.rpm           binary
+*.AppImage      binary
+*.exe           binary
+*.dll           binary
+*.so            binary
+*.dylib         binary
+*.zip           binary
+*.gz            binary
+*.tar           binary
+*.pdf           binary
+*.db            binary
+*.jks           binary
+*.keystore      binary

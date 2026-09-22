@@ -1,0 +1,61 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        Doodle background (PRD FR-W-UI-1/12): eight hand-drawn style vector shapes
+        used as a low-contrast texture behind the chat area.
+
+        All eight are pure vector geometry, so they need no art asset and are safe
+        while assets are still `placeholder` (FR-W-UI-12 fallback requirement).
+        Colour comes from `Tks.Brush.Doodle` via DynamicResource, so the texture
+        follows the light/dark switch and needs no second copy.
+
+        Shape key: `Tks.Doodle.<1..8>`
+    -->
+
+    <!-- 1: bamboo leaf cluster -->
+    <PathGeometry x:Key="Tks.Doodle.1" Figures="M2,40 C10,26 20,16 34,8 C30,22 22,34 10,42 Z M12,42 C22,34 34,28 48,24 C40,36 28,44 14,46 Z" />
+
+    <!-- 2: panda paw print -->
+    <GeometryGroup x:Key="Tks.Doodle.2">
+        <EllipseGeometry Center="24,32" RadiusX="13" RadiusY="10" />
+        <EllipseGeometry Center="10,16" RadiusX="5" RadiusY="6" />
+        <EllipseGeometry Center="22,10" RadiusX="5" RadiusY="6" />
+        <EllipseGeometry Center="35,12" RadiusX="5" RadiusY="6" />
+    </GeometryGroup>
+
+    <!-- 3: speech bubble outline -->
+    <PathGeometry x:Key="Tks.Doodle.3" Figures="M6,10 L44,10 A4,4 0 0 1 48,14 L48,32 A4,4 0 0 1 44,36 L24,36 L14,46 L16,36 L10,36 A4,4 0 0 1 6,32 Z" />
+
+    <!-- 4: four-point sparkle -->
+    <PathGeometry x:Key="Tks.Doodle.4" Figures="M24,2 L29,18 L45,24 L29,30 L24,46 L19,30 L3,24 L19,18 Z" />
+
+    <!-- 5: cloud -->
+    <GeometryGroup x:Key="Tks.Doodle.5">
+        <EllipseGeometry Center="18,28" RadiusX="12" RadiusY="10" />
+        <EllipseGeometry Center="30,24" RadiusX="13" RadiusY="12" />
+        <EllipseGeometry Center="42,30" RadiusX="10" RadiusY="8" />
+    </GeometryGroup>
+
+    <!-- 6: star -->
+    <PathGeometry x:Key="Tks.Doodle.6" Figures="M24,2 L30,18 L47,18 L33,28 L38,45 L24,35 L10,45 L15,28 L1,18 L18,18 Z" />
+
+    <!-- 7: music note -->
+    <PathGeometry x:Key="Tks.Doodle.7" Figures="M30,6 L30,32 A8,6 0 1 1 26,27 L26,14 L14,17 L14,36 A8,6 0 1 1 10,31 L10,11 Z" />
+
+    <!-- 8: heart -->
+    <PathGeometry x:Key="Tks.Doodle.8" Figures="M24,44 C4,30 2,18 10,11 C17,5 23,9 24,15 C25,9 31,5 38,11 C46,18 44,30 24,44 Z" />
+
+    <!-- Reusable brush used by every doodle layer. -->
+    <DrawingBrush x:Key="Tks.Brush.DoodleTile"
+                  TileMode="Tile"
+                  Viewport="0,0,64,64"
+                  ViewportUnits="Absolute"
+                  Stretch="Uniform">
+        <DrawingBrush.Drawing>
+            <GeometryDrawing Brush="{DynamicResource Tks.Brush.Doodle}"
+                             Geometry="{StaticResource Tks.Doodle.4}" />
+        </DrawingBrush.Drawing>
+    </DrawingBrush>
+
+</ResourceDictionary>

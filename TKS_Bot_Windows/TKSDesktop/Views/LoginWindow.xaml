@@ -1,0 +1,89 @@
+<Window x:Class="TKSDesktop.Views.LoginWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{Binding TitleText}"
+        Width="420"
+        Height="360"
+        SizeToContent="Manual"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource Tks.Brush.Background}"
+        Foreground="{DynamicResource Tks.Brush.TextPrimary}"
+        FontFamily="{DynamicResource Tks.FontFamily}"
+        FontSize="{DynamicResource Tks.Font.Body}"
+        UseLayoutRounding="True"
+        AutomationProperties.Name="{Binding TitleText}">
+
+    <!--
+        Login page (FR-W-AUTH-1..13 / EDGE-W-2 / EDGE-W-3).
+
+        * Every label comes from the LoginViewModel (which reads App.I18n): no literal
+          UI copy lives in this file.
+        * The notice line is the StartupCoordinator's noticeKey path (expired / corrupted /
+          idle-expired / encryption-unavailable) shown verbatim from I18n.
+        * Accessibility: the fields and the submit button are Tab-reachable and use the
+          shared visible focus style.
+    -->
+
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Style="{StaticResource Tks.Text.Title}"
+                   FontSize="{DynamicResource Tks.Font.Display}"
+                   Text="{Binding AppName}" />
+
+        <TextBlock Grid.Row="1"
+                   Style="{StaticResource Tks.Text.Caption}"
+                   Margin="0,2,0,12"
+                   Text="{Binding TitleText}" />
+
+        <StackPanel Grid.Row="2">
+            <TextBlock Style="{StaticResource Tks.Text.SectionHeader}"
+                       Text="{Binding UsernameLabel}" />
+            <TextBox x:Name="UsernameBox"
+                     Style="{StaticResource Tks.TextBox.Base}"
+                     Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"
+                     AutomationProperties.Name="{Binding UsernameLabel}" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="3" Margin="0,12,0,0">
+            <TextBlock Style="{StaticResource Tks.Text.SectionHeader}"
+                       Text="{Binding PasswordLabel}" />
+            <PasswordBox x:Name="PasswordBox"
+                         Style="{StaticResource Tks.PasswordBox}"
+                         PasswordChanged="PasswordBox_PasswordChanged"
+                         AutomationProperties.Name="{Binding PasswordLabel}" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="4" VerticalAlignment="Top" Margin="0,12,0,0">
+            <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                       Foreground="{DynamicResource Tks.Brush.Danger}"
+                       TextWrapping="Wrap"
+                       Text="{Binding Notice}"
+                       Visibility="{Binding HasNotice, Converter={StaticResource Tks.BoolToVisibility}}" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="5"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button Style="{StaticResource Tks.Button.Base}"
+                    Margin="0,0,8,0"
+                    Content="{Binding DataContext.CancelText,
+                                      RelativeSource={RelativeSource AncestorType=Window}}"
+                    Click="Cancel_Click" />
+            <Button Style="{StaticResource Tks.Button.Primary}"
+                    Content="{Binding SubmitText}"
+                    IsDefault="True"
+                    Command="{Binding SubmitCommand}"
+                    IsEnabled="{Binding CanSubmit}" />
+        </StackPanel>
+    </Grid>
+</Window>

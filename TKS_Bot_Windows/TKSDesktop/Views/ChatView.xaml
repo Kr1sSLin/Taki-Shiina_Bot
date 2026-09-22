@@ -1,0 +1,425 @@
+<UserControl x:Class="TKSDesktop.Views.ChatView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:TKSDesktop.ViewModels"
+             xmlns:local="clr-namespace:TKSDesktop.Views"
+             Background="Transparent">
+
+    <!--
+        FR-W-CHAT-16: the message list is an ItemsControl whose ItemsPanel is a
+        VirtualizingStackPanel with recycling. The first page is 50 local rows
+        (ProtocolConstants.LocalFirstPageSize, requested by ChatViewModel) and the
+        "load earlier" button pages upwards.
+
+        FR-W-CHAT-13 / C-4: the per-message timestamp is rendered through the shared
+        TimeFormat converter (same day HH:mm, earlier MM-DD HH:mm, other year
+        YYYY-MM-DD HH:mm) and collapses when ShowTimestamp is false (messages inside
+        the same minute of one day share a single timestamp).
+
+        C-5: a message whose IsHistorySeparator is true is drawn as a thin line plus
+        the I18n day-separator text : never as an ordinary bubble.
+
+        FR-W-SYNC-11 / FR-W-INT-6: interaction messages reuse THIS SAME bubble template;
+        the interaction name / emoji and the gift badge are added inside it. There is
+        deliberately no separate bubble component.
+
+        FR-W-CHAT-14 : the typing stage text is bound from ChatViewModel.
+        FR-W-CONN-5  : the reconnect button appears while disconnected.
+        FR-W-UI-5    : the emoji panel occupies real layout space (it pushes content up).
+        FR-W-CHAT-1 / FR-W-SET-8: multiline composer, Enter sends / Shift+Enter breaks
+                       (or Ctrl+Enter sends when the setting says so); Esc hides to tray.
+        FR-W-IMG-1/3/7/8/9: the draft strip sits ABOVE the input, supports per-image
+                       removal, and an empty clipboard paste is never silent.
+    -->
+
+    <UserControl.Resources>
+        <local:LocalImageConverter x:Key="TksLocalImage" />
+
+        <!-- One bubble template for every message kind (FR-W-INT-6: no separate component). -->
+        <DataTemplate x:Key="Tks.MessageTemplate" DataType="{x:Type vm:MessageItemViewModel}">
+            <Grid>
+                <!-- Day separator (C-5): thin line + I18n text, never a bubble. -->
+                <Grid Margin="0,8"
+                      Visibility="{Binding IsHistorySeparator, Converter={StaticResource Tks.BoolToVisibility}}">
+                    <Border Style="{StaticResource Tks.Separator.Day}"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Center" />
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                               HorizontalAlignment="Center"
+                               Background="{DynamicResource Tks.Brush.Background}"
+                               Padding="8,0"
+                               Text="{Binding SeparatorText}" />
+                </Grid>
+
+                <!-- Ordinary / interaction bubble. -->
+                <StackPanel>
+                    <StackPanel.Style>
+                        <Style TargetType="StackPanel">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsHistorySeparator}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </StackPanel.Style>
+
+                    <!-- Merged timestamp (FR-W-CHAT-13). -->
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                               HorizontalAlignment="Center"
+                               Margin="0,6,0,2"
+                               Text="{Binding LocalTime, Converter={StaticResource Tks.TimeFormat}}"
+                               Visibility="{Binding ShowTimestamp, Converter={StaticResource Tks.BoolToVisibility}}" />
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Bot side -->
+                        <Border Grid.Column="0"
+                                MaxWidth="560"
+                                HorizontalAlignment="Left"
+                                Background="{DynamicResource Tks.Brush.BubbleBot}"
+                                BorderBrush="{DynamicResource Tks.Brush.Border}"
+                                BorderThickness="1"
+                                CornerRadius="{DynamicResource Tks.Radius.Large}"
+                                Padding="10,8"
+                                Margin="0,0,60,4"
+                                Visibility="{Binding IsBot, Converter={StaticResource Tks.BoolToVisibility}}">
+                            <StackPanel>
+                                <!-- Interaction header inside the SAME bubble (FR-W-INT-6). -->
+                                <StackPanel Orientation="Horizontal"
+                                            Margin="0,0,0,2"
+                                            Visibility="{Binding IsInteraction, Converter={StaticResource Tks.BoolToVisibility}}">
+                                    <TextBlock Style="{StaticResource Tks.Text.Body}"
+                                               Text="{Binding InteractionItemIcon}" />
+                                    <TextBlock Style="{StaticResource Tks.Text.Body}"
+                                               Margin="4,0,0,0"
+                                               Text="{Binding InteractionItemName}" />
+                                    <Border Style="{StaticResource Tks.Badge.Interaction}">
+                                        <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                                   Text="{Binding GiftBadgeText}" />
+                                    </Border>
+                                </StackPanel>
+
+                                <TextBlock Style="{StaticResource Tks.Text.Body}"
+                                           Text="{Binding Content}" />
+
+                                <ItemsControl ItemsSource="{Binding Attachments}"
+                                              Margin="0,6,0,0"
+                                              Visibility="{Binding HasAttachments, Converter={StaticResource Tks.BoolToVisibility}}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <local:ImageThumbnail Path="{Binding}"
+                                                                  Width="72"
+                                                                  Height="72"
+                                                                  Margin="0,0,6,0"
+                                                                  OpenRequested="Thumbnail_OpenRequested" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                           Margin="0,4,0,0"
+                                           Foreground="{DynamicResource Tks.Brush.Danger}"
+                                           Text="{Binding ErrorText}"
+                                           Visibility="{Binding ErrorText, Converter={StaticResource Tks.NullToVisibility}}" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- User side -->
+                        <Border Grid.Column="0"
+                                MaxWidth="560"
+                                HorizontalAlignment="Right"
+                                Background="{DynamicResource Tks.Brush.BubbleUser}"
+                                BorderBrush="{DynamicResource Tks.Brush.Border}"
+                                BorderThickness="1"
+                                CornerRadius="{DynamicResource Tks.Radius.Large}"
+                                Padding="10,8"
+                                Margin="60,0,0,4"
+                                Visibility="{Binding IsUser, Converter={StaticResource Tks.BoolToVisibility}}">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal"
+                                            Margin="0,0,0,2"
+                                            Visibility="{Binding IsInteraction, Converter={StaticResource Tks.BoolToVisibility}}">
+                                    <TextBlock Style="{StaticResource Tks.Text.Body}"
+                                               Text="{Binding InteractionItemIcon}" />
+                                    <TextBlock Style="{StaticResource Tks.Text.Body}"
+                                               Margin="4,0,0,0"
+                                               Text="{Binding InteractionItemName}" />
+                                    <Border Style="{StaticResource Tks.Badge.Interaction}">
+                                        <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                                   Text="{Binding GiftBadgeText}" />
+                                    </Border>
+                                </StackPanel>
+
+                                <TextBlock Style="{StaticResource Tks.Text.Body}"
+                                           Text="{Binding Content}" />
+
+                                <ItemsControl ItemsSource="{Binding Attachments}"
+                                              Margin="0,6,0,0"
+                                              Visibility="{Binding HasAttachments, Converter={StaticResource Tks.BoolToVisibility}}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <local:ImageThumbnail Path="{Binding}"
+                                                                  Width="72"
+                                                                  Height="72"
+                                                                  Margin="0,0,6,0"
+                                                                  OpenRequested="Thumbnail_OpenRequested" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                    <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                               Text="{Binding Status}"
+                                               Visibility="{Binding IsSendingState, Converter={StaticResource Tks.BoolToVisibility}}" />
+                                    <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                               Foreground="{DynamicResource Tks.Brush.Danger}"
+                                               Text="{Binding ErrorText}"
+                                               Visibility="{Binding ErrorText, Converter={StaticResource Tks.NullToVisibility}}" />
+                                    <!-- Retry reuses the SAME requestId (FR-W-CHAT-11). -->
+                                    <Button Style="{StaticResource Tks.Button.Ghost}"
+                                            Margin="8,0,0,0"
+                                            Padding="6,1"
+                                            MinHeight="0"
+                                            CommandParameter="{Binding}"
+                                            Click="Retry_Click"
+                                            Content="{Binding DataContext.RetryText,
+                                                              RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            Visibility="{Binding CanRetry, Converter={StaticResource Tks.BoolToVisibility}}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Failed-message accent (same bubble, failure styling only). -->
+                        <Border Grid.Column="1"
+                                Background="{DynamicResource Tks.Brush.BubbleFailed}"
+                                CornerRadius="{DynamicResource Tks.Radius.Small}"
+                                Padding="6,2"
+                                VerticalAlignment="Top"
+                                Margin="4"
+                                Visibility="{Binding IsFailed, Converter={StaticResource Tks.BoolToVisibility}}">
+                            <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                                       Foreground="{DynamicResource Tks.Brush.Danger}"
+                                       Text="{Binding ErrorText}" />
+                        </Border>
+                    </Grid>
+                </StackPanel>
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ============ Message list (FR-W-CHAT-16: virtualized) ============ -->
+        <Grid Grid.Row="0">
+            <ScrollViewer x:Name="MessageScrollViewer"
+                          Style="{StaticResource Tks.ScrollViewer}"
+                          Padding="8,4">
+                <ItemsControl x:Name="MessageItems"
+                              ItemsSource="{Binding Messages}"
+                              ItemTemplate="{StaticResource Tks.MessageTemplate}"
+                              Focusable="False">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <VirtualizingStackPanel IsItemsHost="True"
+                                                    Orientation="Vertical"
+                                                    VirtualizationMode="Recycling"
+                                                    CanHorizontallyScroll="False"
+                                                    CanVerticallyScroll="True" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                </ItemsControl>
+            </ScrollViewer>
+
+            <!-- Upward pagination: one page = ProtocolConstants.LocalFirstPageSize rows. -->
+            <Button Style="{StaticResource Tks.Button.Ghost}"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Top"
+                    Margin="0,4,0,0"
+                    Command="{Binding LoadMoreCommand}"
+                    Content="{Binding LoadMoreText}"
+                    Visibility="{Binding CanLoadMore, Converter={StaticResource Tks.BoolToVisibility}}" />
+
+            <!-- Typing stage strip (FR-W-CHAT-14). -->
+            <Border HorizontalAlignment="Left"
+                    VerticalAlignment="Bottom"
+                    Margin="10,0,0,6"
+                    Style="{StaticResource Tks.Badge}"
+                    Visibility="{Binding IsTypingVisible, Converter={StaticResource Tks.BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                           Text="{Binding TypingText}" />
+            </Border>
+
+            <!-- Degraded mode notice (FR-W-CHAT-9). -->
+            <Border HorizontalAlignment="Right"
+                    VerticalAlignment="Bottom"
+                    Margin="0,0,10,6"
+                    Style="{StaticResource Tks.Badge}"
+                    Background="{DynamicResource Tks.Brush.BubbleFailed}"
+                    Visibility="{Binding IsDegraded, Converter={StaticResource Tks.BoolToVisibility}}">
+                <StackPanel>
+                <TextBlock Style="{StaticResource Tks.Text.Caption}"
+                           Foreground="{DynamicResource Tks.Brush.Danger}"
+                           Text="{Binding DegradedNoticeText}" />
+                <TextBlock Text="{Binding FallbackNoticeText}" TextWrapping="Wrap" />
+                <Button Content="{Binding FallbackSendText}" Command="{Binding SendFallbackCommand}" />
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- ============ Composer ============ -->
+        <Grid Grid.Row="1" Margin="8,0,8,8">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <!-- Draft attachment strip ABOVE the input (FR-W-IMG-3: per-image removal). -->
+            <ItemsControl Grid.Row="0"
+                          ItemsSource="{Binding DraftThumbnails}"
+                          Margin="0,0,0,6"
+                          Visibility="{Binding HasDrafts, Converter={StaticResource Tks.BoolToVisibility}}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <StackPanel Orientation="Horizontal" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="0,0,8,0">
+                            <Image Source="{Binding Converter={StaticResource TksLocalImage}}"
+                                   Width="64"
+                                   Height="64"
+                                   Stretch="UniformToFill" />
+                            <Button Style="{StaticResource Tks.Button.Danger}"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Top"
+                                    Width="20"
+                                    Height="20"
+                                    MinHeight="0"
+                                    Padding="0"
+                                    Content="x"
+                                    CommandParameter="{Binding}"
+                                    Click="RemoveDraft_Click"
+                                    AutomationProperties.Name="{Binding DataContext.RemoveDraftText,
+                                                                       RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                        </Grid>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <!-- Emoji panel: occupies layout space and pushes content up (FR-W-UI-5). -->
+            <Border Grid.Row="1"
+                    Style="{StaticResource Tks.Card}"
+                    Margin="0,0,0,6"
+                    Visibility="{Binding IsEmojiPanelOpen, Converter={StaticResource Tks.BoolToVisibility}}">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                        <Button Style="{StaticResource Tks.Button.Ghost}"
+                                Content="{Binding EmojiCategorySmileys}"
+                                Command="{Binding SelectEmojiCategoryCommand}"
+                                CommandParameter="smileys" />
+                        <Button Style="{StaticResource Tks.Button.Ghost}"
+                                Content="{Binding EmojiCategoryGestures}"
+                                Command="{Binding SelectEmojiCategoryCommand}"
+                                CommandParameter="gestures" />
+                        <Button Style="{StaticResource Tks.Button.Ghost}"
+                                Content="{Binding EmojiCategoryFaces}"
+                                Command="{Binding SelectEmojiCategoryCommand}"
+                                CommandParameter="faces" />
+                        <Button Style="{StaticResource Tks.Button.Ghost}"
+                                Content="{Binding EmojiCategoryFood}"
+                                Command="{Binding SelectEmojiCategoryCommand}"
+                                CommandParameter="food" />
+                    </StackPanel>
+
+                    <ItemsControl ItemsSource="{Binding EmojiPalette}" Height="88">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Button Style="{StaticResource Tks.Button.Ghost}"
+                                        Width="32"
+                                        Height="32"
+                                        MinHeight="0"
+                                        Padding="0"
+                                        Content="{Binding}"
+                                        Click="InsertEmoji_Click" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+
+            <!-- Input bar: multiline, Enter sends / Shift+Enter breaks (FR-W-CHAT-1 / FR-W-SET-8). -->
+            <Border Grid.Row="2"
+                    Style="{StaticResource Tks.Style.GlassCapsule}"
+                    Padding="8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <Button Grid.Column="0"
+                            Style="{StaticResource Tks.Button.Toolbar}"
+                            Content="{Binding AddImageText}"
+                            ToolTip="{Binding AddImageText}"
+                            Command="{Binding AddImageCommand}" />
+
+                    <TextBox Grid.Column="1"
+                             x:Name="InputBox"
+                             Style="{StaticResource Tks.TextBox.Multiline}"
+                             Margin="6,0"
+                             Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
+                             IsEnabled="{Binding CanInteract}"
+                             PreviewKeyDown="InputBox_PreviewKeyDown"
+                             AutomationProperties.Name="{Binding InputPlaceholder}" />
+
+                    <Button Grid.Column="2"
+                            Style="{StaticResource Tks.Button.Toolbar}"
+                            Content="{Binding EmojiButtonText}"
+                            ToolTip="{Binding EmojiButtonText}"
+                            Command="{Binding ToggleEmojiPanelCommand}" />
+
+                    <Button Grid.Column="3"
+                            Style="{StaticResource Tks.Button.Primary}"
+                            Margin="6,0,0,0"
+                            Content="{Binding SendText}"
+                            Command="{Binding SendCommand}"
+                            IsEnabled="{Binding CanInteract}" />
+
+                    <TextBlock Grid.Column="4"
+                               Style="{StaticResource Tks.Text.Caption}"
+                               Margin="8,0,0,0"
+                               VerticalAlignment="Center"
+                               Text="{Binding SendKeyHintText}" />
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>
