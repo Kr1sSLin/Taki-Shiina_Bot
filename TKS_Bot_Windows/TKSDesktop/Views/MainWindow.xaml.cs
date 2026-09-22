@@ -4,11 +4,14 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
+using System.Windows.Interop;
+using System.Windows.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
 using TKSDesktop.App;
 using TKSDesktop.Core.Platform;
+using TKSDesktop.Platform.Windows;
 using TKSDesktop.ViewModels;
 
 
@@ -37,8 +40,12 @@ public partial class MainWindow : Window
     private readonly IPaths _paths;
     private readonly ILogger<MainWindow> _logger;
     private readonly SettingsViewModel _settingsViewModel;
+    private readonly double _uiScaleFactor;
 
     private bool _initialized;
+    private bool _applyingGeometry;
+    private HwndSource? _hwndSource;
+    private IntPtr _windowHandle;
     private Task _initialization = Task.CompletedTask;
     private Window? _pointsLedgerWindow;
     private Window? _memoryArchiveWindow;
@@ -56,6 +63,8 @@ public partial class MainWindow : Window
         _paths = provider.GetRequiredService<IPaths>();
         _logger = provider.GetRequiredService<ILoggerFactory>().CreateLogger<MainWindow>();
         _settingsViewModel = provider.GetRequiredService<SettingsViewModel>();
+        _uiScaleFactor = UiScale.Normalize(provider.GetRequiredService<CliOptions>().ForceDeviceScaleFactor);
+        UiScale.Apply(RootGrid, _uiScaleFactor);
 
         // 附件私有目录前缀供图片加载器做越界校验（FR-W-SEC-6 / EDGE-W-29）。
         AppContext.SetData("Tks.AttachmentsDir", _paths.AttachmentsDir);
@@ -143,7 +152,15 @@ public partial class MainWindow : Window
         }
 
         _ = Activate();
-        _ = ChatPane.Focus();
+        ChatPane.FocusInput();
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+        {
+            if (IsVisible && WindowState != WindowState.Minimized)
+            {
+                _ = Activate();
+                ChatPane.FocusInput();
+            }
+        }));
         _ = _viewModel.OnActivatedAsync();
     }
 
@@ -217,7 +234,7 @@ public partial class MainWindow : Window
         _viewModel.HideToTrayRequested += (_, _) => HideToTray();
         _viewModel.ExitRequested += (_, _) => RequestExit();
         _viewModel.ThemeRevealRequested += OnThemeRevealRequested;
-        _viewModel.FocusInputRequested += (_, _) => ChatPane.Focus();
+        _viewModel.FocusInputRequested += (_, _) => ChatPane.FocusInput();
         _viewModel.SearchRequested += OnSearchRequested;
 
         ChatPane.ImageOpenRequested += OnImageOpenRequested;
@@ -225,6 +242,9 @@ public partial class MainWindow : Window
 
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
+        _windowHandle = new WindowInteropHelper(this).Handle;
+        _hwndSource = HwndSource.FromHwnd(_windowHandle);
+        _hwndSource?.AddHook(WindowMessageHook);
         ApplyGeometry();
 
         // DWM 模糊：仅在系统可用时应用；不可用时窗口保持不透明渐变（FR-W-UI-3）。
@@ -252,37 +272,81 @@ public partial class MainWindow : Window
     /// <summary>应用几何：越界时经 <c>EnsureOnScreen</c> 回主屏居中（EDGE-W-25）。</summary>
     private void ApplyGeometry()
     {
-        var width = Math.Max(MainViewModel.MinWindowWidth, _viewModel.WindowWidth);
-        var height = Math.Max(MainViewModel.MinWindowHeight, _viewModel.WindowHeight);
-
-        Width = width;
-        Height = height;
-
-        if (double.IsNaN(_viewModel.WindowLeft) || double.IsNaN(_viewModel.WindowTop))
+        if (_applyingGeometry)
         {
             return;
         }
 
-        var (x, y, safeWidth, safeHeight) = _windowChrome.EnsureOnScreen(
-            _viewModel.WindowLeft,
-            _viewModel.WindowTop,
-            width,
-            height);
+        _applyingGeometry = true;
+        try
+        {
+            var logicalWidth = Math.Max(MainViewModel.MinWindowWidth, _viewModel.WindowWidth);
+            var logicalHeight = Math.Max(MainViewModel.MinWindowHeight, _viewModel.WindowHeight);
+            var width = UiScale.ToWindow(logicalWidth, _uiScaleFactor);
+            var height = UiScale.ToWindow(logicalHeight, _uiScaleFactor);
 
-        Left = x;
-        Top = y;
-        Width = Math.Max(MainViewModel.MinWindowWidth, safeWidth);
-        Height = Math.Max(MainViewModel.MinWindowHeight, safeHeight);
+            MinWidth = UiScale.ToWindow(MainViewModel.MinWindowWidth, _uiScaleFactor);
+            MinHeight = UiScale.ToWindow(MainViewModel.MinWindowHeight, _uiScaleFactor);
+            Width = width;
+            Height = height;
+
+            if (double.IsNaN(_viewModel.WindowLeft) || double.IsNaN(_viewModel.WindowTop))
+            {
+                return;
+            }
+
+            var (x, y, safeWidth, safeHeight) = _windowChrome.EnsureOnScreen(
+                _viewModel.WindowLeft,
+                _viewModel.WindowTop,
+                width,
+                height,
+                _windowHandle);
+
+            Left = x;
+            Top = y;
+            Width = Math.Max(MinWidth, safeWidth);
+            Height = Math.Max(MinHeight, safeHeight);
+        }
+        finally
+        {
+            _applyingGeometry = false;
+        }
     }
 
     private void OnGeometryChanged(object? sender, EventArgs e)
     {
-        if (WindowState != WindowState.Normal)
+        if (_applyingGeometry || WindowState != WindowState.Normal)
         {
             return;
         }
 
-        _viewModel.UpdateGeometry(Width, Height, Left, Top);
+        _viewModel.UpdateGeometry(
+            UiScale.ToLogical(Width, _uiScaleFactor),
+            UiScale.ToLogical(Height, _uiScaleFactor),
+            Left,
+            Top);
+    }
+
+    private IntPtr WindowMessageHook(
+        IntPtr hwnd,
+        int message,
+        IntPtr wParam,
+        IntPtr lParam,
+        ref bool handled)
+    {
+        _ = hwnd;
+        _ = wParam;
+        _ = lParam;
+        _ = handled;
+
+        if (message is NativeMethods.WmDisplayChange or NativeMethods.WmDpiChanged)
+        {
+            // Let WPF apply its own DPI transition first, then revalidate the saved
+            // DIP geometry against the newly enumerated physical work areas.
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(ApplyGeometry));
+        }
+
+        return IntPtr.Zero;
     }
 
     private void OnActivated(object? sender, EventArgs e) => _ = _viewModel.OnActivatedAsync();
@@ -305,6 +369,8 @@ public partial class MainWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        _hwndSource?.RemoveHook(WindowMessageHook);
+        _hwndSource = null;
         _settingsViewModel.LogoutRequested -= OnLogoutRequested;
         _viewModel.Dispose();
         ThemeApplier.Apply(Resources, false);
@@ -475,35 +541,44 @@ public partial class MainWindow : Window
         _ = viewModel.LoadAsync();
     }
 
-    private Window CreateChildWindow(UIElement content, string title) => new()
+    private Window CreateChildWindow(UIElement content, string title)
     {
-        Title = title,
-        Owner = this,
-        Width = 640,
-        Height = 560,
-        MinWidth = MainViewModel.MinWindowWidth,
-        MinHeight = 420,
-        Content = content,
-        WindowStartupLocation = WindowStartupLocation.CenterOwner,
-        Background = (Brush)FindResource("Tks.Brush.Background"),
-        Foreground = (Brush)FindResource("Tks.Brush.TextPrimary"),
-        FontFamily = (FontFamily)FindResource("Tks.FontFamily"),
-        FontSize = (double)FindResource("Tks.Font.Body"),
-    };
+        if (content is FrameworkElement element)
+        {
+            UiScale.Apply(element, _uiScaleFactor);
+        }
+
+        return new Window
+        {
+            Title = title,
+            Owner = this,
+            Width = UiScale.ToWindow(640, _uiScaleFactor),
+            Height = UiScale.ToWindow(560, _uiScaleFactor),
+            MinWidth = UiScale.ToWindow(MainViewModel.MinWindowWidth, _uiScaleFactor),
+            MinHeight = UiScale.ToWindow(420, _uiScaleFactor),
+            Content = content,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = (Brush)FindResource("Tks.Brush.Background"),
+            Foreground = (Brush)FindResource("Tks.Brush.TextPrimary"),
+            FontFamily = (FontFamily)FindResource("Tks.FontFamily"),
+            FontSize = (double)FindResource("Tks.Font.Body"),
+        };
+    }
 
     /// <summary>把 <paramref name="factory"/> 产出的内容放到主窗口内的浮层（同一窗口内可达 —— FR-W-HIS-*）。</summary>
     private void ShowEmbedded(Func<FrameworkElement> factory, string titleKey, Func<FrameworkElement, Task>? initialize)
     {
         var panel = factory();
+        UiScale.Apply(panel, _uiScaleFactor);
 
         var host = new Window
         {
             Title = I18n.T(titleKey),
             Owner = this,
-            Width = 720,
-            Height = 620,
-            MinWidth = MainViewModel.MinWindowWidth,
-            MinHeight = 420,
+            Width = UiScale.ToWindow(720, _uiScaleFactor),
+            Height = UiScale.ToWindow(620, _uiScaleFactor),
+            MinWidth = UiScale.ToWindow(MainViewModel.MinWindowWidth, _uiScaleFactor),
+            MinHeight = UiScale.ToWindow(420, _uiScaleFactor),
             Content = panel,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Background = (Brush)FindResource("Tks.Brush.Background"),
@@ -523,7 +598,7 @@ public partial class MainWindow : Window
     private void OnSearchRequested(object? sender, EventArgs e)
     {
         // 搜索入口聚焦输入框（本地搜索由 ChatViewModel 的搜索命令承接 —— FR-W-CHAT-17）。
-        _ = ChatPane.Focus();
+        ChatPane.FocusInput();
         _viewModel.FocusInputCommand.Execute(null);
     }
 
@@ -537,7 +612,16 @@ public partial class MainWindow : Window
         var viewer = new ImageViewerWindow(path)
         {
             Owner = this,
+            Width = UiScale.ToWindow(900, _uiScaleFactor),
+            Height = UiScale.ToWindow(700, _uiScaleFactor),
+            MinWidth = UiScale.ToWindow(480, _uiScaleFactor),
+            MinHeight = UiScale.ToWindow(360, _uiScaleFactor),
         };
+
+        if (viewer.Content is FrameworkElement root)
+        {
+            UiScale.Apply(root, _uiScaleFactor);
+        }
 
         viewer.Show();
     }

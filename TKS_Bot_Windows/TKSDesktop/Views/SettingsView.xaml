@@ -45,13 +45,13 @@
                     <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Text="{Binding ThemeSectionText}" />
                     <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                         <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksTheme"
-                                     Content="{Binding ThemeSystemText}" IsChecked="{Binding IsThemeSystem}"
+                                     Content="{Binding ThemeSystemText}" IsChecked="{Binding IsThemeSystem, Mode=OneWay}"
                                      Command="{Binding SetThemeCommand}" CommandParameter="system" />
                         <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksTheme" Margin="16,0,0,0"
-                                     Content="{Binding ThemeLightText}" IsChecked="{Binding IsThemeLight}"
+                                     Content="{Binding ThemeLightText}" IsChecked="{Binding IsThemeLight, Mode=OneWay}"
                                      Command="{Binding SetThemeCommand}" CommandParameter="light" />
                         <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksTheme" Margin="16,0,0,0"
-                                     Content="{Binding ThemeDarkText}" IsChecked="{Binding IsThemeDark}"
+                                     Content="{Binding ThemeDarkText}" IsChecked="{Binding IsThemeDark, Mode=OneWay}"
                                      Command="{Binding SetThemeCommand}" CommandParameter="dark" />
                     </StackPanel>
                 </StackPanel>
@@ -108,9 +108,11 @@
                     <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,12,0,4" Text="{Binding CloseBehaviourLabel}" />
                     <StackPanel Orientation="Horizontal">
                         <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksClose"
-                                     Content="{Binding CloseBehaviorTrayText}" IsChecked="{Binding IsCloseToTray}" />
+                                     Content="{Binding CloseBehaviorTrayText}" IsChecked="{Binding IsCloseToTray, Mode=OneWay}"
+                                     Command="{Binding SetCloseBehaviorCommand}" CommandParameter="tray" />
                         <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksClose" Margin="16,0,0,0"
-                                     Content="{Binding CloseBehaviorQuitText}" IsChecked="{Binding IsCloseToQuit}" />
+                                     Content="{Binding CloseBehaviorQuitText}" IsChecked="{Binding IsCloseToQuit, Mode=OneWay}"
+                                     Command="{Binding SetCloseBehaviorCommand}" CommandParameter="quit" />
                     </StackPanel>
                     <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,4,0,0"
                                Foreground="{DynamicResource Tks.Brush.Danger}"
@@ -134,9 +136,11 @@
                     <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,12,0,4" Text="{Binding SendKeyLabel}" />
                     <StackPanel Orientation="Horizontal">
                         <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksSend"
-                                     Content="{Binding SendKeyEnterText}" IsChecked="{Binding IsSendKeyEnter}" />
+                                     Content="{Binding SendKeyEnterText}" IsChecked="{Binding IsSendKeyEnter, Mode=OneWay}"
+                                     Command="{Binding SetSendKeyCommand}" CommandParameter="enter" />
                         <RadioButton Style="{StaticResource Tks.RadioButton}" GroupName="TksSend" Margin="16,0,0,0"
-                                     Content="{Binding SendKeyCtrlEnterText}" IsChecked="{Binding IsSendKeyCtrlEnter}" />
+                                     Content="{Binding SendKeyCtrlEnterText}" IsChecked="{Binding IsSendKeyCtrlEnter, Mode=OneWay}"
+                                     Command="{Binding SetSendKeyCommand}" CommandParameter="ctrl+enter" />
                     </StackPanel>
                 </StackPanel>
             </Border>

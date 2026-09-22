@@ -17,6 +17,7 @@ public partial class LoginWindow : Window
 {
     private readonly IServiceProvider _provider;
     private readonly LoginViewModel _viewModel;
+    private readonly double _uiScaleFactor;
     private bool _handedOff;
 
     /// <summary>构造（由 <c>WindowFactory</c> 调用）。</summary>
@@ -27,6 +28,10 @@ public partial class LoginWindow : Window
         InitializeComponent();
         _provider = provider;
         _viewModel = provider.GetRequiredService<LoginViewModel>();
+        _uiScaleFactor = UiScale.Normalize(provider.GetRequiredService<CliOptions>().ForceDeviceScaleFactor);
+        UiScale.Apply(RootGrid, _uiScaleFactor);
+        Width = UiScale.ToWindow(420d, _uiScaleFactor);
+        Height = UiScale.ToWindow(360d, _uiScaleFactor);
         DataContext = _viewModel;
 
         _viewModel.LoginSucceeded += OnLoginSucceeded;

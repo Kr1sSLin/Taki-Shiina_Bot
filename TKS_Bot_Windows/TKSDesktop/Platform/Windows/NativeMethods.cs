@@ -27,6 +27,9 @@ internal static class NativeMethods
     /// <summary>显示器配置变化（EDGE-W-26）。</summary>
     internal const int WmDisplayChange = 0x007E;
 
+    /// <summary>窗口跨显示器或缩放级别变化（FR-W-UI-10 / EDGE-W-26）。</summary>
+    internal const int WmDpiChanged = 0x02E0;
+
     /// <summary><c>WM_SETTINGCHANGE</c> 的 <c>lParam</c>：主题相关（Win10+）。</summary>
     internal const string SettingChangeImmersiveColorSet = "ImmersiveColorSet";
 
@@ -178,6 +181,12 @@ internal static class NativeMethods
     internal static extern int GetSystemMetrics(int nIndex);
 
     [DllImport("user32.dll", SetLastError = true)]
+    internal static extern uint GetDpiForWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern uint GetDpiForSystem();
+
+    [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetWindowRect(IntPtr hWnd, out Rect lpRect);
 
@@ -196,6 +205,14 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetMonitorInfo(IntPtr hMonitor, ref MonitorInfo lpmi);
+
+    /// <summary>每台显示器的有效 DPI；失败时由调用方回退到窗口/系统 DPI。</summary>
+    [DllImport("shcore.dll", SetLastError = true)]
+    internal static extern int GetDpiForMonitor(
+        IntPtr hMonitor,
+        MonitorDpiType dpiType,
+        out uint dpiX,
+        out uint dpiY);
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr MonitorFromRect(ref Rect lprc, uint dwFlags);
@@ -288,6 +305,13 @@ internal static class NativeMethods
         internal Rect Monitor;
         internal Rect Work;
         internal uint Flags;
+    }
+
+    internal enum MonitorDpiType
+    {
+        Effective = 0,
+        Angular = 1,
+        Raw = 2,
     }
 
     /// <summary><c>WCA_ACCENT_POLICY</c> 的载荷。</summary>

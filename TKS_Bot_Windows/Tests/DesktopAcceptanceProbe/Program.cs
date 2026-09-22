@@ -53,7 +53,6 @@ internal static class Program
             ["productAssembly"] = typeof(TrayIconManager).Assembly.Location,
         };
 
-        Application.ResourceAssembly = typeof(TrayIconManager).Assembly;
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         try
         {

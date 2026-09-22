@@ -105,7 +105,7 @@ public interface IWindowChrome
     /// 不相交时返回主屏居中的矩形（EDGE-W-25：避免显示器变化后窗口落到屏幕外）。
     /// </summary>
     (double X, double Y, double Width, double Height) EnsureOnScreen(
-        double x, double y, double width, double height);
+        double x, double y, double width, double height, IntPtr windowHandle = default);
 }
 
 /// <summary>

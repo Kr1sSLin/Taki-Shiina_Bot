@@ -43,7 +43,7 @@ public sealed class TrayIconManager : ITrayIcon, IDisposable
     }
 
     /// <summary>托盘图标资源（与 <c>TKSDesktop.csproj</c> 的 <c>ApplicationIcon</c> 同一文件）。</summary>
-    public const string IconRelativePath = "Resources/Assets/tks-desktop.ico";
+    public const string IconRelativePath = "TKSDesktop;component/Resources/Assets/tks-desktop.ico";
 
     /// <summary>
     /// 菜单回调集合。⚠️ 全部由调用方注入，本类**不**硬编码任何中文文案。
@@ -358,7 +358,10 @@ public sealed class TrayIconManager : ITrayIcon, IDisposable
 
         try
         {
-            _icon.IconSource = StateIcon(_state);
+            // Keep the packaged ICO as the source. H.NotifyIcon 2.3.x accepts
+            // URI-backed BitmapFrame/ICO sources, but replacing it at runtime
+            // with generated WPF bitmaps is not supported by its async converter.
+            // State remains explicit in the tooltip and opacity below.
             switch (_state)
             {
                 case TrayState.Online:
@@ -424,9 +427,19 @@ public sealed class TrayIconManager : ITrayIcon, IDisposable
 
         var bitmap = new RenderTargetBitmap(32, 32, 96, 96, PixelFormats.Pbgra32);
         bitmap.Render(drawing);
-        bitmap.Freeze();
-        _stateIcons[state] = bitmap;
-        return bitmap;
+
+        // H.NotifyIcon converts WPF images asynchronously and does not support
+        // RenderTargetBitmap directly. Round-trip through a frozen BitmapFrame
+        // so the tray state overlay cannot surface an unhandled worker exception.
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var stream = new MemoryStream();
+        encoder.Save(stream);
+        stream.Position = 0;
+        var frame = BitmapFrame.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+        frame.Freeze();
+        _stateIcons[state] = frame;
+        return frame;
     }
 
     private void TryDisposeIcon()
