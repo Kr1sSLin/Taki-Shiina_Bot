@@ -1,6 +1,9 @@
 /.codex
 /openspec
 
+# 本地文档：保留在工作区，不纳入 Git（匹配任意层级的 docs 目录）
+[dD][oO][cC][sS]/
+
 # Android 构建产物（配合子项目 .gitignore，防止旧缓存被误提交）
 .gradle/
 .gradle-old/

@@ -161,6 +161,26 @@ class InteractionHandlerTestCase(unittest.TestCase):
         refunds = [e for e in self.rig.ledger() if e["reason_code"] == REASON_ITEM_REFUND]
         self.assertEqual(len(refunds), 1)
 
+    def test_timeline_failure_refunds_once_and_never_sends_done(self):
+        self.set_balance(20)
+
+        async def broken_timeline(_items):
+            raise RuntimeError("disk unavailable")
+
+        self.rig.handler.append_timeline = broken_timeline
+        result = run(self.rig.handler.send(TEST_USER, "coffee", request_id="storage-fail"))
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, 40205)
+        self.assertTrue(result.refunded)
+        self.assertEqual(self.rig.points.get_balance(TEST_USER), 21)
+        self.assertFalse(any(event.get("payload", {}).get("done") is True for _user, event in self.rig.events))
+        self.assertEqual(self.rig.events_of("bot.error")[-1]["payload"]["errorCode"], "STORAGE_FAILED_REFUNDED")
+
+        replay = run(self.rig.handler.send(TEST_USER, "coffee", request_id="storage-fail"))
+        self.assertTrue(replay.duplicate)
+        refunds = [e for e in self.rig.ledger() if e["reason_code"] == REASON_ITEM_REFUND]
+        self.assertEqual(len(refunds), 1)
+
     # ---------- 幂等与并发（FR-13 / EDGE-1） ----------
     def test_duplicate_request_is_not_charged_twice(self):
         self.set_balance(20)

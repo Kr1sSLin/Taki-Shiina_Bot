@@ -15,6 +15,12 @@ public partial class ProfileView : UserControl
     {
         InitializeComponent();
     }
+    private void MakeupGuide_Click(object sender, RoutedEventArgs e) => MakeupHeading.BringIntoView();
+    private void CalendarDate_Selected(object? sender, SelectionChangedEventArgs e)
+    {
+        if (DataContext is ProfileViewModel profile && MakeupCalendar.SelectedDate is { } selected)
+            profile.ManualMakeupDate = selected.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+    }
     private void MakeupDate_Click(object sender, RoutedEventArgs e)
     {
         if (DataContext is not ProfileViewModel profile)
@@ -25,7 +31,7 @@ public partial class ProfileView : UserControl
         if (sender is Button { Content: string date } && !string.IsNullOrWhiteSpace(date))
         {
             // ViewModel 内部先弹二次确认，确认后才调服务端（FR-W-MC-3）。
-            profile.UseMakeupCardCommand.Execute(date);
+            if (profile.UseMakeupCardCommand.CanExecute(date)) profile.UseMakeupCardCommand.Execute(date);
         }
     }
 }

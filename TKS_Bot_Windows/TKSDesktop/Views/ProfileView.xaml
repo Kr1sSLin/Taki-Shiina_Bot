@@ -98,7 +98,7 @@
                     <Button Style="{StaticResource Tks.Button.Base}"
                             HorizontalAlignment="Right"
                             Margin="0,6,0,0"
-                            Content="{Binding MakeupTitleText}"
+                            Content="{Binding MakeupTitleText}" Click="MakeupGuide_Click"
                             Visibility="{Binding IsMakeupGuideVisible, Converter={StaticResource Tks.BoolToVisibility}}" />
                     <Button Style="{StaticResource Tks.Button.Ghost}"
                             HorizontalAlignment="Right"
@@ -109,7 +109,15 @@
             </Border>
 
             <!-- ============ Points ledger (FR-W-PT-2/3/7) ============ -->
+            <TextBlock Style="{StaticResource Tks.Text.Body}" Text="{Binding StreakWarningText}" TextWrapping="Wrap" />
+            <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding LoadStatusText}" TextWrapping="Wrap" />
             <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Margin="0,16,0,0" Text="{Binding LedgerTitleText}" />
+            <StackPanel Orientation="Horizontal" Margin="0,6">
+                <ComboBox Width="200" ItemsSource="{Binding ReasonCodes}" SelectedValue="{Binding SelectedReasonCode}"
+                          SelectedValuePath="Code" DisplayMemberPath="Label"
+                          AutomationProperties.Name="{Binding LedgerReasonColumnText}" />
+                <Button Style="{StaticResource Tks.Button.Ghost}" Content="{Binding ApplyFilterText}" Command="{Binding FilterLedgerCommand}" />
+            </StackPanel>
 
             <Border Style="{StaticResource Tks.Card}">
                 <StackPanel>
@@ -172,13 +180,20 @@
             </Border>
 
             <!-- ============ Makeup card calendar (FR-W-MC-1..7) ============ -->
-            <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Margin="0,16,0,0" Text="{Binding MakeupTitleText}" />
+            <TextBlock x:Name="MakeupHeading" Style="{StaticResource Tks.Text.SectionHeader}" Margin="0,16,0,0" Text="{Binding MakeupTitleText}" />
 
             <Border Style="{StaticResource Tks.Card}">
                 <StackPanel>
                     <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding MakeupRuleText}" />
+                    <Calendar x:Name="MakeupCalendar" HorizontalAlignment="Left" SelectionMode="SingleDate"
+                              SelectedDatesChanged="CalendarDate_Selected" IsEnabled="{Binding IsInteractionEnabled}" />
+                    <StackPanel Orientation="Horizontal" Margin="0,6" IsEnabled="{Binding IsInteractionEnabled}">
+                        <TextBox Width="140" Style="{StaticResource Tks.TextBox.Base}" Text="{Binding ManualMakeupDate, UpdateSourceTrigger=PropertyChanged}"
+                                 AutomationProperties.Name="{Binding DateLabel}" ToolTip="yyyy-MM-dd" />
+                        <Button Style="{StaticResource Tks.Button.Base}" Content="{Binding MakeupUseText}" Command="{Binding UseManualMakeupCommand}" />
+                    </StackPanel>
 
-                    <ItemsControl ItemsSource="{Binding MakeupCandidates}" Margin="0,6,0,0">
+                    <ItemsControl ItemsSource="{Binding MakeupCandidates}" Margin="0,6,0,0" IsEnabled="{Binding IsInteractionEnabled}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
                                 <WrapPanel Orientation="Horizontal" />
@@ -208,6 +223,25 @@
             </Border>
 
             <!-- ============ Level config (FR-W-LV-2) ============ -->
+            <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Margin="0,16,0,0" Text="{Binding MakeupHistoryTitle}" />
+            <Border Style="{StaticResource Tks.Card}">
+                <StackPanel>
+                    <ItemsControl ItemsSource="{Binding MakeupHistory}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <WrapPanel Margin="0,4">
+                                    <TextBlock Width="90" Text="{Binding GrantedMonth}" Style="{StaticResource Tks.Text.Body}" />
+                                    <TextBlock Width="80" Text="{Binding StatusText}" Style="{StaticResource Tks.Text.Body}" />
+                                    <TextBlock Width="110" Text="{Binding UsedForDate}" Style="{StaticResource Tks.Text.Body}" />
+                                    <TextBlock Text="{Binding TimeText}" Style="{StaticResource Tks.Text.Caption}" />
+                                </WrapPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <Button Style="{StaticResource Tks.Button.Ghost}" Content="{Binding LoadMoreText}" Command="{Binding LoadMoreMakeupHistoryCommand}"
+                            Visibility="{Binding HasMoreMakeupHistory, Converter={StaticResource Tks.BoolToVisibility}}" />
+                </StackPanel>
+            </Border>
             <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Margin="0,16,0,0" Text="{Binding LevelConfigTitleText}" />
 
             <Border Style="{StaticResource Tks.Card}">

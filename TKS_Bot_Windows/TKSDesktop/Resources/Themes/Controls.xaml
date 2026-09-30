@@ -30,21 +30,15 @@
     <!-- ===================== Accessibility: visible focus ===================== -->
 
     <Style x:Key="Tks.FocusVisual" TargetType="Control">
-        <Setter Property="FocusVisualStyle">
+        <Setter Property="Template">
             <Setter.Value>
-                <Style TargetType="Control">
-                    <Setter Property="Template">
-                        <Setter.Value>
-                            <ControlTemplate>
-                                <Border Margin="-3"
-                                        BorderBrush="{DynamicResource Tks.Brush.Focus}"
-                                        BorderThickness="2"
-                                        CornerRadius="{DynamicResource Tks.Radius.Small}"
-                                        SnapsToDevicePixels="True" />
-                            </ControlTemplate>
-                        </Setter.Value>
-                    </Setter>
-                </Style>
+                <ControlTemplate TargetType="Control">
+                    <Border Margin="-3"
+                            BorderBrush="{DynamicResource Tks.Brush.Focus}"
+                            BorderThickness="2"
+                            CornerRadius="{DynamicResource Tks.Radius.Small}"
+                            SnapsToDevicePixels="True" />
+                </ControlTemplate>
             </Setter.Value>
         </Setter>
     </Style>
@@ -151,6 +145,81 @@
         <Setter Property="Padding" Value="0" />
     </Style>
 
+    <Style x:Key="Tks.Style.ReferenceComposer" TargetType="Border" BasedOn="{StaticResource Tks.Style.GlassCapsule}">
+        <Setter Property="CornerRadius" Value="39" />
+        <Setter Property="Background" Value="{DynamicResource Tks.Brush.ComposerSurface}" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding Path=(views:VisualPreferences.UseOpaqueFallback), RelativeSource={RelativeSource Self}}" Value="True">
+                <Setter Property="Background">
+                    <Setter.Value>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0.5">
+                            <GradientStop Offset="0" Color="#FF303037" />
+                            <GradientStop Offset="1" Color="#FF101016" />
+                        </LinearGradientBrush>
+                    </Setter.Value>
+                </Setter>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- Circular glass controls used by the reference composer. -->
+    <Style x:Key="Tks.Button.ComposerIcon" TargetType="Button" BasedOn="{StaticResource Tks.Button.Base}">
+        <Setter Property="Width" Value="50" />
+        <Setter Property="Height" Value="50" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Margin" Value="4,0" />
+        <Setter Property="Background" Value="{DynamicResource Tks.Brush.ComposerButton}" />
+        <Setter Property="Foreground" Value="{DynamicResource Tks.Brush.ComposerIcon}" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Root"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="25">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Root" Property="Opacity" Value="0.82" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Root" Property="Opacity" Value="0.62" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Root" Property="Opacity" Value="0.38" />
+                            <Setter Property="Cursor" Value="Arrow" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="Root" Property="BorderBrush" Value="{DynamicResource Tks.Brush.Focus}" />
+                            <Setter TargetName="Root" Property="BorderThickness" Value="2" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="Tks.Button.ComposerSend" TargetType="Button" BasedOn="{StaticResource Tks.Button.ComposerIcon}">
+        <Setter Property="Background" Value="{DynamicResource Tks.Brush.ComposerSend}" />
+        <Setter Property="Foreground" Value="White" />
+    </Style>
+
+    <Style x:Key="Tks.Button.EmojiGlyph" TargetType="Button" BasedOn="{StaticResource Tks.Button.ComposerIcon}">
+        <Setter Property="Foreground" Value="{DynamicResource Tks.Brush.TextPrimary}" />
+        <Setter Property="Width" Value="42" />
+        <Setter Property="Height" Value="42" />
+        <Setter Property="Margin" Value="2" />
+        <Setter Property="FontSize" Value="20" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
+
     <!-- ===================== Inputs ===================== -->
 
     <Style x:Key="Tks.TextBox.Base" TargetType="TextBox">
@@ -198,6 +267,30 @@
         <Setter Property="VerticalContentAlignment" Value="Top" />
         <Setter Property="MinHeight" Value="64" />
         <Setter Property="MaxHeight" Value="180" />
+    </Style>
+
+    <Style x:Key="Tks.TextBox.Composer" TargetType="TextBox" BasedOn="{StaticResource Tks.TextBox.Multiline}">
+        <Setter Property="FontSize" Value="20" />
+        <Setter Property="Foreground" Value="{DynamicResource Tks.Brush.ComposerText}" />
+        <Setter Property="CaretBrush" Value="{DynamicResource Tks.Brush.ComposerText}" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="2,8" />
+        <Setter Property="MinHeight" Value="54" />
+        <Setter Property="MaxHeight" Value="128" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <ScrollViewer x:Name="PART_ContentHost"
+                                  Background="Transparent"
+                                  Margin="{TemplateBinding Padding}"
+                                  VerticalAlignment="Center" />
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <Style x:Key="Tks.PasswordBox" TargetType="PasswordBox">
@@ -347,11 +440,18 @@
                         </Ellipse>
                         <Ellipse Stroke="{Binding AccentBrush, RelativeSource={RelativeSource TemplatedParent}}"
                                  StrokeThickness="3" />
-                        <TextBlock HorizontalAlignment="Center"
+                        <TextBlock x:Name="BadgeGlyph" HorizontalAlignment="Center" Visibility="Collapsed"
                                    VerticalAlignment="Center"
                                    FontSize="{TemplateBinding FontSize}"
                                    Text="{Binding Glyph, RelativeSource={RelativeSource TemplatedParent}}" />
+                        <Image x:Name="BadgeArtwork" Source="{TemplateBinding Artwork}" Stretch="Uniform" Margin="4" />
                     </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="Artwork" Value="{x:Null}">
+                            <Setter TargetName="BadgeArtwork" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="BadgeGlyph" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>

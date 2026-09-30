@@ -13,6 +13,9 @@ from __future__ import annotations
 import os
 import sys
 import types
+import tempfile
+
+_runtime_data = tempfile.TemporaryDirectory(prefix="tks-unittest-runtime-")
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PACKAGE_ROOT = os.path.dirname(CURRENT_DIR)
@@ -56,6 +59,9 @@ def ensure_ws_api_importable() -> None:
 def ensure_ws_api_env() -> None:
     """ws_api 在 import 时就会构造 SecureJsonStore / 读环境变量。"""
     import base64
+
+    # Also isolate standalone unittest runs even when a production data dir is set.
+    os.environ["BOT_DATA_DIR"] = _runtime_data.name
 
     for var in ("ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
         os.environ.pop(var, None)

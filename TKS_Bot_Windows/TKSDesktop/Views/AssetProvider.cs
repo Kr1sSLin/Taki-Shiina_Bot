@@ -8,6 +8,9 @@ namespace TKSDesktop.Views;
 /// <summary><c>asset-manifest.json</c> 中的一项（PRD FR-W-UI-12 / V-W-S12）。</summary>
 public sealed class AssetManifestEntry
 {
+    [JsonPropertyName("expectedSizes")]
+    public int[] ExpectedSizes { get; set; } = [];
+
     /// <summary>逻辑名（**代码只引用逻辑名，不得写死文件名**）。</summary>
     [JsonPropertyName("logicalName")]
     public string LogicalName { get; set; } = string.Empty;
@@ -51,14 +54,14 @@ public static class AssetProvider
     /// <summary>资源目录相对路径（pack URI 与磁盘探测共用）。</summary>
     public const string AssetsRelativePath = "Resources/Assets";
 
-    private const string PlaceholderStatus = "placeholder";
-
     private static readonly object Gate = new();
     private static readonly Dictionary<string, ImageSource> PlaceholderCache = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, string> FileNameByLogicalName = new(StringComparer.Ordinal);
     private static readonly HashSet<string> PlaceholderNames = new(StringComparer.Ordinal);
 
     private static bool _manifestLoaded;
+    private static string? _manifestDirectory;
+    private static readonly Dictionary<string, AssetManifestEntry> Entries = new(StringComparer.Ordinal);
 
     /// <summary>全部已登记的逻辑名（供机械校验）。</summary>
     public static IReadOnlyCollection<string> LogicalNames
@@ -113,8 +116,11 @@ public static class AssetProvider
 
         try
         {
-            var uri = new Uri($"pack://application:,,,/{AssetsRelativePath}/{fileName}", UriKind.Absolute);
-            var frame = BitmapFrame.Create(uri, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+            if (_manifestDirectory is null || !Entries.TryGetValue(logicalName, out var entry)) return false;
+            AssetValidation.Load(_manifestDirectory, entry);
+            // Keep a URI-backed source for the native tray image converter.
+            var frame = BitmapFrame.Create(new Uri(Path.GetFullPath(Path.Combine(_manifestDirectory, entry.FileName))),
+                BitmapCreateOptions.IgnoreImageCache, BitmapCacheOption.OnLoad);
             frame.Freeze();
             image = frame;
             return true;
@@ -250,13 +256,15 @@ public static class AssetProvider
                         }
 
                         FileNameByLogicalName[entry.LogicalName] = entry.FileName;
+                        Entries[entry.LogicalName] = entry;
 
-                        if (string.Equals(entry.Status, PlaceholderStatus, StringComparison.OrdinalIgnoreCase))
+                        if (!string.Equals(entry.Status, "final", StringComparison.Ordinal))
                         {
                             PlaceholderNames.Add(entry.LogicalName);
                         }
                     }
 
+                    _manifestDirectory = Path.GetDirectoryName(Path.GetFullPath(candidate));
                     return;
                 }
                 catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)

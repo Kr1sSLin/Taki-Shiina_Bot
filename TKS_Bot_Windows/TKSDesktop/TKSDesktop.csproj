@@ -67,6 +67,7 @@
 
   <ItemGroup>
     <None Include="Resources\Assets\asset-manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Resources\Assets\**\*.png;Resources\Assets\**\*.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <!-- TrayIconManager loads this through a WPF pack URI; ApplicationIcon alone only embeds it in the EXE. -->
     <Resource Include="Resources\Assets\tks-desktop.ico" />
     <Resource Include="Resources\Assets\**\*.xaml" />

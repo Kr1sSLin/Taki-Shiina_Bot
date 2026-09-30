@@ -143,7 +143,7 @@ public sealed class WindowChromeService : IWindowChrome, IDisposable
     /// FR-W-UI-3 的窗口级模糊应用（由窗口在 <c>SourceInitialized</c> 后调用）。
     /// 返回是否**实际**应用成功；失败时调用方必须改用不透明渐变。
     /// </summary>
-    public bool TryApplySystemBlur(IntPtr hwnd)
+    public bool TryApplySystemBlur(IntPtr hwnd, bool dark)
     {
         if (hwnd == IntPtr.Zero || !IsSystemBlurAvailable)
         {
@@ -152,6 +152,21 @@ public sealed class WindowChromeService : IWindowChrome, IDisposable
 
         try
         {
+            // 标题栏/系统菜单的深浅色必须与应用主题同步。
+            var darkMode = dark ? 1 : 0;
+            _ = NativeMethods.DwmSetWindowAttribute(
+                hwnd, NativeMethods.DwmwaUseImmersiveDarkMode, ref darkMode, sizeof(int));
+            _ = NativeMethods.DwmSetWindowAttribute(
+                hwnd, NativeMethods.DwmwaUseImmersiveDarkModeLegacy, ref darkMode, sizeof(int));
+
+            var cornerPreference = NativeMethods.DwmcpRound;
+            _ = NativeMethods.DwmSetWindowAttribute(
+                hwnd, NativeMethods.DwmwaWindowCornerPreference, ref cornerPreference, sizeof(int));
+
+            // WPF 的客户区默认会盖住系统材质；先把 DWM frame 延伸到整个客户区。
+            var margins = new NativeMethods.Margins { Left = -1, Right = -1, Top = -1, Bottom = -1 };
+            _ = NativeMethods.DwmExtendFrameIntoClientArea(hwnd, ref margins);
+
             // Win11 22H2+ 优先用系统背景类型（Acrylic），失败再退回 Win10 的 accent blur。
             var backdrop = NativeMethods.DwmsbtTransientWindow;
             if (NativeMethods.DwmSetWindowAttribute(
@@ -162,9 +177,10 @@ public sealed class WindowChromeService : IWindowChrome, IDisposable
 
             var policy = new NativeMethods.AccentPolicy
             {
-                AccentState = NativeMethods.AccentEnableBlurBehind,
-                AccentFlags = 0,
-                GradientColor = 0,
+                AccentState = NativeMethods.AccentEnableAcrylicBlurBehind,
+                AccentFlags = 2,
+                // ACCENT_POLICY 使用 AABBGGRR；保留足够透明度让背后内容参与折射。
+                GradientColor = dark ? unchecked((int)0x99221B18) : unchecked((int)0x66FFFFFF),
                 AnimationId = 0,
             };
 
@@ -180,6 +196,16 @@ public sealed class WindowChromeService : IWindowChrome, IDisposable
                     SizeOfData = size,
                 };
 
+                if (NativeMethods.SetWindowCompositionAttribute(hwnd, ref data) != 0)
+                {
+                    return true;
+                }
+
+                // 较老 Win10 不支持 Acrylic 状态，最后降级到普通 blur-behind。
+                policy.AccentState = NativeMethods.AccentEnableBlurBehind;
+                policy.AccentFlags = 0;
+                policy.GradientColor = 0;
+                Marshal.StructureToPtr(policy, buffer, fDeleteOld: false);
                 return NativeMethods.SetWindowCompositionAttribute(hwnd, ref data) != 0;
             }
             finally

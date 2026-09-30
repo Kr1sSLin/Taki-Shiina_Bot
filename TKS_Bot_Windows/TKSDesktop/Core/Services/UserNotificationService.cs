@@ -45,6 +45,14 @@ public sealed class UserNotificationService : IUserNotificationService
 
     /// <inheritdoc />
     public void Notify(NotificationCategory category, string title, string body, string? messageId = null)
+        => NotifyCore(category, title, body, messageId, ToSemanticId(category));
+
+    public void NotifyProgress(SemanticNotificationId semanticId, string title, string body)
+        => NotifyCore(NotificationCategory.Progress, title, body, null,
+            semanticId is SemanticNotificationId.Level or SemanticNotificationId.Streak
+                ? semanticId : SemanticNotificationId.Progress);
+
+    private void NotifyCore(NotificationCategory category, string title, string body, string? messageId, SemanticNotificationId semanticId)
     {
         var settings = _settings.Current;
 
@@ -73,8 +81,6 @@ public sealed class UserNotificationService : IUserNotificationService
         {
             return;
         }
-
-        var semanticId = ToSemanticId(category);
 
         // ⑤ 正文截断 160 字符（FR-W-NOTI-6）。
         var truncated = Truncate(body, ProtocolConstants.NotificationBodyMaxChars);

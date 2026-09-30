@@ -105,6 +105,23 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     /// <summary>消息（含 C-5 分隔线项）。</summary>
     public ObservableCollection<MessageItemViewModel> Messages { get; } = [];
 
+    /// <summary>本地聊天记录搜索结果（最多 100 条）。</summary>
+    public ObservableCollection<ChatSearchResult> SearchResults { get; } = [];
+
+    [ObservableProperty]
+    private bool _isSearchOpen;
+
+    [ObservableProperty]
+    private string _searchTerm = string.Empty;
+
+    [ObservableProperty]
+    private string _searchStatusText = string.Empty;
+
+    [ObservableProperty]
+    private bool _isSearchBusy;
+
+    private int _searchGeneration;
+
     /// <summary>输入框正文。</summary>
     [ObservableProperty]
     private string _inputText = string.Empty;
@@ -203,6 +220,80 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     /// <summary>搜索入口文案。</summary>
     public string SearchText => I18n.T("chat.search.placeholder");
 
+    public string SearchButtonText => I18n.T("chat.search.action");
+
+    public string CloseSearchText => I18n.T("common.close");
+
+    [RelayCommand]
+    private void CloseSearch()
+    {
+        IsSearchOpen = false;
+        _searchGeneration++;
+        IsSearchBusy = false;
+    }
+
+    [RelayCommand]
+    private async Task SearchMessagesAsync()
+    {
+        var term = SearchTerm.Trim();
+        var generation = ++_searchGeneration;
+        if (term.Length == 0)
+        {
+            await _dispatcher.InvokeAsync(SearchResults.Clear).ConfigureAwait(true);
+            SearchStatusText = I18n.T("chat.search.tooShort");
+            return;
+        }
+
+        IsSearchBusy = true;
+        SearchStatusText = string.Empty;
+        try
+        {
+            var messages = await _chat.SearchAsync(term, 100).ConfigureAwait(true);
+            if (generation != _searchGeneration)
+            {
+                return;
+            }
+
+            await _dispatcher.InvokeAsync(() =>
+            {
+                SearchResults.Clear();
+                foreach (var message in messages)
+                {
+                    SearchResults.Add(ChatSearchResult.From(message, term));
+                }
+            }).ConfigureAwait(true);
+            SearchStatusText = messages.Count == 0
+                ? I18n.T("chat.search.noResult")
+                : I18n.T("chat.search.count", messages.Count);
+        }
+        catch
+        {
+            if (generation == _searchGeneration)
+            {
+                SearchStatusText = I18n.T("chat.search.failed");
+            }
+        }
+        finally
+        {
+            if (generation == _searchGeneration)
+            {
+                IsSearchBusy = false;
+            }
+        }
+    }
+
+    [RelayCommand]
+    private async Task JumpToSearchResultAsync(ChatSearchResult? result)
+    {
+        if (result is null)
+        {
+            return;
+        }
+
+        await LocateMessageAsync(result.MessageId).ConfigureAwait(true);
+        CloseSearch();
+    }
+
     /// <summary>清空本地会话入口文案。</summary>
     public string ClearLocalText => I18n.T("settings.clearLocal");
 
@@ -269,7 +360,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>Emoji 面板开关按钮文案。</summary>
-    public string EmojiButtonText => I18n.T("image.add");
+    public string EmojiButtonText => I18n.T("emoji.open");
+
+    public IReadOnlyList<EmojiGroup> EmojiGroups { get; } = EmojiGroup.All;
 
     /// <summary>是否有草稿附件（决定缩略图条显隐 —— FR-W-IMG-3）。</summary>
     public bool HasDrafts => DraftThumbnails.Count > 0;
@@ -304,36 +397,16 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     public const string EmojiCategoryFoodKey = "food";
 
     /// <summary>表情分类标签。</summary>
-    public string EmojiCategorySmileys => I18n.T("chat.input.placeholder");
+    public string EmojiCategorySmileys => I18n.T("emoji.smileys");
 
     /// <summary>手势分类标签。</summary>
-    public string EmojiCategoryGestures => I18n.T("common.confirm");
+    public string EmojiCategoryGestures => I18n.T("emoji.gestures");
 
     /// <summary>面孔分类标签。</summary>
-    public string EmojiCategoryFaces => I18n.T("app.name");
+    public string EmojiCategoryFaces => I18n.T("emoji.animals");
 
     /// <summary>食物分类标签。</summary>
-    public string EmojiCategoryFood => I18n.T("common.ok");
-
-    /// <summary>图片文件对话框过滤器（仅 JPG / PNG —— FR-W-IMG-2）。</summary>
-    private static string ImageFileFilter
-    {
-        get
-        {
-            var pattern = string.Join(
-                ";",
-                ProtocolConstants.AllowedImageMime
-                    .Select(static mime => mime switch
-                    {
-                        "image/jpeg" => "*.jpg;*.jpeg",
-                        "image/png" => "*.png",
-                        _ => string.Empty,
-                    })
-                    .Where(static value => value.Length > 0));
-
-            return pattern;
-        }
-    }
+    public string EmojiCategoryFood => I18n.T("emoji.food");
 
     /* ---- 生命周期 ---- */
 
@@ -431,25 +504,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         {
             ScrollToMessageRequested?.Invoke(this, target);
         }
-    }
-
-    /// <summary>打开系统文件对话框添加图片（FR-W-IMG-1）。</summary>
-    [RelayCommand]
-    private async Task AddImageAsync()
-    {
-        var dialog = new Microsoft.Win32.OpenFileDialog
-        {
-            Multiselect = true,
-            CheckFileExists = true,
-            Filter = ImageFileFilter,
-        };
-
-        if (dialog.ShowDialog() != true || dialog.FileNames.Length == 0)
-        {
-            return;
-        }
-
-        await AddImagesAsync(dialog.FileNames).ConfigureAwait(true);
     }
 
     /// <summary>切换 Emoji 面板（**占位推起内容，不用浮层遮盖** —— FR-W-UI-5）。</summary>
@@ -675,11 +729,6 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void OpenInteractionMenu()
     {
-        if (IsOfflineCache)
-        {
-            return;
-        }
-
         InteractionMenuRequested?.Invoke(this, EventArgs.Empty);
     }
 
@@ -1037,6 +1086,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
         NoticeText = text;
         IsNoticeVisible = true;
     }
+
+    /// <summary>文件选择器无法打开时由视图上报，确保失败不会静默或上升为顶层崩溃。</summary>
+    public void ReportImagePickerFailure() => ShowNotice(I18n.T("image.fileDialog.failed"));
 
     /// <summary>轻量提示「已消费」（View 关闭提示条时调用）。</summary>
     public void ClearNotice()

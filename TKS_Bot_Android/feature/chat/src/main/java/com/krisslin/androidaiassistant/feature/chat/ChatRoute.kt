@@ -57,6 +57,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -158,6 +159,11 @@ fun ChatRoute(
     var bgIsDark by remember { mutableStateOf(isDarkMode) }
     var bgScreenSize by remember { mutableStateOf(IntSize.Zero) }
     var inputField by remember { mutableStateOf(TextFieldValue(state.input)) }
+
+    LifecycleResumeEffect(viewModel) {
+        viewModel.onResume()
+        onPauseOrDispose { }
+    }
 
     // 外部输入变化（emoji 插入、发送清空）同步回 TextFieldValue，保留光标位置
     LaunchedEffect(state.input) {

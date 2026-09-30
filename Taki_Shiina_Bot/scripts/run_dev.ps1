@@ -3,12 +3,11 @@
     Taki_Shiina_Bot 后端 —— Windows 本地开发启动脚本（纯开发辅助，不参与 Linux 部署链路）。
 
 .DESCRIPTION
-    本仓库有 3 个可独立启动的 FastAPI 进程（路由/端口约定见 docs/部署_nginx与多进程路由.md）：
+    推荐使用统一入口：
 
-        认证服务      uvicorn main:app            默认端口 8002（文档表格中的 8002，避免与 http_api 的 8000 冲突）
-        HTTP API      python http_api.py          BOT_HTTP_PORT，默认 8000
-        WebSocket API python ws_api.py            BOT_WS_PORT，默认 8001
+        统一 API      python unified_api.py       BOT_UNIFIED_PORT，默认 8000
 
+    兼容模式仍可独立启动 3 个 FastAPI 进程：认证 8002、HTTP 8000、WebSocket 8001。
     为什么不能“随便找个目录”启动：本仓库的导入风格是混用的——
       * main.py 用绝对导入 `from Taki_Shiina_Bot.core...`  → 需要「仓库根」在 sys.path 上；
       * ws_api.py / http_api.py 及其依赖用顶层导入 `from auth_utils / from services...`
@@ -16,13 +15,14 @@
     因此脚本显式设置 PYTHONPATH=<项目目录>;<仓库根>，并按各服务的常规目录启动
     （认证服务在仓库根、http_api/ws_api 在项目目录），与用户当前所在的目录无关。
 
-    本脚本**不改动** main.py / http_api.py / ws_api.py 的启动逻辑与默认绑定地址，只负责：
-    前置检查（.env / DATA_ENC_KEY / AUTH_* / 鉴权 token / 缺失依赖 / 端口）→ 打印可执行提示 → 按参数启动。
+    本脚本不改动服务代码，只负责：前置检查（.env / DATA_ENC_KEY / AUTH_* / 鉴权 token /
+    缺失依赖 / 端口）→ 打印可执行提示 → 按参数启动。各入口默认仅绑定 127.0.0.1；
+    如确需非回环监听，必须显式设置对应 BOT_*_HOST 并自行配置防火墙/TLS 反代。
 
 .PARAMETER Target
     check（默认）：只做前置检查并打印启动命令；
-    auth / http / ws：检查通过后启动对应进程；
-    all：各开一个新窗口，同时启动三个进程。
+    unified：检查通过后启动推荐的单进程统一入口；
+    auth / http / ws：启动兼容模式对应进程；all：同时启动兼容模式三个进程。
 
 .PARAMETER DryRun
     只打印将要执行的命令，不真正启动（用于验证环境与参数拼装）。
@@ -43,7 +43,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('check', 'auth', 'http', 'ws', 'all')]
+    [ValidateSet('check', 'unified', 'auth', 'http', 'ws', 'all')]
     [string]$Target = 'check',
 
     [switch]$DryRun
@@ -281,7 +281,7 @@ if ($tokenMissing.Count -gt 0) {
 #    直接抛 OpenAIError（已实测）。认证服务不含该客户端，故仅作提示。
 $deepseek = Resolve-Setting -Map $DotEnv -Key 'DEEPSEEK_API_KEY'
 if ([string]::IsNullOrWhiteSpace($deepseek.Value)) {
-    if ($Target -in @('http', 'ws', 'all')) {
+    if ($Target -in @('unified', 'http', 'ws', 'all')) {
         $fatal.Add('DEEPSEEK_API_KEY 未设置（http_api.py:71 / ws_api.py:136 在 import 期构造 AsyncOpenAI，空 key 会抛 OpenAIError）') | Out-Null
         Write-Bad 'DEEPSEEK_API_KEY 未设置（http_api / ws_api 会在 import 阶段失败）'
         Write-Host '       本地开发随便填一个非空占位值即可（不要填真实密钥到版本库）：'
@@ -302,15 +302,17 @@ if ($optionalMissing.Count -gt 0) {
     Write-Note "未配置外部服务 key：$($optionalMissing -join '、')（对应 AI/天气功能会失败，本地开发可忽略；已实测不影响 http_api import）"
 }
 
-# 7) 端口（BOT_HTTP_PORT / BOT_WS_PORT 与 .env.example 一致；认证服务端口见下方说明）
-$httpPort = Resolve-Setting -Map $DotEnv -Key 'BOT_HTTP_PORT' -Default '8000'   # 与 .env.example / http_api.py 默认值一致
-$wsPort = Resolve-Setting -Map $DotEnv -Key 'BOT_WS_PORT' -Default '8001'       # 与 .env.example / ws_api.py 默认值一致
-$authPort = Resolve-Setting -Map $DotEnv -Key 'BOT_AUTH_PORT' -Default '8002'   # 文档表格的 8002（uvicorn 自身默认 8000 会与 http_api 冲突）
-$httpHost = Resolve-Setting -Map $DotEnv -Key 'BOT_HTTP_HOST' -Default '0.0.0.0'
-$wsHost = Resolve-Setting -Map $DotEnv -Key 'BOT_WS_HOST' -Default '0.0.0.0'
+# 7) 端口
+$httpPort = Resolve-Setting -Map $DotEnv -Key 'BOT_HTTP_PORT' -Default '8000'
+$wsPort = Resolve-Setting -Map $DotEnv -Key 'BOT_WS_PORT' -Default '8001'
+$authPort = Resolve-Setting -Map $DotEnv -Key 'BOT_AUTH_PORT' -Default '8002'
+$unifiedPort = Resolve-Setting -Map $DotEnv -Key 'BOT_UNIFIED_PORT' -Default '8000'
+$httpHost = Resolve-Setting -Map $DotEnv -Key 'BOT_HTTP_HOST' -Default '127.0.0.1'
+$wsHost = Resolve-Setting -Map $DotEnv -Key 'BOT_WS_HOST' -Default '127.0.0.1'
+$unifiedHost = Resolve-Setting -Map $DotEnv -Key 'BOT_UNIFIED_HOST' -Default '127.0.0.1'
 
 Write-Host ''
-Write-Host "端口：认证服务 $($authPort.Value)（$($authPort.Source)） / HTTP $($httpPort.Value)（$($httpPort.Source)，绑定 $($httpHost.Value)） / WS $($wsPort.Value)（$($wsPort.Source)，绑定 $($wsHost.Value)）"
+Write-Host "推荐统一入口 $($unifiedHost.Value):$($unifiedPort.Value)（$($unifiedPort.Source)）；兼容模式：认证 $($authPort.Value) / HTTP $($httpPort.Value) / WS $($wsPort.Value)"
 
 # 8) 第三方依赖
 Write-Head '依赖检查'
@@ -326,10 +328,10 @@ if ($missingDeps.Count -eq 0) {
     Write-Host '       安装/补齐（两条 requirements 都要装）：'
     Write-Host '         .\.venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-dev.txt'
 
-    if ($Target -in @('auth', 'http', 'all') -and $missingCore.Count -gt 0) {
+    if ($Target -in @('unified', 'auth', 'http', 'all') -and $missingCore.Count -gt 0) {
         $fatal.Add("核心依赖缺失: $($missingCore -join '、')") | Out-Null
     }
-    if ($Target -eq 'ws') {
+    if ($Target -in @('unified', 'ws')) {
         if ($missingCore.Count -gt 0) { $fatal.Add("核心依赖缺失: $($missingCore -join '、')") | Out-Null }
         if ($missingWs.Count -gt 0) {
             # ws_api.py 顶层 `import google.generativeai`：这个包缺失时 ws_api 无法启动
@@ -349,21 +351,23 @@ if ($fatal.Count -gt 0) {
 }
 Write-Ok '前置检查通过'
 
+$cmdUnified = "cd `"$ProjectDir`"; `$env:PYTHONPATH=`"$ProjectDir;$RepoRoot`"; & `"$VenvPython`" unified_api.py"
 $cmdAuth = "cd `"$RepoRoot`"; `$env:PYTHONPATH=`"$ProjectDir;$RepoRoot`"; & `"$VenvPython`" -m uvicorn main:app --port $($authPort.Value)"
 $cmdHttp = "cd `"$ProjectDir`"; `$env:PYTHONPATH=`"$ProjectDir;$RepoRoot`"; & `"$VenvPython`" http_api.py"
 $cmdWs = "cd `"$ProjectDir`"; `$env:PYTHONPATH=`"$ProjectDir;$RepoRoot`"; & `"$VenvPython`" ws_api.py"
 
 Write-Host ''
 Write-Host '等价手写命令：'
-Write-Host "  认证服务    : $cmdAuth"
-Write-Host "  HTTP API    : $cmdHttp"
-Write-Host "  WebSocket   : $cmdWs"
+Write-Host "  统一入口(推荐): $cmdUnified"
+Write-Host "  认证服务(兼容): $cmdAuth"
+Write-Host "  HTTP API (兼容): $cmdHttp"
+Write-Host "  WebSocket(兼容): $cmdWs"
 Write-Host ''
-Write-Host "自检：认证服务 GET http://127.0.0.1:$($authPort.Value)/api/v1/health ；http_api/ws_api GET http://127.0.0.1:<端口>/healthz"
+Write-Host "自检：统一入口 GET http://127.0.0.1:$($unifiedPort.Value)/healthz"
 
 if ($Target -eq 'check') {
     Write-Host ''
-    Write-Host "启动方式：本脚本加参数 auth / http / ws / all（例如： powershell -ExecutionPolicy Bypass -File `"$ScriptPath`" auth）"
+    Write-Host "启动方式：本脚本加参数 unified（推荐）或 auth / http / ws / all"
     exit 0
 }
 
@@ -403,6 +407,14 @@ if ($Target -eq 'all') {
 }
 
 switch ($Target) {
+    'unified' {
+        Write-Head "启动统一 API（python unified_api.py，$($unifiedHost.Value):$($unifiedPort.Value)）"
+        Write-Host "命令: $cmdUnified"
+        if ($DryRun) { Write-Note 'DryRun：未启动'; exit 0 }
+        Set-DevPythonPath
+        Set-Location -LiteralPath $ProjectDir
+        & $VenvPython (Join-Path $ProjectDir 'unified_api.py')
+    }
     'auth' {
         Write-Head "启动认证服务（uvicorn main:app --port $($authPort.Value)，工作目录=仓库根）"
         Write-Host "命令: $cmdAuth"

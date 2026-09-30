@@ -21,8 +21,8 @@ import com.krisslin.androidaiassistant.core.database.entity.UserProgressEntity
         UserFactEntity::class,
         UserProgressEntity::class
     ],
-    version = 4,
-    exportSchema = false
+    version = 5,
+    exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun chatMessageDao(): ChatMessageDao

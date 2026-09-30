@@ -38,6 +38,58 @@ public partial class ChatView : UserControl
 
     public void FocusInput() => InputBox.Focus();
 
+    private void ComposerCapsule_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        // WPF normalizes oversized radii independently on each axis. A value such
+        // as 999 makes a wide border an ellipse, not a pill with straight edges.
+        if (sender is Border capsule)
+        {
+            capsule.CornerRadius = new CornerRadius(Math.Min(e.NewSize.Width, e.NewSize.Height) / 2);
+        }
+    }
+
+    public void OpenSearch()
+    {
+        if (_viewModel is not { } chat)
+        {
+            return;
+        }
+
+        chat.IsSearchOpen = true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            SearchBox.Focus();
+            SearchBox.SelectAll();
+        });
+    }
+
+    private void SearchBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (_viewModel is not { } chat)
+        {
+            return;
+        }
+
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            chat.SearchMessagesCommand.Execute(null);
+        }
+        else if (e.Key == Key.Escape)
+        {
+            e.Handled = true;
+            chat.CloseSearchCommand.Execute(null);
+        }
+    }
+
+    private void SearchResult_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel is { } chat && sender is Button { DataContext: ViewModels.ChatSearchResult result })
+        {
+            chat.JumpToSearchResultCommand.Execute(result);
+        }
+    }
+
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         Attach();
@@ -80,7 +132,13 @@ public partial class ChatView : UserControl
         _viewModel = null;
     }
 
-    private void OnScrollToEnd(object? sender, EventArgs e) => MessageScrollViewer.ScrollToEnd();
+    private ScrollViewer? MessageScrollViewer => MessageItems.Template?.FindName("MessageScrollViewer", MessageItems) as ScrollViewer;
+
+    private void OnScrollToEnd(object? sender, EventArgs e)
+    {
+        MessageItems.ApplyTemplate();
+        MessageScrollViewer?.ScrollToEnd();
+    }
 
     private void OnScrollToMessage(object? sender, string messageId)
     {
@@ -100,8 +158,22 @@ public partial class ChatView : UserControl
         }
 
         MessageItems.UpdateLayout();
+        // A virtualized target may not have a container yet. Realize it by index first.
+        var presenter = FindVirtualizingPanel(MessageItems);
+        presenter?.BringIndexIntoViewPublic(MessageItems.Items.IndexOf(item));
+        MessageItems.UpdateLayout();
         var container = MessageItems.ItemContainerGenerator.ContainerFromItem(item) as FrameworkElement;
         container?.BringIntoView();
+    }
+
+    private static VirtualizingPanel? FindVirtualizingPanel(DependencyObject parent)
+    {
+        if (parent is VirtualizingPanel panel) return panel;
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            if (FindVirtualizingPanel(VisualTreeHelper.GetChild(parent, i)) is { } child) return child;
+        }
+        return null;
     }
 
     private void OnHideToTray(object? sender, EventArgs e)
@@ -180,12 +252,50 @@ public partial class ChatView : UserControl
         }
     }
 
+    /// <summary>创建符合 WPF 约定的“说明|通配符”筛选器，避免 OpenFileDialog 抛出参数异常。</summary>
+    internal static string BuildImageDialogFilter()
+        => $"{I18n.T("image.fileDialog.filter")}|*.jpg;*.jpeg;*.png";
+
+    /// <summary>由视图拥有文件选择器；成功后只把已选路径交给 ViewModel 处理。</summary>
+    private async void AddImage_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel is not { } chat)
+        {
+            return;
+        }
+
+        try
+        {
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = I18n.T("image.fileDialog.title"),
+                Filter = BuildImageDialogFilter(),
+                Multiselect = true,
+                CheckFileExists = true,
+                RestoreDirectory = true,
+            };
+
+            if (dialog.ShowDialog(Window.GetWindow(this)) == true && dialog.FileNames.Length > 0)
+            {
+                await chat.AddImagesAsync(dialog.FileNames).ConfigureAwait(true);
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            chat.ReportImagePickerFailure();
+        }
+    }
+
     /// <summary>插入 emoji 到输入框（FR-W-UI-5）。</summary>
     private void InsertEmoji_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button { Content: string emoji } && _viewModel is { } chat)
         {
-            chat.InsertEmojiCommand.Execute(emoji);
+            var caret = InputBox.SelectionStart;
+            InputBox.SelectedText = emoji;
+            InputBox.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+            InputBox.Focus();
+            InputBox.CaretIndex = caret + emoji.Length;
         }
     }
 
@@ -203,7 +313,7 @@ public partial class ChatView : UserControl
             return;
         }
 
-        if (e.Key == Key.V && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+        if (InputBox.IsKeyboardFocusWithin && e.Key == Key.V && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
         {
             e.Handled = true;
             _ = chat.PasteImageAsync();

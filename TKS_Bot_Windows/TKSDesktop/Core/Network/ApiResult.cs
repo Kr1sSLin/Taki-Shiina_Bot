@@ -292,6 +292,9 @@ public class ApiResult
 /// <typeparam name="T">响应信封 <c>data</c> 的类型。</typeparam>
 public sealed class ApiResult<T> : ApiResult
 {
+    /// <summary>Business-error data, kept separate from successful values.</summary>
+    public T? FailureValue { get; internal init; }
+
     internal ApiResult(T? value, string? traceId)
         : base(traceId)
     {

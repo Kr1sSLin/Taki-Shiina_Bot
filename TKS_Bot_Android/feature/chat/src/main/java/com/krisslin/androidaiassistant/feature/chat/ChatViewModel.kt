@@ -1,15 +1,10 @@
 package com.krisslin.androidaiassistant.feature.chat
 
 import android.content.Context
-import android.graphics.BitmapFactory
 import android.net.Uri
-import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
-import com.google.gson.JsonArray
-import com.google.gson.JsonObject
-import com.krisslin.androidaiassistant.core.database.entity.ChatAttachmentEntity
 import com.krisslin.androidaiassistant.core.database.entity.ChatMessageEntity
 import com.krisslin.androidaiassistant.core.database.entity.UserFactEntity
 import com.krisslin.androidaiassistant.core.database.repository.BotNotificationRepository
@@ -17,7 +12,6 @@ import com.krisslin.androidaiassistant.core.database.repository.ChatRepository
 import com.krisslin.androidaiassistant.core.database.repository.ContentType
 import com.krisslin.androidaiassistant.core.database.repository.MessageRole
 import com.krisslin.androidaiassistant.core.database.repository.MessageStatus
-import com.krisslin.androidaiassistant.core.database.repository.SyncOutcome
 import com.krisslin.androidaiassistant.core.database.repository.UserFactRepository
 import com.krisslin.androidaiassistant.core.database.repository.ModelProvider
 import com.krisslin.androidaiassistant.core.database.repository.UserProgressRepository
@@ -32,7 +26,6 @@ import com.krisslin.androidaiassistant.core.network.ws.ChatImagePayload
 import com.krisslin.androidaiassistant.core.network.ws.ChatMessagePayload
 import com.krisslin.androidaiassistant.core.network.ws.ChatMessageRequest
 import com.krisslin.androidaiassistant.core.network.ws.IncomingMessage
-import com.krisslin.androidaiassistant.core.network.ws.IncomingMessageParser
 import com.krisslin.androidaiassistant.core.network.ws.WebSocketEvent
 import com.krisslin.androidaiassistant.core.push.ReminderScheduler
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -53,81 +46,6 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 
-data class ChatAttachmentUi(
-    val id: String,
-    val localUri: String,
-    val mimeType: String,
-    val fileSize: Long,
-    val width: Int? = null,
-    val height: Int? = null
-)
-
-data class ChatMessageUi(
-    val id: String,
-    val role: String,
-    val content: String,
-    val contentType: String = ContentType.TEXT,
-    val modelProvider: String = ModelProvider.DEEPSEEK,
-    val attachments: List<ChatAttachmentUi> = emptyList(),
-    val timestamp: Long = System.currentTimeMillis(),
-    val status: String = MessageStatus.RECEIVED,
-    val errorCode: String? = null,
-    val isStreaming: Boolean = false
-)
-
-/**
- * 连接状态
- */
-enum class ConnectionStatus {
-    CONNECTING,     // 连接中
-    CONNECTED,      // 已连接
-    DISCONNECTED    // 已断开
-}
-
-/**
- * Bot 活动状态（用于顶部提示显示）
- */
-enum class BotActivityStatus {
-    IDLE,       // 空闲：不显示任何内容
-    SENDING,    // 发送中：用户消息已发出，等待服务器确认
-    TYPING      // 输入中：Bot 正在生成回复
-}
-
-data class ChatUiState(
-    val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
-    val botActivity: BotActivityStatus = BotActivityStatus.IDLE,
-    val botStage: String? = null,
-    val input: String = "",
-    val error: String? = null,
-    val selectedImages: List<ChatAttachmentUi> = emptyList(),
-    val messages: List<ChatMessageUi> = emptyList(),
-    // 互动积分 · 等级体系：离线缓存展示（后端为准，见 UserProgressRepository）
-    val balance: Int = 0,
-    val levelName: String = "",
-    val continuousDays: Int = 0,
-    // 升级庆祝 / 等级恢复提示（PRD FR-16 / EDGE-11）
-    val levelCelebration: LevelCelebrationUi? = null
-)
-
-/**
- * 升级/等级恢复庆祝信息。
- * changeType：UPGRADE（首次达成）/ RESTORE（补签回溯挽回）。
- */
-data class LevelCelebrationUi(
-    val changeType: String,
-    val levelName: String,
-    val continuousDays: Int,
-    val nextLevelName: String? = null,
-    val daysToNextLevel: Int? = null
-)
-
-/**
- * Side Effect 事件
- */
-sealed interface ChatSideEffect {
-    data object NavigateToLogin : ChatSideEffect
-    data class ShowToast(val message: String) : ChatSideEffect
-}
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
@@ -143,10 +61,6 @@ class ChatViewModel @Inject constructor(
     private val reminderScheduler: ReminderScheduler,
     private val gson: Gson
 ) : ViewModel() {
-    private companion object {
-        const val MAX_IMAGE_BYTES = 20 * 1024 * 1024
-        const val MAX_IMAGE_TIPS = "图片超过 20MB 限制"
-    }
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -154,10 +68,32 @@ class ChatViewModel @Inject constructor(
     private val _sideEffects = MutableSharedFlow<ChatSideEffect>()
     val sideEffects: SharedFlow<ChatSideEffect> = _sideEffects.asSharedFlow()
 
-    private val messageParser = IncomingMessageParser(gson)
+    private val frameDispatcher = ChatWebSocketFrameDispatcher(
+        gson = gson,
+        sink = object : ChatWebSocketFrameDispatcher.Sink {
+            override suspend fun onReply(message: IncomingMessage.Reply) = handleReply(message)
+            override suspend fun onReplyStream(message: IncomingMessage.ReplyStream) = handleReplyStream(message)
+            override suspend fun onBotError(message: IncomingMessage.BotError) = handleBotError(message)
+            override suspend fun onMemoryFactCreated(message: IncomingMessage.MemoryFactCreated) = handleMemoryFactCreated(message)
+            override suspend fun onUserEcho(message: IncomingMessage.UserEcho) = handleUserEcho(message)
+            override fun onTyping(message: IncomingMessage.Typing) = handleTyping(message)
+            override fun onPointsChanged(message: IncomingMessage.PointsChanged) = handlePointsChanged(message)
+            override fun onLevelChanged(message: IncomingMessage.LevelChanged) = handleLevelChanged(message)
+            override fun onStreakWarning(message: IncomingMessage.StreakWarning) = handleStreakWarning(message)
+            override fun onMakeupCardChanged(message: IncomingMessage.MakeupCardChanged) = handleMakeupCardChanged(message)
+            override suspend fun onAuthExpired() = handleAuthExpired()
+        }
+    )
 
     // 当前会话 ID
     private val sessionId: String = "default_session"
+    private val timelineSynchronizer = ChatTimelineSynchronizer(
+        chatApi = chatApi,
+        chatRepository = chatRepository,
+        userFactRepository = userFactRepository,
+        sessionId = sessionId
+    )
+    private val imageAttachmentManager = ChatImageAttachmentManager(context, chatRepository, sessionId)
 
     // 流式消息内容缓存: requestId -> 累积内容
     private val streamingContentCache = ConcurrentHashMap<String, StringBuilder>()
@@ -173,24 +109,13 @@ class ChatViewModel @Inject constructor(
     private val receivedFirstChunk = ConcurrentHashMap.newKeySet<String>()
 
     // 已由 WS 推送落库的回复 id（互动 HTTP 兜底据此避免重复写入）
-    private val deliveredBotMessageIds = ConcurrentHashMap.newKeySet<String>()
+    private val deliveredBotMessageIds = DeliveredReplyTracker()
 
     // 流式消息超时时间（毫秒）
     private val streamingTimeoutMs = 150_000L
 
-    private var lastSyncedTimestampMs: Long = 0L
-    private var lastSyncedFactTimestampMs: Long = 0L
     private var manualReconnectPendingFullSync: Boolean = false
 
-    private data class OutgoingImage(
-        val ui: ChatAttachmentUi,
-        val dataBase64: String
-    )
-
-    private data class OutgoingPayload(
-        val text: String,
-        val images: List<OutgoingImage>
-    )
 
     init {
         loadHistoryFromDb()
@@ -228,50 +153,7 @@ class ChatViewModel @Inject constructor(
      * 启动时把 files/chat_attachments 下未被引用的文件按时间就近匹配回图片消息。
      */
     private fun repairOrphanedAttachments() {
-        viewModelScope.launch {
-            runCatching {
-                val dir = java.io.File(context.filesDir, "chat_attachments")
-                val orphanFiles = dir.listFiles()?.filter { it.isFile } ?: return@runCatching
-                if (orphanFiles.isEmpty()) return@runCatching
-
-                val imageMessages = chatRepository.getMessages(sessionId).filter {
-                    it.role == MessageRole.USER &&
-                        it.contentType == ContentType.IMAGE &&
-                        it.status != MessageStatus.ERROR
-                }
-                if (imageMessages.isEmpty()) return@runCatching
-
-                val linkedPaths = chatRepository
-                    .getAttachmentsByMessageIds(imageMessages.map { it.messageId })
-                    .mapNotNull { runCatching { Uri.parse(it.localUri).path }.getOrNull() }
-                var remaining = orphanFiles.filter { it.absolutePath !in linkedPaths }
-                if (remaining.isEmpty()) return@runCatching
-
-                val windowMs = 10 * 60 * 1000L
-                for (msg in imageMessages) {
-                    if (remaining.isEmpty()) break
-                    val best = remaining.minByOrNull { kotlin.math.abs(it.lastModified() - msg.timestamp) }
-                    if (best == null || kotlin.math.abs(best.lastModified() - msg.timestamp) > windowMs) continue
-                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeFile(best.absolutePath, opts)
-                    chatRepository.saveMessageAttachments(
-                        listOf(
-                            ChatAttachmentEntity(
-                                attachmentId = UUID.randomUUID().toString(),
-                                messageId = msg.messageId,
-                                sessionId = sessionId,
-                                mimeType = if (best.extension.equals("png", true)) "image/png" else "image/jpeg",
-                                localUri = Uri.fromFile(best).toString(),
-                                fileSize = best.length(),
-                                width = opts.outWidth.takeIf { it > 0 },
-                                height = opts.outHeight.takeIf { it > 0 }
-                            )
-                        )
-                    )
-                    remaining = remaining - best
-                }
-            }
-        }
+        viewModelScope.launch { runCatching { imageAttachmentManager.repairOrphans() } }
     }
 
     /**
@@ -296,26 +178,33 @@ class ChatViewModel @Inject constructor(
                         }
                     )
                 }
-                lastSyncedTimestampMs = pairs.maxOfOrNull { it.first.timestamp } ?: lastSyncedTimestampMs
                 _uiState.update { it.copy(messages = uiMessages) }
             }
         }
     }
 
+    /** Normalizes stale persisted streaming rows on initial entry/resume, never during an active reply. */
+    fun onResume() {
+        normalizeHistoryOnResume()
+    }
+
     private fun normalizeHistoryOnResume() {
         viewModelScope.launch {
-            if (pendingRequestIds.isNotEmpty() || streamingContentCache.isNotEmpty()) {
-                return@launch
+            streamingMutex.withLock {
+                if (!HistoryResumeNormalizationPolicy.shouldNormalize(
+                        hasPendingRequests = pendingRequestIds.isNotEmpty(),
+                        hasStreamingContent = streamingContentCache.isNotEmpty()
+                    )
+                ) {
+                    return@withLock
+                }
+                chatRepository.normalizeStreamingMessages(sessionId)
             }
-            chatRepository.normalizeStreamingMessages(sessionId)
         }
     }
 
     private fun initializeFactSyncCursor() {
-        viewModelScope.launch {
-            // 本地库仅保存当前登录用户的事实，直接取全局最新时间戳
-            lastSyncedFactTimestampMs = userFactRepository.getLatestTimestamp()
-        }
+        viewModelScope.launch { timelineSynchronizer.initializeFactCursor() }
     }
 
     /**
@@ -376,46 +265,7 @@ class ChatViewModel @Inject constructor(
      * 处理接收到的 WebSocket 消息
      */
     private fun handleIncomingMessage(raw: String) {
-        viewModelScope.launch {
-            when (val message = messageParser.parse(raw)) {
-                is IncomingMessage.Reply -> {
-                    handleReply(message)
-                }
-                is IncomingMessage.ReplyStream -> {
-                    handleReplyStream(message)
-                }
-                is IncomingMessage.BotError -> {
-                    handleBotError(message)
-                }
-                is IncomingMessage.MemoryFactCreated -> {
-                    handleMemoryFactCreated(message)
-                }
-                is IncomingMessage.UserEcho -> {
-                    handleUserEcho(message)
-                }
-                is IncomingMessage.Typing -> {
-                    handleTyping(message)
-                }
-                is IncomingMessage.PointsChanged -> {
-                    handlePointsChanged(message)
-                }
-                is IncomingMessage.LevelChanged -> {
-                    handleLevelChanged(message)
-                }
-                is IncomingMessage.StreakWarning -> {
-                    handleStreakWarning(message)
-                }
-                is IncomingMessage.MakeupCardChanged -> {
-                    handleMakeupCardChanged(message)
-                }
-                is IncomingMessage.AuthExpired -> {
-                    handleAuthExpired()
-                }
-                is IncomingMessage.Unknown -> {
-                    // 忽略未知消息
-                }
-            }
-        }
+        viewModelScope.launch { frameDispatcher.dispatch(raw) }
     }
 
     /**
@@ -521,7 +371,7 @@ class ChatViewModel @Inject constructor(
         }
         val reply = data.reply
         val messageId = data.messageId
-        if (!reply.isNullOrBlank() && !messageId.isNullOrBlank() && messageId !in deliveredBotMessageIds) {
+        if (!reply.isNullOrBlank() && !messageId.isNullOrBlank() && !deliveredBotMessageIds.contains(messageId)) {
             // WS 未送达时的兜底；分条规则与 messageId 与 WS/历史补拉完全一致
             saveBotReply(
                 messageId = messageId,
@@ -620,25 +470,14 @@ class ChatViewModel @Inject constructor(
         chatRepository.markUserMessageSent(requestId)
 
         if (payload.content.isNotBlank()) {
-            val segments = splitBotSegments(payload.content)
-            if (segments.isEmpty()) {
+            BotReplySegments.create(payload.messageId, payload.content, payload.timestamp).forEach { segment ->
                 chatRepository.saveBotMessage(
-                    messageId = payload.messageId,
+                    messageId = segment.messageId,
                     sessionId = sessionId,
-                    content = payload.content,
+                    content = segment.content,
                     isStreaming = false,
-                    timestamp = payload.timestamp
+                    timestamp = segment.timestamp
                 )
-            } else {
-                segments.forEachIndexed { index, segment ->
-                    chatRepository.saveBotMessage(
-                        messageId = "${payload.messageId}_$index",
-                        sessionId = sessionId,
-                        content = segment,
-                        isStreaming = false,
-                        timestamp = payload.timestamp + index
-                    )
-                }
             }
         }
 
@@ -868,7 +707,9 @@ class ChatViewModel @Inject constructor(
         if (uris.isEmpty()) return
         val existing = _uiState.value.selectedImages.toMutableList()
         val picked = uris.take(3 - existing.size).mapNotNull { uri ->
-            createUiAttachment(uri)
+            val result = imageAttachmentManager.createUiAttachment(uri)
+            result.error?.let { error -> _uiState.update { it.copy(error = error) } }
+            result.value
         }
         _uiState.update { it.copy(selectedImages = (existing + picked).take(3)) }
     }
@@ -894,7 +735,7 @@ class ChatViewModel @Inject constructor(
 
             chatRepository.clearSession(sessionId)
             // 防止清空后立即被历史补拉回灌
-            lastSyncedTimestampMs = System.currentTimeMillis()
+            timelineSynchronizer.advanceHistoryCursor(System.currentTimeMillis())
 
             _uiState.update { it.copy(botActivity = BotActivityStatus.IDLE, botStage = null, error = null, selectedImages = emptyList()) }
             _sideEffects.emit(ChatSideEffect.ShowToast("会话已清空"))
@@ -921,9 +762,13 @@ class ChatViewModel @Inject constructor(
         _uiState.update { it.copy(input = "", selectedImages = emptyList(), botActivity = BotActivityStatus.SENDING, error = null) }
 
         viewModelScope.launch {
-            val prepared = prepareOutgoingPayload(current, selectedImages)
+            // If resume cleanup already started, do not create a new pending row until it finishes.
+            streamingMutex.withLock { Unit }
+            val preparedResult = imageAttachmentManager.prepare(current, selectedImages)
+            val prepared = preparedResult.value
             if (prepared == null) {
                 pendingRequestIds.remove(requestId)
+                preparedResult.error?.let { error -> _uiState.update { it.copy(error = error) } }
                 _uiState.update { it.copy(botActivity = if (pendingRequestIds.isEmpty()) BotActivityStatus.IDLE else BotActivityStatus.SENDING, botStage = null) }
                 return@launch
             }
@@ -1056,28 +901,13 @@ class ChatViewModel @Inject constructor(
         receivedFirstChunk.clear()
     }
 
-    private fun splitBotSegments(content: String): List<String> {
-        return content
-            .split('\n')
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-    }
 
-    /**
-     * 落库一条 Taki 回复：按换行分条，**统一使用 `${messageId}_$index` 规则**。
-     *
-     * WS 推送（`handleReplyStream`）、HTTP 兜底（`persistInteractionLocally`）与历史补拉
-     * （`applyHistoryItems`）三条路径必须写出完全相同的行，Room 的 REPLACE 才能天然去重；
-     * 任何一条写成「整段内容 + 原始 messageId」都会多出一个气泡
-     * （互动礼物曾因此出现"整段 + 分条"的双重回复）。
-     */
     /**
      * 记录「已由 WS 推送落库」的回复 id：互动走 HTTP 时能据此判断是否还需要兜底写入，
      * 避免 HTTP 兜底用毫秒级新时间戳覆盖 WS 版本（内容相同但会闪一下）。
      */
     private fun markBotReplyDelivered(messageId: String) {
-        if (deliveredBotMessageIds.size > 200) deliveredBotMessageIds.clear()
-        deliveredBotMessageIds.add(messageId)
+        deliveredBotMessageIds.mark(messageId)
     }
 
     private suspend fun saveBotReply(
@@ -1086,190 +916,34 @@ class ChatViewModel @Inject constructor(
         contentType: String = ContentType.TEXT,
         modelProvider: String = ModelProvider.DEEPSEEK,
         timestamp: Long = System.currentTimeMillis()
-    ) {        val segments = splitBotSegments(content)
-        if (segments.isEmpty()) {
+    ) {
+        BotReplySegments.create(messageId, content, timestamp).forEach { segment ->
             chatRepository.saveBotMessage(
-                messageId = messageId,
+                messageId = segment.messageId,
                 sessionId = sessionId,
-                content = content,
+                content = segment.content,
                 isStreaming = false,
                 contentType = contentType,
                 modelProvider = modelProvider,
-                timestamp = timestamp
+                timestamp = segment.timestamp
             )
-        } else {
-            segments.forEachIndexed { index, segment ->
-                chatRepository.saveBotMessage(
-                    messageId = "${messageId}_$index",
-                    sessionId = sessionId,
-                    content = segment,
-                    isStreaming = false,
-                    contentType = contentType,
-                    modelProvider = modelProvider,
-                    timestamp = timestamp + index
-                )
-            }
         }
     }
 
     private fun syncHistoryFromServer(force: Boolean = false) {
         viewModelScope.launch {
-            runCatching {
-                chatApi.history(
-                    since = if (force) 0L else lastSyncedTimestampMs,
-                    limit = 300
-                )
-            }.onSuccess { response ->
-                val items = response.getAsJsonObject("data")
-                    ?.getAsJsonArray("items")
-                    ?: JsonArray()
-                val (inserted, updated) = applyHistoryItems(items)
-                android.util.Log.i(
-                    "ChatViewModel",
-                    "history sync ok: items=${items.size()} inserted=$inserted healed=$updated force=$force"
-                )
-            }.onFailure { e ->
-                // 历史补拉失败不影响实时聊天，但必须可见（此前静默吞噬导致排查困难）
-                android.util.Log.w("ChatViewModel", "history sync failed: ${e.message}", e)
-                if (force) {
-                    manualReconnectPendingFullSync = true
-                }
+            if (!timelineSynchronizer.syncHistory(force).success && force) {
+                manualReconnectPendingFullSync = true
             }
         }
     }
 
     private suspend fun handleMemoryFactCreated(message: IncomingMessage.MemoryFactCreated) {
-        val payload = message.payload
-        userFactRepository.upsertAll(
-            listOf(
-                UserFactEntity(
-                    factId = payload.factId,
-                    userId = payload.userId,
-                    fact = payload.fact,
-                    timestamp = payload.timestamp
-                )
-            )
-        )
-        if (payload.timestamp > lastSyncedFactTimestampMs) {
-            lastSyncedFactTimestampMs = payload.timestamp
-        }
+        timelineSynchronizer.onMemoryFactCreated(message)
     }
 
     private fun syncMemoryFactsFromServer() {
-        viewModelScope.launch {
-            runCatching {
-                chatApi.memoryFacts(
-                    since = lastSyncedFactTimestampMs,
-                    limit = 200
-                )
-            }.onSuccess { response ->
-                val items = response.getAsJsonObject("data")
-                    ?.getAsJsonArray("items")
-                    ?: JsonArray()
-                applyMemoryFactItems(items)
-            }.onFailure { e ->
-                // 记忆补拉失败不影响聊天主流程，但同样记录日志
-                android.util.Log.w("ChatViewModel", "memory facts sync failed: ${e.message}", e)
-            }
-        }
-    }
-
-    /**
-     * 把服务端历史落库，返回 (新增条数, 修复条数)。
-     *
-     * 「修复条数」是重点：本地卡在 sending / error 的行会被改回服务端确认的状态，
-     * 所以历史补拉成功后，之前那条「发送失败」应该自己消失。
-     */
-    private suspend fun applyHistoryItems(items: JsonArray): Pair<Int, Int> {
-        var inserted = 0
-        var updated = 0
-        fun tally(outcome: SyncOutcome) {
-            when (outcome) {
-                SyncOutcome.INSERTED -> inserted++
-                SyncOutcome.UPDATED -> updated++
-                SyncOutcome.UNCHANGED -> Unit
-            }
-        }
-
-        for (i in 0 until items.size()) {
-            runCatching {
-                val item = items[i].asJsonObjectOrNull() ?: return@runCatching
-                // 服务端已按 auth.user_id 过滤，客户端不再做 userId 白名单校验
-                val messageId = item.getStringOrNull("messageId") ?: return@runCatching
-                val role = item.getStringOrNull("role") ?: return@runCatching
-                val content = item.getStringOrNull("content") ?: return@runCatching
-                if (content.isBlank()) return@runCatching
-                val timestamp = item.getLongOrNull("timestamp") ?: return@runCatching
-
-                if (role == "user") {
-                    tally(
-                        chatRepository.saveExternalMessage(
-                            messageId = messageId,
-                            sessionId = sessionId,
-                            role = MessageRole.USER,
-                            content = content,
-                            timestamp = timestamp
-                        )
-                    )
-                } else {
-                    val segments = splitBotSegments(content)
-                    if (segments.isEmpty()) {
-                        tally(
-                            chatRepository.saveExternalMessage(
-                                messageId = messageId,
-                                sessionId = sessionId,
-                                role = MessageRole.BOT,
-                                content = content,
-                                timestamp = timestamp
-                            )
-                        )
-                    } else {
-                        segments.forEachIndexed { index, segment ->
-                            tally(
-                                chatRepository.saveExternalMessage(
-                                    messageId = "${messageId}_$index",
-                                    sessionId = sessionId,
-                                    role = MessageRole.BOT,
-                                    content = segment,
-                                    timestamp = timestamp + index
-                                )
-                            )
-                        }
-                    }
-                }
-
-                if (timestamp > lastSyncedTimestampMs) {
-                    lastSyncedTimestampMs = timestamp
-                }
-            }
-        }
-        return inserted to updated
-    }
-
-    private suspend fun applyMemoryFactItems(items: JsonArray) {
-        val facts = mutableListOf<UserFactEntity>()
-        for (i in 0 until items.size()) {
-            runCatching {
-                val item = items[i].asJsonObjectOrNull() ?: return@runCatching
-                val factId = item.getStringOrNull("factId") ?: return@runCatching
-                val userId = item.getStringOrNull("userId") ?: return@runCatching
-                val fact = item.getStringOrNull("fact") ?: return@runCatching
-                val timestamp = item.getLongOrNull("timestamp") ?: return@runCatching
-                facts += UserFactEntity(
-                    factId = factId,
-                    userId = userId,
-                    fact = fact,
-                    timestamp = timestamp
-                )
-            }
-        }
-        if (facts.isNotEmpty()) {
-            userFactRepository.upsertAll(facts)
-            val latest = facts.maxOf { it.timestamp }
-            if (latest > lastSyncedFactTimestampMs) {
-                lastSyncedFactTimestampMs = latest
-            }
-        }
+        viewModelScope.launch { timelineSynchronizer.syncMemoryFacts() }
     }
 
     private fun ChatMessageEntity.toUiModel(attachments: List<ChatAttachmentUi>) = ChatMessageUi(
@@ -1285,93 +959,5 @@ class ChatViewModel @Inject constructor(
         isStreaming = status == MessageStatus.STREAMING
     )
 
-    private fun JsonObject.getStringOrNull(name: String): String? {
-        val v = get(name) ?: return null
-        return if (v.isJsonNull) null else v.asString
-    }
 
-    private fun JsonObject.getLongOrNull(name: String): Long? {
-        val v = get(name) ?: return null
-        return if (v.isJsonNull) null else v.asLong
-    }
-
-    private fun com.google.gson.JsonElement.asJsonObjectOrNull(): JsonObject? {
-        return if (isJsonObject) asJsonObject else null
-    }
-
-    private suspend fun prepareOutgoingPayload(text: String, selectedImages: List<ChatAttachmentUi>): OutgoingPayload? {
-        val encodedImages = mutableListOf<OutgoingImage>()
-        for (item in selectedImages.take(3)) {
-            val uri = runCatching { Uri.parse(item.localUri) }.getOrNull() ?: continue
-            val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-            if (bytes == null) {
-                _uiState.update { it.copy(error = "读取图片失败") }
-                return null
-            }
-            if (bytes.size > MAX_IMAGE_BYTES) {
-                _uiState.update { it.copy(error = MAX_IMAGE_TIPS) }
-                return null
-            }
-            encodedImages += OutgoingImage(
-                ui = item,
-                dataBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-            )
-        }
-        if (encodedImages.isEmpty() && text.isBlank()) {
-            _uiState.update { it.copy(error = "消息内容不能为空") }
-            return null
-        }
-        return OutgoingPayload(text = text, images = encodedImages)
-    }
-
-    private fun createUiAttachment(uri: Uri): ChatAttachmentUi? {
-        val resolver = context.contentResolver
-        val mimeType = resolver.getType(uri) ?: "image/jpeg"
-        if (mimeType != "image/jpeg" && mimeType != "image/png") {
-            _uiState.update { it.copy(error = "仅支持 JPG/PNG") }
-            return null
-        }
-        val fileSize = resolver.query(uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)?.use { c ->
-            if (c.moveToFirst()) c.getLong(0) else -1L
-        } ?: -1L
-        if (fileSize > MAX_IMAGE_BYTES) {
-            _uiState.update { it.copy(error = MAX_IMAGE_TIPS) }
-            return null
-        }
-        val bounds = resolver.openInputStream(uri)?.use { input ->
-            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeStream(input, null, options)
-            options
-        }
-        // 复制到应用私有目录：content:// 临时授权与相机临时文件会在会话结束后失效，
-        // 消息重建/App 重启后 AsyncImage 将无法再读取，复制后 localUri 永久可读
-        val persistedUri = copyToPrivateStorage(uri, mimeType)
-            ?: run {
-                _uiState.update { it.copy(error = "读取图片失败") }
-                return null
-            }
-        return ChatAttachmentUi(
-            id = UUID.randomUUID().toString(),
-            localUri = persistedUri.toString(),
-            mimeType = mimeType,
-            fileSize = if (fileSize < 0L) 0L else fileSize,
-            width = bounds?.outWidth?.takeIf { it > 0 },
-            height = bounds?.outHeight?.takeIf { it > 0 }
-        )
-    }
-
-    private fun copyToPrivateStorage(source: Uri, mimeType: String): Uri? {
-        return runCatching {
-            val dir = java.io.File(context.filesDir, "chat_attachments").apply {
-                if (!exists()) mkdirs()
-            }
-            val ext = if (mimeType == "image/png") "png" else "jpg"
-            val target = java.io.File(dir, "${UUID.randomUUID().toString()}.$ext")
-            val input = context.contentResolver.openInputStream(source) ?: return null
-            input.use { stream ->
-                java.io.FileOutputStream(target).use { output -> stream.copyTo(output) }
-            }
-            Uri.fromFile(target)
-        }.getOrNull()
-    }
 }

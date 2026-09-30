@@ -13,6 +13,7 @@ public sealed class DesktopRuntime : IDisposable
     private readonly IPowerEvents _power;
     private readonly ILogger<DesktopRuntime> _logger;
     private readonly IAuthService _auth;
+    private readonly IGamificationService _gamification;
     private readonly SemaphoreSlim _recoveryGate = new(1, 1);
     private int _started;
     private volatile bool _disposed;
@@ -23,7 +24,8 @@ public sealed class DesktopRuntime : IDisposable
         IReminderScheduler reminders,
         IPowerEvents power,
         ILogger<DesktopRuntime> logger,
-        IAuthService auth)
+        IAuthService auth,
+        IGamificationService gamification)
     {
         _chat = chat;
         _sync = sync;
@@ -31,6 +33,7 @@ public sealed class DesktopRuntime : IDisposable
         _power = power;
         _logger = logger;
         _auth = auth;
+        _gamification = gamification;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -83,6 +86,7 @@ public sealed class DesktopRuntime : IDisposable
 
             await _sync.SyncFullAsync(cancellationToken).ConfigureAwait(false);
             await _sync.SyncFactsAsync(cancellationToken).ConfigureAwait(false);
+            await _gamification.RefreshOverviewAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -107,6 +111,7 @@ public sealed class DesktopRuntime : IDisposable
             await _chat.ReconnectAsync().ConfigureAwait(false);
             await _sync.SyncFullAsync(cancellationToken).ConfigureAwait(false);
             await _sync.SyncFactsAsync(cancellationToken).ConfigureAwait(false);
+            await _gamification.RefreshOverviewAsync(cancellationToken).ConfigureAwait(false);
             if (includeOverdueReminders)
             {
                 await _reminders.ResendOverdueAsync(cancellationToken).ConfigureAwait(false);

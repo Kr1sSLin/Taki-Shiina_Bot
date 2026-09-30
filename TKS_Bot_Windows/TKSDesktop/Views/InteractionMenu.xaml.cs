@@ -17,6 +17,7 @@ public partial class InteractionMenu : UserControl
     public InteractionMenu()
     {
         InitializeComponent();
+        Unloaded += (_, _) => Detach();
         Loaded += OnLoaded;
         DataContextChanged += OnDataContextChanged;
     }
@@ -27,7 +28,6 @@ public partial class InteractionMenu : UserControl
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         Attach();
-        _ = LoadAsync();
     }
 
     private void OnDataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
@@ -43,6 +43,7 @@ public partial class InteractionMenu : UserControl
             return;
         }
 
+        if (ReferenceEquals(_viewModel, menu)) return;
         _viewModel = menu;
         menu.CloseRequested += OnCloseRequested;
     }
@@ -66,7 +67,12 @@ public partial class InteractionMenu : UserControl
     {
         if (sender is Button { CommandParameter: InteractionItemViewModel item } && _viewModel is { } menu)
         {
-            menu.SendCommand.Execute(item);
+            if (menu.SendCommand.CanExecute(item)) menu.SendCommand.Execute(item);
         }
+    }
+
+    private void IconImage_Failed(object sender, ExceptionRoutedEventArgs e)
+    {
+        if (sender is Image image) image.Visibility = Visibility.Collapsed;
     }
 }

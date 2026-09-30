@@ -125,6 +125,9 @@ def snippet_content(ws_port: int) -> str:
         "# 注意：proxy_pass 后面不要带路径，否则会剥掉 /api/v1/ 前缀导致 404",
     ]
     for prefix in LOCATION_PREFIXES:
+        if prefix == "admin":
+            lines.append("location ^~ /api/v1/admin/ { deny all; }")
+            continue
         path = f"/api/v1/{prefix}/"
         pad = " " * max(1, 26 - len(path))
         extra = " proxy_read_timeout 60s; proxy_buffering off;" if prefix == "interaction" else " proxy_read_timeout 60s;"
@@ -136,8 +139,8 @@ def check_nginx(binary: str) -> bool:
     try:
         result = subprocess.run([binary, "-t"], capture_output=True, text=True)
     except FileNotFoundError:
-        log(f"⚠️ 找不到 {binary}，跳过语法校验（请自行执行 nginx -t）")
-        return True
+        log(f"❌ 找不到 {binary}，无法验证配置，拒绝应用修改")
+        return False
     output = (result.stdout + result.stderr).strip()
     if output:
         log(output)
@@ -219,7 +222,7 @@ def main() -> int:
 
     log("")
     log("== 3/4 修改主配置 ==")
-    if any(snippet_path in line for line in lines):
+    if any(snippet_path in line.split("#", 1)[0] for line in lines[begin : end + 1]):
         log("已存在该 include，跳过插入（幂等）")
         changed = False
     else:
@@ -243,18 +246,27 @@ def main() -> int:
             log(f"  写入 {snippet_path}")
             log(f"  修改 {conf_path}（插入 1 行 include）")
         else:
-            log("  无需改动")
+            log(f"  更新已有片段 {snippet_path}（管理接口 deny all）")
         return 0
+
+    # Existing includes must also receive security fixes to generated snippets.
+    previous_snippet = None
+    if os.path.exists(snippet_path):
+        with open(snippet_path, encoding="utf-8") as handle:
+            previous_snippet = handle.read()
+    snippet_changed = previous_snippet != snippet_content(args.ws_port)
+    if snippet_changed:
+        if previous_snippet is not None:
+            shutil.copy2(snippet_path, f"{snippet_path}.bak.{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}")
+        os.makedirs(os.path.dirname(snippet_path) or ".", exist_ok=True)
+        with open(snippet_path, "w", encoding="utf-8") as handle:
+            handle.write(snippet_content(args.ws_port))
 
     if changed:
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         backup = f"{conf_path}.bak.{stamp}"
         shutil.copy2(conf_path, backup)
         log(f"已备份原配置：{backup}")
-        os.makedirs(os.path.dirname(snippet_path), exist_ok=True)
-        with open(snippet_path, "w", encoding="utf-8") as handle:
-            handle.write(snippet_content(args.ws_port))
-        log(f"已写入片段：{snippet_path}")
         with open(conf_path, "w", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
         log(f"已更新主配置：{conf_path}")
@@ -263,15 +275,21 @@ def main() -> int:
     log("== 4/4 语法校验与生效 ==")
     if not check_nginx(args.nginx_bin):
         log("❌ nginx -t 未通过，正在回滚…")
+        if snippet_changed:
+            if previous_snippet is None:
+                os.remove(snippet_path)
+            else:
+                with open(snippet_path, "w", encoding="utf-8") as handle:
+                    handle.write(previous_snippet)
         if changed:
             shutil.copy2(backup, conf_path)
             log(f"已回滚 {conf_path}（备份仍在 {backup}）")
             check_nginx(args.nginx_bin)
         return 1
     log("✅ nginx -t 通过")
-    if changed and not args.no_reload:
+    if (changed or snippet_changed) and not args.no_reload:
         reload_nginx(args.nginx_bin)
-    elif not changed:
+    elif not changed and not snippet_changed:
         log("配置未变化，无需 reload")
 
     log("")

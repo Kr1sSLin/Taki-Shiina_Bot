@@ -28,7 +28,7 @@ public sealed class InteractionItemViewModel : ObservableObject
         // 图标三级回退：iconUrl → icon（emoji）→ 程序化占位（FR-W-INT-9 / EDGE-W-23）。
         IconUrl = string.IsNullOrWhiteSpace(dto.IconUrl) ? null : dto.IconUrl;
         Emoji = string.IsNullOrWhiteSpace(dto.Icon) ? null : dto.Icon;
-        UsePlaceholder = IconUrl is null && Emoji is null;
+        UsePlaceholder = Emoji is null;
 
         // ⚠️ 置灰一律用服务端 affordable（FR-W-INT-4）。
         Affordable = dto.Affordable;
@@ -56,6 +56,7 @@ public sealed class InteractionItemViewModel : ObservableObject
 
     /// <summary>是否使用程序化占位图（第三级回退）。</summary>
     public bool UsePlaceholder { get; }
+    public bool HasEmoji => !string.IsNullOrWhiteSpace(Emoji);
 
     /// <summary>服务端判定的可购买性（**唯一置灰依据**）。</summary>
     public bool Affordable { get; }
@@ -95,6 +96,11 @@ public sealed partial class InteractionMenuViewModel : ObservableObject, IDispos
     private readonly IUiDispatcher _dispatcher;
 
     private bool _disposed;
+    private string? _pendingRequestId;
+    private string? _pendingItemId;
+    private string? _pendingText;
+    [ObservableProperty]
+    private bool _isSending;
 
     /// <summary>构造。</summary>
     public InteractionMenuViewModel(IGamificationService gamification, IUiDispatcher dispatcher)
@@ -109,6 +115,7 @@ public sealed partial class InteractionMenuViewModel : ObservableObject, IDispos
 
     /// <summary>请求关闭浮层（送出成功 / 用户点击遮罩）。</summary>
     public event EventHandler? CloseRequested;
+    public event EventHandler<string>? Sent;
 
     /// <summary>可购买物品（按服务端 <c>sort_order</c>）。</summary>
     public ObservableCollection<InteractionItemViewModel> Items { get; } = [];
@@ -145,7 +152,10 @@ public sealed partial class InteractionMenuViewModel : ObservableObject, IDispos
     public bool IsEmpty => Items.Count == 0;
 
     /// <summary>是否可送出（在线、有物品、非加载中）。</summary>
-    public bool CanSend => !IsOfflineCache && !IsLoading && Items.Count > 0;
+    public bool CanSend => !IsOfflineCache && !IsLoading && !IsSending && Items.Count > 0;
+
+    partial void OnIsSendingChanged(bool value) => OnPropertyChanged(nameof(CanSend));
+    partial void OnIsLoadingChanged(bool value) => OnPropertyChanged(nameof(CanSend));
 
     /* ---- 静态 UI 文案（XAML 只绑定 —— V-W-S8） ---- */
 
@@ -181,18 +191,6 @@ public sealed partial class InteractionMenuViewModel : ObservableObject, IDispos
     /// </summary>
     public async Task LoadAsync(CancellationToken ct = default)
     {
-        if (IsOfflineCache)
-        {
-            // 离线缓存态不请求、不展示可点项（FR-W-PROG-4）。
-            await _dispatcher.InvokeAsync(() =>
-            {
-                Items.Clear();
-                OnPropertyChanged(nameof(IsEmpty));
-                OnPropertyChanged(nameof(CanSend));
-            }).ConfigureAwait(true);
-            return;
-        }
-
         IsLoading = true;
         try
         {
@@ -212,6 +210,8 @@ public sealed partial class InteractionMenuViewModel : ObservableObject, IDispos
                 }
 
                 Balance = data.Balance;
+                IsOfflineCache = false;
+                OfflineNoticeText = string.Empty;
                 OnPropertyChanged(nameof(IsEmpty));
                 OnPropertyChanged(nameof(CanSend));
             }).ConfigureAwait(true);
@@ -221,6 +221,8 @@ public sealed partial class InteractionMenuViewModel : ObservableObject, IDispos
             await _dispatcher.InvokeAsync(() =>
             {
                 ShowStatus(I18n.T(Contracts.ErrorCatalog.UnknownI18nKey));
+                IsOfflineCache = true;
+                OnPropertyChanged(nameof(CanSend));
             }).ConfigureAwait(true);
         }
         finally
@@ -235,23 +237,40 @@ public sealed partial class InteractionMenuViewModel : ObservableObject, IDispos
     [RelayCommand]
     private async Task SendAsync(InteractionItemViewModel? item)
     {
-        if (item is null || !item.CanSend || IsOfflineCache)
+        if (item is null || !item.CanSend || !CanSend)
         {
             return;
         }
 
-        var requestId = Guid.NewGuid().ToString("D");
+        if (Balance < item.CostPoints)
+        {
+            ShowStatus(I18n.T("interaction.insufficient", item.CostPoints - Balance));
+            await LoadAsync().ConfigureAwait(true);
+            return;
+        }
+        var text = MessageText;
+        if (_pendingRequestId is null || _pendingItemId != item.ItemId || _pendingText != text)
+        {
+            _pendingRequestId = Guid.NewGuid().ToString("D");
+            _pendingItemId = item.ItemId;
+            _pendingText = text;
+        }
+        var requestId = _pendingRequestId;
+        IsSending = true;
         ShowStatus(I18n.T("interaction.waiting"));
 
         try
         {
             var outcome = await _gamification
-                .SendInteractionAsync(item.ItemId, requestId, string.IsNullOrWhiteSpace(MessageText) ? null : MessageText)
+                .SendInteractionAsync(item.ItemId, requestId, string.IsNullOrWhiteSpace(text) ? null : text)
                 .ConfigureAwait(true);
 
             if (outcome.Success)
             {
                 ShowStatus(string.Empty);
+                _pendingRequestId = null;
+                if (MessageText == text) MessageText = string.Empty;
+                Sent?.Invoke(this, text);
                 CloseRequested?.Invoke(this, EventArgs.Empty);
                 await LoadAsync().ConfigureAwait(true);
                 return;
@@ -262,7 +281,9 @@ public sealed partial class InteractionMenuViewModel : ObservableObject, IDispos
                 ? "interaction.refunded"
                 : outcome.I18nKey ?? Contracts.ErrorCatalog.I18nKeyOf(outcome.ErrorCode);
 
-            ShowStatus(I18n.T(key));
+            if (outcome.ErrorCode.HasValue) _pendingRequestId = null;
+            ShowStatus(string.IsNullOrWhiteSpace(outcome.FallbackText)
+                ? I18n.T(key) : outcome.FallbackText + " " + I18n.T(key));
             await LoadAsync().ConfigureAwait(true);
         }
         catch (OperationCanceledException)
@@ -274,6 +295,7 @@ public sealed partial class InteractionMenuViewModel : ObservableObject, IDispos
         {
             ShowStatus(I18n.T(Contracts.ErrorCatalog.UnknownI18nKey));
         }
+        finally { IsSending = false; }
     }
 
     /// <summary>取消 / 关闭浮层。</summary>

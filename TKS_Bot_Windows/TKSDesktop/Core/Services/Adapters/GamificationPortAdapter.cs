@@ -173,9 +173,9 @@ public sealed class GamificationPortAdapter : IGamificationPort
 
             // 未知码 / 无码 → 中性兜底文案（不得显示原始数字，V-W-S6）。
             var code = result.Error?.Code;
-            return PortCall<T>.Fail(
-                code?.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                ErrorCatalog.I18nKeyOf(code));
+            return new PortCall<T>(false, result.FailureValue,
+                code?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? result.Error?.ClientCode,
+                result.ErrorKey);
         }
         catch (OperationCanceledException)
         {

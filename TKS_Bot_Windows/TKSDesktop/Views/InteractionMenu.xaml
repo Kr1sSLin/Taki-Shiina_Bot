@@ -44,7 +44,7 @@
             </StackPanel>
 
             <ScrollViewer Grid.Row="2" Style="{StaticResource Tks.ScrollViewer}">
-                <ItemsControl ItemsSource="{Binding Items}">
+                <ItemsControl ItemsSource="{Binding Items}" IsEnabled="{Binding CanSend}">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
                             <WrapPanel Orientation="Horizontal" />
@@ -59,15 +59,15 @@
                                         CommandParameter="{Binding}"
                                         Click="Item_Click"
                                         IsEnabled="{Binding CanSend}"
+                                        ToolTip="{Binding InsufficientText}" ToolTipService.ShowOnDisabled="True"
                                         AutomationProperties.Name="{Binding Name}">
                                     <StackPanel>
+                                      <Grid Height="30">
                                         <!-- Second fallback level: emoji from the server. -->
                                         <TextBlock FontSize="26"
                                                    HorizontalAlignment="Center"
                                                    Text="{Binding DisplayGlyph}"
-                                                   Visibility="{Binding UsePlaceholder,
-                                                                        Converter={StaticResource Tks.InverseBool},
-                                                                        ConverterParameter=visible}" />
+                                                   Visibility="{Binding HasEmoji, Converter={StaticResource Tks.BoolToVisibility}}" />
                                         <!-- Third fallback level: programmatic placeholder. -->
                                         <Image Width="28"
                                                Height="28"
@@ -75,6 +75,8 @@
                                                Source="{Binding Name, Converter={StaticResource Tks.AssetPlaceholder}}"
                                                Visibility="{Binding UsePlaceholder,
                                                                     Converter={StaticResource Tks.BoolToVisibility}}" />
+                                        <Image Width="28" Height="28" Source="{Binding IconUrl}" ImageFailed="IconImage_Failed" />
+                                      </Grid>
                                         <TextBlock Style="{StaticResource Tks.Text.Body}"
                                                    Margin="0,4,0,0"
                                                    HorizontalAlignment="Center"
@@ -116,7 +118,7 @@
             <StackPanel Grid.Row="3" Margin="0,6,0,0">
                 <TextBlock Style="{StaticResource Tks.Text.SectionHeader}"
                            Text="{Binding TitleText}" />
-                <TextBox Style="{StaticResource Tks.TextBox.Base}"
+                <TextBox Style="{StaticResource Tks.TextBox.Base}" IsEnabled="{Binding IsSending, Converter={StaticResource Tks.InverseBool}}"
                          Text="{Binding MessageText, UpdateSourceTrigger=PropertyChanged}" />
             </StackPanel>
 

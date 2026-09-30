@@ -105,6 +105,35 @@
     <SolidColorBrush x:Key="Tks.Brush.GlassTint" Color="{StaticResource Tks.Light.GlassTint}" />
     <SolidColorBrush x:Key="Tks.Brush.Doodle" Color="{StaticResource Tks.Light.Doodle}" />
 
+    <!-- Initial light glass material; ThemeApplier replaces these brushes on each theme switch. -->
+    <LinearGradientBrush x:Key="Tks.Brush.GlassSurface" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Offset="0" Color="#A6FFFFFF" />
+        <GradientStop Offset="0.12" Color="#5FFFFFFF" />
+        <GradientStop Offset="1" Color="#82FFFFFF" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="Tks.Brush.GlassBorder" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Offset="0" Color="#C8FFFFFF" />
+        <GradientStop Offset="0.45" Color="#66FFFFFF" />
+        <GradientStop Offset="1" Color="#32FFFFFF" />
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="Tks.Brush.GlassButton" Color="#6BFFFFFF" />
+
+    <!-- Reference composer keeps its charcoal/violet material in both themes. -->
+    <LinearGradientBrush x:Key="Tks.Brush.ComposerSurface" StartPoint="0,0" EndPoint="1,0.5">
+        <GradientStop Offset="0" Color="#CE303037" />
+        <GradientStop Offset="0.48" Color="#B514141C" />
+        <GradientStop Offset="1" Color="#A608080E" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="Tks.Brush.ComposerRim" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Offset="0" Color="#997F7F86" />
+        <GradientStop Offset="1" Color="#66585860" />
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="Tks.Brush.ComposerButton" Color="#FF292835" />
+    <SolidColorBrush x:Key="Tks.Brush.ComposerSend" Color="#FF3C3B47" />
+    <SolidColorBrush x:Key="Tks.Brush.ComposerIcon" Color="#FFAAA9C0" />
+    <SolidColorBrush x:Key="Tks.Brush.ComposerPlaceholder" Color="#FF878592" />
+    <SolidColorBrush x:Key="Tks.Brush.ComposerText" Color="#FFF1F0F5" />
+
     <LinearGradientBrush x:Key="Tks.Brush.OpaqueFallback"
                          StartPoint="0,0"
                          EndPoint="1,1"

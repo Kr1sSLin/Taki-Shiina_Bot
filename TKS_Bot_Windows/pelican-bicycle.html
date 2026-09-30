@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>月夜骑行的鹈鹕</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      min-height: 100svh;
+      display: grid;
+      place-items: center;
+      margin: 0;
+      background: #101b35;
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    }
+    .artboard {
+      position: relative;
+      width: min(100%, 1050px);
+      overflow: hidden;
+      background: #203252;
+      box-shadow: 0 30px 90px #080e22b0;
+    }
+    svg { display: block; width: 100%; height: auto; }
+    button {
+      position: absolute;
+      right: clamp(12px, 2.5vw, 28px);
+      bottom: clamp(12px, 2.5vw, 28px);
+      min-width: 5.5em;
+      padding: .65em 1.1em;
+      border: 2px solid #ffddad;
+      border-radius: 999px;
+      background: #142b4eea;
+      color: #fff0d7;
+      font-family: inherit;
+      font-size: clamp(12px, 1.5vw, 15px);
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { background: #24466c; }
+    button:focus-visible { outline: 3px solid #ffab83; outline-offset: 3px; }
+  </style>
+</head>
+<body>
+  <main class="artboard">
+    <svg id="scene" viewBox="0 0 1000 650" role="img" aria-labelledby="title description" xmlns="http://www.w3.org/2000/svg">
+      <title id="title">月夜骑行的鹈鹕</title>
+      <desc id="description">鹈鹕骑着珊瑚红色的自行车穿过月夜海港。车轮、双腿、脚踏、海水与路面持续运动。</desc>
+      <defs>
+        <linearGradient id="night" x2="0" y2="1">
+          <stop offset="0" stop-color="#17234b"/>
+          <stop offset=".65" stop-color="#684f80"/>
+          <stop offset="1" stop-color="#c4818c"/>
+        </linearGradient>
+        <linearGradient id="sea" x2="0" y2="1">
+          <stop offset="0" stop-color="#456c86"/>
+          <stop offset="1" stop-color="#1e4667"/>
+        </linearGradient>
+        <linearGradient id="bill" x2="0" y2="1">
+          <stop offset="0" stop-color="#ffd990"/>
+          <stop offset="1" stop-color="#ffad78"/>
+        </linearGradient>
+        <radialGradient id="moonlight">
+          <stop offset="0" stop-color="#ffe9bf" stop-opacity=".4"/>
+          <stop offset="1" stop-color="#ffe9bf" stop-opacity="0"/>
+        </radialGradient>
+        <filter id="glow" x="-100%" y="-100%" width="300%" height="300%">
+          <feGaussianBlur stdDeviation="7"/>
+        </filter>
+        <g id="wheel-shape">
+          <circle r="86" fill="#1a3354" stroke="#ffd3af" stroke-width="11"/>
+          <circle r="74" fill="none" stroke="#fb8d83" stroke-width="4"/>
+          <g fill="none" stroke="#9db8bd" stroke-width="2.5" stroke-linecap="round">
+            <path d="M0-72V72 M-72 0H72 M-51-51 51 51 M51-51-51 51"/>
+            <path d="M-27-67 27 67 M27-67-27 67 M-67-27 67 27 M67-27-67 27"/>
+          </g>
+          <circle r="12" fill="#ffe0b8" stroke="#31445b" stroke-width="5"/>
+        </g>
+      </defs>
+
+      <!-- 月夜的海港 -->
+      <rect width="1000" height="650" fill="url(#night)"/>
+      <circle cx="804" cy="123" r="116" fill="url(#moonlight)"/>
+      <circle cx="804" cy="123" r="51" fill="#ffeac5"/>
+      <circle cx="790" cy="111" r="9" fill="#efd5ad" opacity=".55"/>
+      <circle cx="823" cy="137" r="6" fill="#efd5ad" opacity=".5"/>
+      <g fill="#fff0cd">
+        <circle cx="77" cy="117" r="3"><animate attributeName="opacity" values="1;.25;1" dur="2.3s" repeatCount="indefinite"/></circle>
+        <circle cx="184" cy="159" r="2"/><circle cx="267" cy="69" r="2.5"/>
+        <circle cx="365" cy="140" r="2"><animate attributeName="opacity" values=".2;1;.2" dur="3s" repeatCount="indefinite"/></circle>
+        <circle cx="455" cy="60" r="2"/><circle cx="718" cy="54" r="2.5"/>
+        <circle cx="927" cy="76" r="3"><animate attributeName="opacity" values="1;.2;1" dur="1.9s" repeatCount="indefinite"/></circle>
+        <circle cx="918" cy="198" r="2"/><circle cx="690" cy="185" r="2"/>
+      </g>
+      <g fill="none" stroke="#f9e2ca" stroke-width="2" stroke-linecap="round" opacity=".7">
+        <path d="M72 175l-13 5m13-5 10 5"/>
+        <path d="M120 197l-12 4m12-4 11 4"/>
+      </g>
+      <path d="M0 365Q165 306 329 360T664 344T1000 363V515H0Z" fill="#354969"/>
+      <g fill="#253b5c">
+        <path d="M0 386h48v-81h31v81h25v-116h42v116h36v-63h29v63h26v-102h57v102h44v-57h39v57h37v-88h54v88h30v-55h39v55h44v-114h59v114h25v-68h40v68h28v-103h48v103h30v-76h42v76h36v-108h47v108h38v-45h38v100H0Z"/>
+        <path d="M110 270l15-31 16 31Zm550 3 21-46 21 46Zm197 11 20-38 20 38Z"/>
+      </g>
+      <g fill="#ffd9a2" opacity=".7">
+        <path d="M116 291h6v9h-6zm15 0h6v9h-6zm14 22h6v9h-6zm101-8h6v9h-6zm17 0h6v9h-6zm17 22h6v9h-6zm76 14h6v9h-6zm49-26h6v9h-6zm16 0h6v9h-6zm85 0h6v9h-6zm17 0h6v9h-6zm17 21h6v9h-6zm113-37h6v9h-6zm17 0h6v9h-6zm18 22h6v9h-6zm82 17h6v9h-6zm49-17h6v9h-6zm17 0h6v9h-6zm85-15h6v9h-6z"/>
+      </g>
+      <rect y="387" width="1000" height="154" fill="url(#sea)"/>
+      <path d="M0 404h1000M0 455h1000" stroke="#f5c9ad" stroke-width="3" opacity=".35"/>
+      <path d="M-100 426h1200M-100 470h1200M-100 504h1200" stroke="#b7d4cb" stroke-width="3" stroke-dasharray="46 42" opacity=".45">
+        <animate attributeName="stroke-dashoffset" from="0" to="88" dur="3s" repeatCount="indefinite"/>
+      </path>
+      <path d="M0 532h1000v118H0Z" fill="#26364e"/>
+      <path d="M0 558h1000" stroke="#ffbe9c" stroke-width="9"/>
+      <path d="M-120 610h1240" stroke="#f5cfb2" stroke-width="8" stroke-dasharray="70 70" opacity=".75">
+        <animate attributeName="stroke-dashoffset" from="0" to="140" dur=".9s" repeatCount="indefinite"/>
+      </path>
+      <ellipse cx="500" cy="566" rx="370" ry="17" fill="#111d32" opacity=".45"/>
+
+      <!-- 同步转动的车轮与脚踏 -->
+      <g transform="translate(260 475)"><g>
+        <use href="#wheel-shape"/>
+        <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="1.15s" repeatCount="indefinite"/>
+      </g></g>
+      <g transform="translate(740 475)"><g>
+        <use href="#wheel-shape"/>
+        <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="1.15s" repeatCount="indefinite"/>
+      </g></g>
+      <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M260 475 425 344 493 476 260 475M425 344 639 353 493 476M639 353 740 475"
+              stroke="#fff2db" stroke-width="21"/>
+        <path d="M260 475 425 344 493 476 260 475M425 344 639 353 493 476M639 353 740 475"
+              stroke="#ec6f71" stroke-width="12"/>
+        <path d="M639 353 635 327 680 327" stroke="#fff2db" stroke-width="17"/>
+        <path d="M639 353 635 327 680 327" stroke="#b84d69" stroke-width="9"/>
+        <path d="M677 327h18" stroke="#283b56" stroke-width="12"/>
+        <path d="M422 344v-23" stroke="#31435b" stroke-width="8"/>
+        <path d="M391 321q30-9 64-2" stroke="#263b55" stroke-width="12"/>
+      </g>
+      <circle cx="639" cy="353" r="10" fill="#ffd8ac" stroke="#713d60" stroke-width="4"/>
+      <path d="M653 350l19 7" stroke="#a84d68" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="677" cy="357" r="17" fill="#ffe6a0" opacity=".55" filter="url(#glow)"/>
+      <circle cx="677" cy="357" r="8" fill="#ffe6a0" stroke="#fff4d4" stroke-width="3"/>
+      <g transform="translate(493 476)">
+        <g stroke="#31435b" stroke-width="8" stroke-linecap="round">
+          <path d="M-32 0h64"/>
+          <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="2s" repeatCount="indefinite"/>
+        </g>
+      </g>
+
+      <!-- 远侧的腿与脚 -->
+      <path d="M418 340 464 392 461 476" fill="none" stroke="#d17b70" stroke-width="15" stroke-linecap="round" stroke-linejoin="round">
+        <animate attributeName="d" dur="2s" repeatCount="indefinite" values="
+          M418 340 L464 392 L461 476;
+          M418 340 L470 382 L470 453;
+          M418 340 L480 377 L493 444;
+          M418 340 L495 386 L516 453;
+          M418 340 L502 401 L525 476;
+          M418 340 L498 411 L516 499;
+          M418 340 L486 417 L493 508;
+          M418 340 L472 408 L470 499;
+          M418 340 L464 392 L461 476"/>
+      </path>
+      <g>
+        <path d="M-19-4q11-8 23-3l20 9v10h-42q-7-6-1-16Z" fill="#d17b70" stroke="#ffe1bb" stroke-width="3"/>
+        <path d="M-25 13h54" stroke="#eec7a5" stroke-width="6" stroke-linecap="round"/>
+        <animateMotion dur="2s" repeatCount="indefinite" rotate="0" path="M461 476 A32 32 0 1 1 525 476 A32 32 0 1 1 461 476"/>
+      </g>
+
+      <!-- 骑车的鹈鹕 -->
+      <g>
+        <animateTransform attributeName="transform" type="translate" values="0 0;0 -4;0 0;0 -4;0 0" dur="2s" repeatCount="indefinite"/>
+        <path d="M336 285q-34-24-65-19l37 31q-29-6-49 7 34 14 78 5Z" fill="#d8e2dc" stroke="#34495d" stroke-width="5" stroke-linejoin="round"/>
+        <path d="M517 309c24-25 28-69 27-102-1-36 15-63 48-68 27-4 47 14 49 37-35 15-39 64-44 100-4 35-26 66-60 72Z"
+              fill="#fff7e8" stroke="#34495d" stroke-width="5" stroke-linejoin="round"/>
+        <ellipse cx="427" cy="291" rx="122" ry="70" transform="rotate(-7 427 291)" fill="#fff7e8" stroke="#34495d" stroke-width="5"/>
+        <path d="M339 289q7 35 29 45m-9-50q16 29 36 38" stroke="#d5dfd8" stroke-width="5" fill="none" stroke-linecap="round"/>
+        <g>
+          <path d="M382 261c47-19 99-3 130 32-18 30-52 37-83 25-25-10-39-31-47-57Z" fill="#d9e7df" stroke="#34495d" stroke-width="4" stroke-linejoin="round"/>
+          <path d="M391 276q30 42 78 41m-55-54q30 30 67 42" fill="none" stroke="#abc9c5" stroke-width="4" stroke-linecap="round"/>
+          <animateTransform attributeName="transform" type="rotate" values="-2 445 277;3 445 277;-2 445 277" dur="1s" repeatCount="indefinite"/>
+        </g>
+        <path d="M551 233q-26-9-44-5l24 13-48 2q33 15 70 6Z" fill="#f48b89" stroke="#9e5366" stroke-width="3" stroke-linejoin="round">
+          <animate attributeName="d" dur="1.4s" repeatCount="indefinite" values="M551 233q-26-9-44-5l24 13-48 2q33 15 70 6Z;M551 233q-26-16-48-15l25 19-47-6q30 26 72 18Z;M551 233q-26-9-44-5l24 13-48 2q33 15 70 6Z"/>
+        </path>
+        <ellipse cx="605" cy="175" rx="46" ry="43" fill="#fff7e8" stroke="#34495d" stroke-width="5"/>
+        <path d="M582 137q-6-24 5-35m9 34q4-29 18-36m-6 38q15-22 31-20" fill="none" stroke="#fff7e8" stroke-width="11" stroke-linecap="round"/>
+        <path d="M582 137q-6-24 5-35m9 34q4-29 18-36m-6 38q15-22 31-20" fill="none" stroke="#34495d" stroke-width="3" stroke-linecap="round"/>
+        <path d="M649 187c48 10 119 29 189 19-11 51-51 75-104 67-48-8-73-41-85-86Z" fill="#f48d78" stroke="#9f5b63" stroke-width="4" stroke-linejoin="round"/>
+        <path d="M642 174q98 5 192 25 14 4 10 11-4 7-17 5-99-11-184-25Z" fill="url(#bill)" stroke="#8d5c5d" stroke-width="4" stroke-linejoin="round"/>
+        <path d="M659 190q86 17 169 18" fill="none" stroke="#e7a16f" stroke-width="3" stroke-linecap="round"/>
+        <circle cx="621" cy="163" r="9" fill="#253950"/>
+        <circle cx="624" cy="160" r="3" fill="#fff"/>
+        <path d="M611 147q10-8 22-2" fill="none" stroke="#34495d" stroke-width="3" stroke-linecap="round"/>
+      </g>
+
+      <!-- 近侧的腿与脚 -->
+      <path d="M440 342 508 404 525 476" fill="none" stroke="#f5a779" stroke-width="18" stroke-linecap="round" stroke-linejoin="round">
+        <animate attributeName="d" dur="2s" repeatCount="indefinite" values="
+          M440 342 L508 404 L525 476;
+          M440 342 L506 413 L516 499;
+          M440 342 L493 417 L493 508;
+          M440 342 L479 412 L470 499;
+          M440 342 L468 394 L461 476;
+          M440 342 L477 386 L470 453;
+          M440 342 L493 380 L493 444;
+          M440 342 L509 389 L516 453;
+          M440 342 L508 404 L525 476"/>
+      </path>
+      <circle cx="493" cy="476" r="18" fill="#fff0d8" stroke="#30435b" stroke-width="8"/>
+      <circle cx="493" cy="476" r="5" fill="#ee7f79"/>
+      <g>
+        <path d="M-19-4q11-8 23-3l20 9v10h-42q-7-6-1-16Z" fill="#f5a779" stroke="#ffe1bb" stroke-width="3"/>
+        <path d="M-25 13h54" stroke="#eec7a5" stroke-width="6" stroke-linecap="round"/>
+        <animateMotion dur="2s" repeatCount="indefinite" rotate="0" path="M525 476 A32 32 0 1 1 461 476 A32 32 0 1 1 525 476"/>
+      </g>
+
+      <g fill="#ffe0af" opacity=".85" font-family="Georgia, serif">
+        <text x="47" y="67" font-size="32" font-weight="700" letter-spacing="3">月夜骑行</text>
+        <text x="49" y="93" font-size="13" letter-spacing="4">THE PELICAN EXPRESS</text>
+      </g>
+    </svg>
+    <button id="motion-toggle" type="button" aria-label="暂停动画">暂停动画</button>
+  </main>
+  <script>
+    (() => {
+      const svg = document.getElementById('scene');
+      const button = document.getElementById('motion-toggle');
+      const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
+      let paused = motionPreference.matches;
+
+      function syncMotion() {
+        if (paused) svg.pauseAnimations();
+        else svg.unpauseAnimations();
+        button.textContent = paused ? '播放动画' : '暂停动画';
+        button.setAttribute('aria-label', button.textContent);
+      }
+
+      button.addEventListener('click', () => {
+        paused = !paused;
+        syncMotion();
+      });
+      motionPreference.addEventListener('change', event => {
+        paused = event.matches;
+        syncMotion();
+      });
+      syncMotion();
+    })();
+  </script>
+</body>
+</html>

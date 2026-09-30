@@ -22,6 +22,7 @@ public sealed class PointsLedgerRow
         ReasonCode = dto.ReasonCode;
         CreatedAt = dto.CreatedAt;
         BusinessDate = dto.BusinessDate;
+        RelatedItemId = dto.RelatedItemId;
         TimeText = MessageItemViewModel
             .FromUnixMilliseconds(dto.CreatedAt)
             .ToString("yyyy-MM-dd HH:mm", CultureInfo.CurrentCulture);
@@ -38,6 +39,7 @@ public sealed class PointsLedgerRow
 
     /// <summary>事由码（**未知必须回退 <c>points.reason.unknown</c>** —— FR-W-PT-3）。</summary>
     public string? ReasonCode { get; }
+    public string? RelatedItemId { get; }
 
     /// <summary>创建时刻（Unix 毫秒）。</summary>
     public long CreatedAt { get; }
@@ -54,7 +56,7 @@ public sealed class PointsLedgerRow
         get
         {
             var key = string.IsNullOrWhiteSpace(ReasonCode) ? null : $"points.reason.{ReasonCode}";
-            return key is not null && I18n.Has(key) ? I18n.T(key) : I18n.T("points.reason.unknown");
+            return key is not null && I18n.Has(key) ? I18n.T(key, RelatedItemId ?? I18n.T("profile.interaction")) : I18n.T("points.reason.unknown");
         }
     }
 
@@ -153,6 +155,23 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
     private LevelChangeFeedback? _lastFeedback;
     private int _ledgerPage = 1;
     private bool _disposed;
+    private int _makeupHistoryPage;
+    private bool _refreshingMakeup;
+    private bool _usingMakeup;
+
+    public ObservableCollection<MakeupHistoryRow> MakeupHistory { get; } = [];
+    public string MakeupHistoryTitle => I18n.T("profile.makeupHistory");
+    public string DateLabel => I18n.T("makeup.column.date");
+    public string ApplyFilterText => I18n.T("common.refresh");
+    public IReadOnlyList<LedgerReasonOption> ReasonCodes { get; } =
+        new[] { "", "DAILY_FIRST_CHAT", "STREAK_3_DAY", "ANNIVERSARY", "ITEM_SEND", "ITEM_REFUND", "ADMIN_ADJUST" }
+            .Select(code => new LedgerReasonOption(code, code.Length == 0 ? I18n.T("points.filter.all")
+                : I18n.T("points.reason." + code, I18n.T("profile.interaction")))).ToArray();
+    [ObservableProperty] private string? _selectedReasonCode;
+    [ObservableProperty] private string _manualMakeupDate = string.Empty;
+    [ObservableProperty] private bool _hasMoreMakeupHistory;
+    [ObservableProperty] private string _loadStatusText = string.Empty;
+    [ObservableProperty] private string _streakWarningText = string.Empty;
 
     /// <summary>构造。</summary>
     public ProfileViewModel(
@@ -173,6 +192,7 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
 
         _gamification.ProgressChanged += OnProgressChanged;
         _gamification.LevelChanged += OnLevelChanged;
+        _gamification.StreakWarning += OnStreakWarning;
 
         // 等级说明页启动即拉配置（FR-W-LV-2）。
         LoadLevelConfigCommand.Execute(null);
@@ -428,6 +448,37 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
         _ledgerPage = 1;
         await LoadLedgerPageAsync(1, replace: true).ConfigureAwait(true);
         await LoadMakeupAsync(ct).ConfigureAwait(true);
+        await LoadMakeupHistoryAsync(true, ct).ConfigureAwait(true);
+    }
+
+    [RelayCommand]
+    private Task FilterLedgerAsync() => LoadLedgerPageAsync(1, true);
+
+    [RelayCommand]
+    private Task UseManualMakeupAsync() => UseMakeupCardAsync(ManualMakeupDate);
+
+    [RelayCommand]
+    private Task LoadMoreMakeupHistoryAsync() => HasMoreMakeupHistory ? LoadMakeupHistoryAsync(false) : Task.CompletedTask;
+
+    private async Task LoadMakeupHistoryAsync(bool replace, CancellationToken ct = default)
+    {
+        try
+        {
+            var page = replace ? 1 : _makeupHistoryPage + 1;
+            var result = await _gamification.GetMakeupHistoryAsync(page, LedgerPageSize, ct).ConfigureAwait(true);
+            await _dispatcher.InvokeAsync(() =>
+            {
+                if (replace) MakeupHistory.Clear();
+                foreach (var item in result.Items)
+                    if (!MakeupHistory.Any(row => row.Id == item.Id)) MakeupHistory.Add(new(item));
+                _makeupHistoryPage = page;
+                HasMoreMakeupHistory = result.HasMore || page * (result.PageSize > 0 ? result.PageSize : LedgerPageSize) < result.Total;
+            }).ConfigureAwait(true);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LoadStatusText = I18n.T(ErrorCatalog.UnknownI18nKey);
+        }
     }
 
     /// <summary>加载下一段积分流水（分页 —— FR-W-PT-7）。</summary>
@@ -472,7 +523,7 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
             return;
         }
 
-        if (IsOfflineCache)
+        if (IsOfflineCache || AvailableMakeupCards <= 0 || _usingMakeup)
         {
             return;
         }
@@ -483,6 +534,7 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
             return;
         }
 
+        _usingMakeup = true;
         try
         {
             var outcome = await _gamification.UseMakeupCardAsync(targetDate).ConfigureAwait(true);
@@ -497,12 +549,6 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
 
             MakeupStatusText = I18n.T("makeup.use.success");
 
-            if (outcome.LevelFeedback is { } feedback)
-            {
-                // 补签造成的等级变化同样按三态反馈（RESTORE 克制、UPGRADE 才庆祝 —— FR-W-MC-5）。
-                ApplyLevelFeedback(feedback);
-            }
-
             await LoadMakeupAsync().ConfigureAwait(true);
             await RefreshCommand.ExecuteAsync(null).ConfigureAwait(true);
         }
@@ -511,6 +557,7 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
             MakeupStatusText = I18n.T(ErrorCatalog.UnknownI18nKey);
             await LoadMakeupAsync().ConfigureAwait(true);
         }
+        finally { _usingMakeup = false; }
     }
 
     /// <summary>关闭庆祝弹窗（用户点击「确定」时）。</summary>
@@ -541,6 +588,7 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
         _disposed = true;
         _gamification.ProgressChanged -= OnProgressChanged;
         _gamification.LevelChanged -= OnLevelChanged;
+        _gamification.StreakWarning -= OnStreakWarning;
         GC.SuppressFinalize(this);
     }
 
@@ -549,7 +597,28 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
     /* ------------------------------------------------------------------ */
 
     private void OnProgressChanged(object? sender, ProgressSnapshot snapshot)
-        => _dispatcher.Invoke(() => Apply(snapshot));
+        => _dispatcher.Invoke(() =>
+        {
+            var cardsChanged = AvailableMakeupCards != snapshot.AvailableMakeupCards;
+            Apply(snapshot);
+            if (!snapshot.IsOfflineCache && snapshot.GapDays == 0) StreakWarningText = string.Empty;
+            if (cardsChanged && !snapshot.IsOfflineCache && !_refreshingMakeup) _ = RefreshMakeupAfterEventAsync();
+        });
+
+    private async Task RefreshMakeupAfterEventAsync()
+    {
+        _refreshingMakeup = true;
+        try
+        {
+            await LoadMakeupAsync().ConfigureAwait(true);
+            await LoadMakeupHistoryAsync(true).ConfigureAwait(true);
+        }
+        finally { _refreshingMakeup = false; }
+    }
+
+    private void OnStreakWarning(object? sender, StreakWarningPayloadDto warning)
+        => _dispatcher.Invoke(() => StreakWarningText = warning.GapDays == 0 ? string.Empty
+            : I18n.T("streak.warning.body", warning.GapDays, warning.RemainingDays, warning.DeadlineDate ?? string.Empty));
 
     private void OnLevelChanged(object? sender, LevelChangeFeedback feedback)
         => _dispatcher.Invoke(() => ApplyLevelFeedback(feedback));
@@ -559,7 +628,7 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
         try
         {
             var paged = await _gamification
-                .GetPointsHistoryAsync(page, LedgerPageSize)
+                .GetPointsHistoryAsync(page, LedgerPageSize, SelectedReasonCode)
                 .ConfigureAwait(true);
 
             var rows = paged.Items.Select(static dto => new PointsLedgerRow(dto)).ToList();
@@ -573,11 +642,12 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
 
                 foreach (var row in rows)
                 {
-                    Ledger.Add(row);
+                    if (!Ledger.Any(existing => existing.Id == row.Id)) Ledger.Add(row);
                 }
 
                 LedgerPageNumber = paged.Page > 0 ? paged.Page : page;
-                HasMoreLedger = paged.HasMore;
+                HasMoreLedger = paged.HasMore || LedgerPageNumber * (paged.PageSize > 0 ? paged.PageSize : LedgerPageSize) < paged.Total;
+                LoadStatusText = string.Empty;
                 OnPropertyChanged(nameof(IsLedgerEmpty));
             }).ConfigureAwait(true);
 
@@ -587,7 +657,7 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
         {
             await _dispatcher.InvokeAsync(() =>
             {
-                HasMoreLedger = false;
+                LoadStatusText = I18n.T(ErrorCatalog.UnknownI18nKey);
                 OnPropertyChanged(nameof(IsLedgerEmpty));
             }).ConfigureAwait(true);
         }
@@ -624,7 +694,7 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // 失败保留上一次日历内容（避免清空后用户误以为无候选）。
+            LoadStatusText = I18n.T(ErrorCatalog.UnknownI18nKey);
         }
     }
 
@@ -732,10 +802,6 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
             FeedbackText = string.Empty;
 
             // 「三重」的最后一路：Toast（语义 ID = Level —— C-3；正文已按 FR-W-NOTI-6 截断由服务层处理）。
-            _notifications.Notify(
-                NotificationCategory.Progress,
-                I18n.T("notification.level.title"),
-                CelebrationBody);
             return;
         }
 
@@ -751,7 +817,7 @@ public sealed partial class ProfileViewModel : ObservableObject, IDisposable
         }
         else if (string.Equals(feedback.ChangeType, "RESET", StringComparison.Ordinal))
         {
-            FeedbackText = I18n.T("level.reset.guide");
+            FeedbackText = I18n.T("level.reset.body") + " " + I18n.T("profile.pointsUnaffected") + " " + I18n.T("level.reset.guide");
             IsMakeupGuideVisible = true;
         }
         else

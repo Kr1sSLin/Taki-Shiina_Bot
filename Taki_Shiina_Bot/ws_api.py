@@ -22,10 +22,11 @@ from openai import AsyncOpenAI
 from auth_utils import AuthContext, DeviceEntry, parse_device_tokens, resolve_auth_context
 from app_constants import EMOTIONAL_TRIGGERS, LORE_TRIGGERS, USER_MEMO
 from app_state import AppState
-from secure_storage import SecureJsonStore
 from services.history_store import HistoryStore
 from services.memory_service import MemoryService
 from services.prompt_service import PromptService
+from services.timeline_store import TimelineStore
+from services.file_lock import FileLockTimeoutError
 from services.weather_service import WeatherService
 from text_utils import (
     clean_short_term_history,
@@ -56,6 +57,8 @@ from time_utils import build_time_block, describe_business_period
 
 _base_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_base_dir, ".env"))
+_data_dir = os.path.abspath(os.getenv("BOT_DATA_DIR") or _base_dir)
+os.makedirs(_data_dir, exist_ok=True)
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 QWEATHER_API_KEY = os.getenv("QWEATHER_API_KEY")
@@ -116,22 +119,20 @@ VISION_CONTEXT_TEMPLATE = (
     "{user_text}"
 )
 
-TIMELINE_FILE = os.path.join(_base_dir, "chat_timeline.json")
-TIMELINE_LOCK = asyncio.Lock()
-MEMORY_TIMELINE_FILE = os.path.join(_base_dir, "memory_timeline.json")
-MEMORY_TIMELINE_LOCK = asyncio.Lock()
+TIMELINE_FILE = os.path.join(_data_dir, "chat_timeline.json")
+MEMORY_TIMELINE_FILE = os.path.join(_data_dir, "memory_timeline.json")
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-state = AppState(history_file=os.path.join(_base_dir, "chat_history.json"))
-db = MemoryService(_base_dir)
-weather_service = WeatherService(_base_dir, QWEATHER_API_KEY, MY_LAT, MY_LON)
+state = AppState(history_file=os.path.join(_data_dir, "chat_history.json"))
+db = MemoryService(_data_dir)
+weather_service = WeatherService(_data_dir, QWEATHER_API_KEY, MY_LAT, MY_LON)
 history_store = HistoryStore(state.history_file)
 state.user_chat_history.update(history_store.load())
 
-timeline_store = SecureJsonStore(TIMELINE_FILE, logger)
-memory_timeline_store = SecureJsonStore(MEMORY_TIMELINE_FILE, logger)
+timeline_store = TimelineStore(TIMELINE_FILE, logger)
+memory_timeline_store = TimelineStore(MEMORY_TIMELINE_FILE, logger)
 
 client = AsyncOpenAI(
     api_key=DEEPSEEK_API_KEY,
@@ -243,26 +244,21 @@ def calc_debounce_window(user_id: str):
     return DEBOUNCE_EXTENDED if seconds_since_response < DEBOUNCE_EXTEND_WINDOW else DEBOUNCE_BASE
 
 
+def _timeline_backend(store, path: str) -> TimelineStore:
+    """Return the shared backend; tolerate legacy tests injecting SecureJsonStore."""
+    if isinstance(store, TimelineStore) and store.path == path:
+        return store
+    return TimelineStore(path, logger)
+
+
 def _load_timeline() -> list[dict]:
-    """读取时间线。⚠️ **只在「文件不存在」时**返回空列表。
-
-    文件存在但读不出来（JSON 损坏 / `DATA_ENC_KEY` 与加密时不一致 / IO 异常）
-    必须抛给调用方，绝不能吞掉后返回 `[]`：
-    `append_timeline` 是「load → extend → save 整份列表」，一旦把「读失败」
-    静默降级成「本来就是空的」，紧接着的 save 就会把整份历史替换成
-    「只有本次追加的那两条」，且立刻用当前密钥重新加密 —— 不可恢复。
-
-    注意 `SecureJsonStore.load()` 有**两条**吞异常的路径，必须一并挡住：
-      ① 加密文件但密钥不匹配 → 抛 DataDecryptError；
-      ② 文件被写坏 / 截断 / json 非法 → `load()` 内部 catch 后返回默认值**而不抛**。
-    `load_strict` 对两者都抛，是 append 路径唯一正确的读取方式。
-    """
-    return timeline_store.load_strict([])
+    """Strict consistent snapshot; corruption and key mismatch propagate."""
+    return _timeline_backend(timeline_store, TIMELINE_FILE).snapshot()
 
 
 def _load_memory_timeline() -> list[dict]:
-    """同上：记忆时间线的严格读取（读失败必须让调用方感知）。"""
-    return memory_timeline_store.load_strict([])
+    """Strict consistent memory snapshot."""
+    return _timeline_backend(memory_timeline_store, MEMORY_TIMELINE_FILE).snapshot()
 
 
 EMPTY_REPLY_FALLBACK = "……"
@@ -293,53 +289,21 @@ async def _resolve_empty_reply(client, cleaned_reply: str, messages: list[dict])
         logger.warning(f"[WS] 空回复兜底重采样失败: {e}")
     return EMPTY_REPLY_FALLBACK
 
-
 async def append_timeline(items: list[dict]):
-    """把一批项追加到 `chat_timeline.json`（客户端 `GET /chat/history` 读的就是它）。
-
-    ⚠️ 锁的作用域：`TIMELINE_LOCK` 只是**进程内**的 `asyncio.Lock`。
-    `ws_api`（主通道，`BOT_WS_PORT`）与 `http_api`（REST 兜底通道，`BOT_HTTP_PORT`）
-    是两个独立进程，都会对同一个文件做「读 → 追加 → 整体写回」。进程内锁拦不住
-    另一个进程；`SecureJsonStore` 的原子写（临时文件 + `os.replace`）只保证文件不会
-    被写坏，**不保证不丢写**——两进程同时读、后写者会覆盖前者本次追加的内容
-    （last-writer-wins）。
-
-    现状**接受该残余风险**：REST 只是 WS 连续重连失败后才开放的低频兜底通道，
-    两进程真正并发追加的概率很低。若将来把 REST 提升为主通道，必须改成单写者
-    （所有写入收敛到 ws_api 经队列处理）或换用带跨进程锁的存储（fcntl / SQLite）。
-    注意这与「读失败就放弃写入」是两件事，后者见 `_load_timeline`。
-    """
-    async with TIMELINE_LOCK:
-        try:
-            data = _load_timeline()
-        except Exception as e:
-            # 读不出来就绝不写回：宁可这条消息进不了历史，也不能覆盖整份历史
-            logger.error(f"[WS] 读取时间线失败，放弃本次追加以避免覆盖历史: {e}")
-            return
-        data.extend(items)
-        if len(data) > 3000:
-            data = data[-3000:]
-        try:
-            timeline_store.save_strict(data)
-        except Exception as e:
-            logger.error(f"[WS] 保存时间线失败: {e}")
+    """Cross-process atomic strict load → extend → trim → save."""
+    try:
+        await _timeline_backend(timeline_store, TIMELINE_FILE).append_async(items)
+    except Exception:
+        logger.exception("[WS] 读取或保存时间线失败，未写回")
+        raise
 
 
 async def append_memory_timeline(items: list[dict]):
-    """记忆时间线；锁作用域与丢写风险同 `append_timeline`。"""
-    async with MEMORY_TIMELINE_LOCK:
-        try:
-            data = _load_memory_timeline()
-        except Exception as e:
-            logger.error(f"[WS] 读取记忆时间线失败，放弃本次追加以避免覆盖历史: {e}")
-            return
-        data.extend(items)
-        if len(data) > 3000:
-            data = data[-3000:]
-        try:
-            memory_timeline_store.save_strict(data)
-        except Exception as e:
-            logger.error(f"[WS] 保存记忆时间线失败: {e}")
+    try:
+        await _timeline_backend(memory_timeline_store, MEMORY_TIMELINE_FILE).append_async(items)
+    except Exception:
+        logger.exception("[WS] 读取或保存记忆时间线失败，未写回")
+        raise
 
 
 async def extract_user_facts(user_id: str, message: str):
@@ -441,7 +405,7 @@ async def send_error(
 # /api/v1/level、/api/v1/admin 指向本服务，见 README 部署说明）。
 
 gamification = GamificationService(
-    base_dir=_base_dir,
+    base_dir=_data_dir,
     logger=logger,
     default_user_id=DEFAULT_USER_ID,
 )
@@ -765,12 +729,6 @@ async def process_buffered_messages(user_id: str):
         merged_record = merged_text
         if has_images:
             merged_record = (merged_text + "\n\n" if merged_text else "") + f"[ImageCount={len(merged_images)}]"
-        history.append({"role": "user", "content": merged_record, "ts": now_ms - 1})
-        history.append({"role": "assistant", "content": final_reply, "ts": now_ms})
-        if len(history) > 300:
-            state.user_chat_history[user_id] = history[-300:]
-        history_store.save(state.user_chat_history)
-
         await append_timeline(
             # ⚠️ 被防抖合并的**每一条**用户消息都要有自己的一行（messageId == requestId）。
             #    早前整批只写 merged_request_id 一行，于是断线/丢帧后其余消息
@@ -786,6 +744,12 @@ async def process_buffered_messages(user_id: str):
                 },
             ]
         )
+
+        history.append({"role": "user", "content": merged_record, "ts": now_ms - 1})
+        history.append({"role": "assistant", "content": final_reply, "ts": now_ms})
+        if len(history) > 300:
+            state.user_chat_history[user_id] = history[-300:]
+        history_store.save(state.user_chat_history)
 
         state.last_activity[user_id] = datetime.now(timezone.utc)
         state.last_bot_response_time[user_id] = datetime.now(timezone.utc)
@@ -810,13 +774,17 @@ async def process_buffered_messages(user_id: str):
             },
         )
         await broadcast_json(user_id, {"type": "chat.typing", "payload": {"typing": False}})
+    except FileLockTimeoutError:
+        logger.exception("[WS] 时间线锁超时")
+        await broadcast_json(user_id, {"type": "chat.typing", "payload": {"typing": False}})
+        await send_error(user_id, "SERVICE_UNAVAILABLE", "服务暂时不可用，请稍后重试", merged_request_id, request_ids)
     except asyncio.TimeoutError:
         await broadcast_json(user_id, {"type": "chat.typing", "payload": {"typing": False}})
         await send_error(user_id, "AI_TIMEOUT", "AI 响应超时，请重试", merged_request_id, request_ids)
-    except Exception as e:
-        logger.exception(f"[WS] 处理消息失败: {e}")
+    except Exception:
+        logger.exception("[WS] 处理消息失败")
         await broadcast_json(user_id, {"type": "chat.typing", "payload": {"typing": False}})
-        await send_error(user_id, "INTERNAL_ERROR", f"处理失败: {str(e)}", merged_request_id, request_ids)
+        await send_error(user_id, "INTERNAL_ERROR", "处理失败，请稍后重试", merged_request_id, request_ids)
     finally:
         is_processing[user_id] = False
         # 处理期间有新消息到达，给一小段尾批窗口再触发下一轮合并。
@@ -1013,8 +981,8 @@ async def websocket_chat(websocket: WebSocket):
             await send_error(user_id, "UNKNOWN_TYPE", f"未知的消息类型: {msg_type}", request_id)
     except WebSocketDisconnect:
         logger.info(f"[WS] 连接断开: user={user_id}, device={device_id}")
-    except Exception as e:
-        logger.exception(f"[WS] 连接异常: {e}")
+    except Exception:
+        logger.exception("[WS] 连接异常")
     finally:
         ACTIVE_CONNECTIONS.get(user_id, set()).discard(websocket)
         # 注意：不取消 worker、不清理状态。断线后防抖/生成流程继续跑完并写入 timeline,
@@ -1360,6 +1328,6 @@ async def history_separator_scheduler():
 if __name__ == "__main__":
     import uvicorn
 
-    host = os.getenv("BOT_WS_HOST", "0.0.0.0")
+    host = os.getenv("BOT_WS_HOST", "127.0.0.1")
     port = int(os.getenv("BOT_WS_PORT", "8001"))
     uvicorn.run("ws_api:app", host=host, port=port, reload=False)

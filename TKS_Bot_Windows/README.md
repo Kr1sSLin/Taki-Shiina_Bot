@@ -8,6 +8,12 @@
 
 ---
 
+## M6 发布候选
+
+使用 `build.ps1` 生成本次独立目录 `dist/<build-id>/` 下的安装包、便携包及 SHA256SUMS.txt；旧 dist 根目录或 artifacts/portable 中的包不代表当前源码。
+包内 build-info.json 记录程序集哈希与构建身份。缺少 NSIS 默认失败；使用 -SkipInstaller/-SkipTests 会明确留下未完成项，不算完整验收。发布强制自包含，体积超限即失败。
+当前完整发布/手动验收步骤及未核实的运维前置项见 [M6 发布与验收](docs/M6_发布与验收.md)。安装包只在用户手动运行时安装，本轮构建不修改已安装客户端。
+
 ## 1. 快速开始
 
 ### 1.1 前置条件
@@ -52,15 +58,15 @@ cd TKS_Bot_Windows
 .\scripts\check-i18n.ps1                                          # 禁止硬编码中文
 ```
 
-> **当前实测状态**：`verify.ps1` **五层全绿、退出码 0**（192 项 xUnit 全通过；`--selftest`
-> 283 项断言 ALL PASS —— 含 DPAPI 往返、迁移链 0→5、trigram 中文子串检索、陷阱 8 复现）。
+> **当前实测状态（M6）**：`verify.ps1` **五层全绿、退出码 0**（213 项 xUnit 全通过；`--selftest`
+> 285 项断言 ALL PASS —— 含 DPAPI 往返、迁移链 0→5、trigram 中文子串检索、陷阱 8 复现）。
 > `dotnet format` 曾因 `.cs` / `.ps1` 行尾不确定而**不可复现**，已由本目录新增的
 > **`.editorconfig`** 固定（源码 LF、Windows 脚本 CRLF）。
 
 ### 1.4 打包
 
 ```powershell
-.\build.ps1                      # 产出 dist\ 下的 便携版 zip + NSIS setup + SHA256SUMS.txt
+.\build.ps1                      # 产出 dist\<build-id>\ 下的便携版 + NSIS + 校验和 + 发布记录
 .\build.ps1 -SkipInstaller       # 未装 NSIS 时跳过安装包
 ```
 

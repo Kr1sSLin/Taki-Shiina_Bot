@@ -20,7 +20,7 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
-    private val MIGRATION_1_2 = object : Migration(1, 2) {
+    val MIGRATION_1_2 = object : Migration(1, 2) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL(
                 """
@@ -39,7 +39,7 @@ object DatabaseModule {
         }
     }
 
-    private val MIGRATION_2_3 = object : Migration(2, 3) {
+    val MIGRATION_2_3 = object : Migration(2, 3) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL("ALTER TABLE chat_messages ADD COLUMN content_type TEXT NOT NULL DEFAULT 'text'")
             db.execSQL("ALTER TABLE chat_messages ADD COLUMN model_provider TEXT NOT NULL DEFAULT 'deepseek'")
@@ -67,7 +67,7 @@ object DatabaseModule {
         }
     }
 
-    private val MIGRATION_3_4 = object : Migration(3, 4) {
+    val MIGRATION_3_4 = object : Migration(3, 4) {
         override fun migrate(db: SupportSQLiteDatabase) {
             // PRD §3.1：积分/等级本地缓存表（后端为唯一数据源，本地仅缓存）
             db.execSQL(
@@ -93,6 +93,62 @@ object DatabaseModule {
         }
     }
 
+    val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // Fresh v4 had neither SQL defaults nor the history index; upgraded v4 did.
+            // Remove the child table before replacing its parent so ON DELETE CASCADE cannot
+            // erase attachments. Room runs the whole migration in one transaction.
+            db.execSQL("CREATE TEMP TABLE attachments_v4_backup AS SELECT * FROM chat_attachments")
+            db.execSQL("DROP TABLE chat_attachments")
+            db.execSQL(
+                """
+                CREATE TABLE chat_messages_v5 (
+                    message_id TEXT NOT NULL PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    message_type TEXT NOT NULL,
+                    content_type TEXT NOT NULL DEFAULT 'text',
+                    model_provider TEXT NOT NULL DEFAULT 'deepseek',
+                    content TEXT NOT NULL,
+                    image_url TEXT,
+                    weather_attached INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    error_code TEXT
+                )
+                """.trimIndent()
+            )
+            val columns = "message_id, session_id, role, message_type, content_type, model_provider, " +
+                "content, image_url, weather_attached, status, timestamp, error_code"
+            db.execSQL("INSERT INTO chat_messages_v5 ($columns) SELECT $columns FROM chat_messages")
+            db.execSQL("DROP TABLE chat_messages")
+            db.execSQL("ALTER TABLE chat_messages_v5 RENAME TO chat_messages")
+            db.execSQL("CREATE INDEX index_chat_messages_session_id_timestamp ON chat_messages (session_id, timestamp)")
+            db.execSQL(
+                """
+                CREATE TABLE chat_attachments (
+                    attachment_id TEXT NOT NULL PRIMARY KEY,
+                    message_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    local_uri TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    width INTEGER,
+                    height INTEGER,
+                    upload_state TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    FOREIGN KEY(message_id) REFERENCES chat_messages(message_id) ON UPDATE NO ACTION ON DELETE CASCADE
+                )
+                """.trimIndent()
+            )
+            db.execSQL("INSERT INTO chat_attachments SELECT * FROM attachments_v4_backup")
+            db.execSQL("DROP TABLE attachments_v4_backup")
+            db.execSQL("CREATE INDEX index_chat_attachments_message_id ON chat_attachments (message_id)")
+            db.execSQL("CREATE INDEX index_chat_attachments_session_id_timestamp ON chat_attachments (session_id, timestamp)")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase {
@@ -100,6 +156,7 @@ object DatabaseModule {
             .addMigrations(MIGRATION_1_2)
             .addMigrations(MIGRATION_2_3)
             .addMigrations(MIGRATION_3_4)
+            .addMigrations(MIGRATION_4_5)
             .build()
     }
 

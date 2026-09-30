@@ -31,7 +31,7 @@ public partial class LoginWindow : Window
         _uiScaleFactor = UiScale.Normalize(provider.GetRequiredService<CliOptions>().ForceDeviceScaleFactor);
         UiScale.Apply(RootGrid, _uiScaleFactor);
         Width = UiScale.ToWindow(420d, _uiScaleFactor);
-        Height = UiScale.ToWindow(360d, _uiScaleFactor);
+        Height = UiScale.ToWindow(420d, _uiScaleFactor);
         DataContext = _viewModel;
 
         _viewModel.LoginSucceeded += OnLoginSucceeded;

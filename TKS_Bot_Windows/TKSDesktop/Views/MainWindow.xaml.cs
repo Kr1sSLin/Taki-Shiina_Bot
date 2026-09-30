@@ -238,6 +238,78 @@ public partial class MainWindow : Window
         _viewModel.SearchRequested += OnSearchRequested;
 
         ChatPane.ImageOpenRequested += OnImageOpenRequested;
+        _viewModel.Chat.InteractionMenuRequested += OnInteractionRequested;
+        var menu = _provider.GetRequiredService<InteractionMenuViewModel>();
+        InteractionPane.DataContext = menu;
+        menu.CloseRequested += OnInteractionClosed;
+        menu.Sent += OnInteractionSent;
+        _provider.GetRequiredService<Core.Services.IGamificationService>().LevelChanged += OnLevelFeedback;
+        InteractionOverlay.MouseDown += (_, e) =>
+        {
+            if (ReferenceEquals(e.OriginalSource, InteractionOverlay)) OnInteractionClosed(this, EventArgs.Empty);
+        };
+    }
+
+    private async void OnInteractionRequested(object? sender, EventArgs e)
+    {
+        var menu = _provider.GetRequiredService<InteractionMenuViewModel>();
+        if (!menu.IsSending) menu.MessageText = _viewModel.Chat.InputText;
+        InteractionOverlay.Visibility = Visibility.Visible;
+        await menu.LoadAsync();
+    }
+
+    private void OnInteractionClosed(object? sender, EventArgs e) => InteractionOverlay.Visibility = Visibility.Collapsed;
+
+    private void OnInteractionSent(object? sender, string text)
+    {
+        if (_viewModel.Chat.InputText == text) _viewModel.Chat.InputText = string.Empty;
+    }
+
+    private void OnLevelFeedback(object? sender, Core.Services.LevelChangeFeedback feedback)
+    {
+        if (feedback.ChangeType is "RESTORE" or "RESET")
+        {
+            _viewModel.Chat.NoticeText = feedback.ChangeType == "RESTORE"
+                ? I18n.T("level.restore.body", feedback.LevelName)
+                : I18n.T("level.reset.body") + " " + I18n.T("profile.pointsUnaffected") + " " + I18n.T("level.reset.guide");
+            _viewModel.Chat.IsNoticeVisible = true;
+        }
+        if (!feedback.PlayCelebration || feedback.ChangeType != "UPGRADE") return;
+        var panel = new StackPanel { Margin = new Thickness(24) };
+        panel.Children.Add(new PandaBadge
+        {
+            Style = (Style)FindResource("Tks.PandaBadge"),
+            LevelCode = feedback.LevelCode,
+            Diameter = 88,
+            IsAnimated = !_windowChrome.IsAnimationReduced && feedback.LevelCode == "PANDA_LV7"
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = I18n.T("level.upgrade.body", feedback.LevelName),
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 20,
+            Margin = new Thickness(0, 12, 0, 12)
+        });
+        var popup = new Window
+        {
+            Owner = this,
+            Title = I18n.T("level.upgrade.title"),
+            Content = panel,
+            Width = 340,
+            SizeToContent = SizeToContent.Height,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ShowInTaskbar = false
+        };
+        var close = new Button { Content = I18n.T("common.close"), Padding = new Thickness(12, 6, 12, 6) };
+        close.Click += (_, _) => popup.Close();
+        panel.Children.Add(close);
+        if (!_windowChrome.IsAnimationReduced)
+            panel.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(400)));
+        ApplyChildTheme(popup);
+        UiScale.Apply(panel, _uiScaleFactor);
+        popup.Width = UiScale.ToWindow(340, _uiScaleFactor);
+        popup.Show();
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -247,26 +319,30 @@ public partial class MainWindow : Window
         _hwndSource?.AddHook(WindowMessageHook);
         ApplyGeometry();
 
-        // DWM 模糊：仅在系统可用时应用；不可用时窗口保持不透明渐变（FR-W-UI-3）。
-        if (!_windowChrome.IsSystemBlurAvailable)
+        ApplySystemGlass(ThemeApplier.Current == true);
+    }
+
+    /// <summary>应用系统玻璃背景，并按真实结果同步透明/不透明降级状态。</summary>
+    private void ApplySystemGlass(bool dark)
+    {
+        if (_windowHandle == IntPtr.Zero)
         {
             return;
         }
 
-        try
-        {
-            var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-            if (!_windowChrome.IsSystemBlurAvailable)
-            {
-                return;
-            }
+        var applied = _windowChrome.TryApplySystemBlur(_windowHandle, dark);
+        _viewModel.IsSystemBlurAvailable = applied;
 
-            _logger.LogDebug("系统窗口模糊可用（句柄 {Handle}）", handle);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
+        if (applied)
         {
-            _logger.LogDebug(ex, "窗口句柄不可用，跳过模糊应用");
+            Background = Brushes.Transparent;
         }
+        else
+        {
+            SetResourceReference(BackgroundProperty, "Tks.Brush.Background");
+        }
+
+        _logger.LogDebug("系统液态玻璃应用结果：{Applied}（句柄 {Handle}）", applied, _windowHandle);
     }
 
     /// <summary>应用几何：越界时经 <c>EnsureOnScreen</c> 回主屏居中（EDGE-W-25）。</summary>
@@ -372,6 +448,11 @@ public partial class MainWindow : Window
         _hwndSource?.RemoveHook(WindowMessageHook);
         _hwndSource = null;
         _settingsViewModel.LogoutRequested -= OnLogoutRequested;
+        _viewModel.Chat.InteractionMenuRequested -= OnInteractionRequested;
+        var menu = _provider.GetRequiredService<InteractionMenuViewModel>();
+        menu.CloseRequested -= OnInteractionClosed;
+        menu.Sent -= OnInteractionSent;
+        _provider.GetRequiredService<Core.Services.IGamificationService>().LevelChanged -= OnLevelFeedback;
         _viewModel.Dispose();
         ThemeApplier.Apply(Resources, false);
     }
@@ -406,6 +487,16 @@ public partial class MainWindow : Window
         {
             case Key.Escape:
                 e.Handled = true;
+                if (_viewModel.Chat.IsSearchOpen)
+                {
+                    _viewModel.Chat.CloseSearchCommand.Execute(null);
+                    return;
+                }
+                if (InteractionOverlay.Visibility == Visibility.Visible)
+                {
+                    OnInteractionClosed(this, EventArgs.Empty);
+                    return;
+                }
                 _viewModel.HideToTrayCommand.Execute(null);
                 return;
 
@@ -548,7 +639,7 @@ public partial class MainWindow : Window
             UiScale.Apply(element, _uiScaleFactor);
         }
 
-        return new Window
+        var child = new Window
         {
             Title = title,
             Owner = this,
@@ -563,6 +654,15 @@ public partial class MainWindow : Window
             FontFamily = (FontFamily)FindResource("Tks.FontFamily"),
             FontSize = (double)FindResource("Tks.Font.Body"),
         };
+        ApplyChildTheme(child);
+        return child;
+    }
+
+    private static void ApplyChildTheme(Window child)
+    {
+        child.SetResourceReference(BackgroundProperty, "Tks.Brush.Background");
+        child.SetResourceReference(ForegroundProperty, "Tks.Brush.TextPrimary");
+        VisualPreferences.SetUseOpaqueFallback(child, true);
     }
 
     /// <summary>把 <paramref name="factory"/> 产出的内容放到主窗口内的浮层（同一窗口内可达 —— FR-W-HIS-*）。</summary>
@@ -587,6 +687,7 @@ public partial class MainWindow : Window
             FontSize = (double)FindResource("Tks.Font.Body"),
         };
 
+        ApplyChildTheme(host);
         host.Show();
 
         if (initialize is not null)
@@ -597,9 +698,7 @@ public partial class MainWindow : Window
 
     private void OnSearchRequested(object? sender, EventArgs e)
     {
-        // 搜索入口聚焦输入框（本地搜索由 ChatViewModel 的搜索命令承接 —— FR-W-CHAT-17）。
-        ChatPane.FocusInput();
-        _viewModel.FocusInputCommand.Execute(null);
+        ChatPane.OpenSearch();
     }
 
     private void OnImageOpenRequested(object? sender, string path)
@@ -632,37 +731,45 @@ public partial class MainWindow : Window
 
     private void OnThemeRevealRequested(object? sender, bool dark)
     {
-        ThemeApplier.Apply(Application.Current.Resources, dark);
-
-        // FR-W-UI-11：系统「减少动画」时**不得**播放揭示动画。
-        if (_windowChrome.IsAnimationReduced)
+        ThemeRevealImage.Visibility = Visibility.Collapsed;
+        ThemeRevealImage.Source = null;
+        var width = RootGrid.ActualWidth;
+        var height = RootGrid.ActualHeight;
+        var dpi = VisualTreeHelper.GetDpi(this);
+        if (_windowChrome.IsAnimationReduced || ThemeApplier.Current == dark
+            || width <= 0 || height <= 0 || width * height * dpi.DpiScaleX * dpi.DpiScaleY > 16_000_000)
         {
-            ThemeRevealPath.Opacity = 0;
+            ThemeApplier.Apply(Application.Current.Resources, dark);
+            ApplySystemGlass(dark);
             return;
         }
 
-        var width = ActualWidth > 0 ? ActualWidth : Width;
-        var height = ActualHeight > 0 ? ActualHeight : Height;
-
-        ThemeRevealGeometry.Center = new Point(width / 2, height / 2);
-        ThemeRevealGeometry.RadiusX = 0;
-        ThemeRevealGeometry.RadiusY = 0;
-
-        var radius = Math.Sqrt((width * width) + (height * height)) / 2;
-        var duration = TryGetRevealDuration();
-
-        var growX = new DoubleAnimation(0, radius, duration);
-        var growY = new DoubleAnimation(0, radius, duration);
-        var fadeIn = new DoubleAnimation(0, 1, new Duration(TimeSpan.FromMilliseconds(duration.TimeSpan.TotalMilliseconds * 0.25)));
-        var fadeOut = new DoubleAnimation(1, 0, new Duration(TimeSpan.FromMilliseconds(duration.TimeSpan.TotalMilliseconds * 0.55)))
+        // Preserve the old surface; the expanding hole reveals the actual new UI.
+        var snapshot = new RenderTargetBitmap((int)Math.Ceiling(width * dpi.DpiScaleX),
+            (int)Math.Ceiling(height * dpi.DpiScaleY), dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
+        snapshot.Render(RootGrid);
+        snapshot.Freeze();
+        ThemeApplier.Apply(Application.Current.Resources, dark);
+        ApplySystemGlass(dark);
+        var hole = new EllipseGeometry(new Point(width / 2, height / 2), 0, 0);
+        var mask = new CombinedGeometry(GeometryCombineMode.Exclude,
+            new RectangleGeometry(new Rect(0, 0, width, height)), hole);
+        ThemeRevealImage.Source = snapshot;
+        ThemeRevealImage.Clip = mask;
+        ThemeRevealImage.Visibility = Visibility.Visible;
+        var radius = Math.Sqrt(width * width + height * height) / 2 + 1;
+        var animation = new DoubleAnimation(0, radius, TryGetRevealDuration());
+        animation.Completed += (_, _) =>
         {
-            BeginTime = TimeSpan.FromMilliseconds(duration.TimeSpan.TotalMilliseconds * 0.45),
+            if (ReferenceEquals(ThemeRevealImage.Source, snapshot))
+            {
+                ThemeRevealImage.Visibility = Visibility.Collapsed;
+                ThemeRevealImage.Source = null;
+                ThemeRevealImage.Clip = null;
+            }
         };
-
-        ThemeRevealGeometry.BeginAnimation(EllipseGeometry.RadiusXProperty, growX);
-        ThemeRevealGeometry.BeginAnimation(EllipseGeometry.RadiusYProperty, growY);
-        ThemeRevealPath.BeginAnimation(OpacityProperty, fadeIn);
-        ThemeRevealPath.BeginAnimation(OpacityProperty, fadeOut);
+        hole.BeginAnimation(EllipseGeometry.RadiusXProperty, animation);
+        hole.BeginAnimation(EllipseGeometry.RadiusYProperty, animation);
     }
 
     /// <summary>揭示动画时长（取自 tokens，约 400ms —— FR-W-UI-4）。</summary>
