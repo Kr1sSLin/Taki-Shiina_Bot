@@ -41,7 +41,9 @@ public static class Registration
         services.AddSingleton<ISettingsService, SettingsService>();
 
         // ---- M1/M2 真实运行链路（不能只让纯逻辑测试通过）----
-        services.AddSingleton<IChatService, Chat.ChatService>();
+        services.AddSingleton<Chat.ChatService>();
+        services.AddSingleton<IChatService>(sp => sp.GetRequiredService<Chat.ChatService>());
+        services.AddSingleton<IInteractionDelivery>(sp => sp.GetRequiredService<Chat.ChatService>());
         services.AddSingleton<ISyncService, Sync.SyncService>();
         services.AddSingleton<IMediaService, Media.MediaService>();
         services.AddSingleton<IGamificationService, GamificationService>();

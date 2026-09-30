@@ -36,6 +36,10 @@ PACKAGE_ROOT = os.path.dirname(CURRENT_DIR)
 if PACKAGE_ROOT not in sys.path:
     sys.path.insert(0, PACKAGE_ROOT)
 
+from ws_api_import_fixture import ensure_ws_api_env
+
+ensure_ws_api_env()
+
 # httpx 会读代理环境变量；本机若设了 socks 代理会让 import 直接失败。本用例不发真实请求。
 for _var in ("ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
     os.environ.pop(_var, None)
@@ -189,7 +193,8 @@ class _AppendSafetyMixin:
             self.assertEqual(len(h.load_under(KEY_GOOD)), 3, "前置条件：初始历史应为 3 条")
 
             h.store_under(KEY_OTHER)  # 读会抛 DataDecryptError
-            self._append(NEW_ITEMS)
+            with self.assertRaises(Exception):
+                self._append(NEW_ITEMS)
 
             self.assertEqual(
                 _read_bytes(h.path),
@@ -214,7 +219,8 @@ class _AppendSafetyMixin:
             before = _read_bytes(h.path)
 
             h.store_under(KEY_GOOD)
-            self._append(NEW_ITEMS)
+            with self.assertRaises(Exception):
+                self._append(NEW_ITEMS)
 
             self.assertEqual(
                 _read_bytes(h.path),

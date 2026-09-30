@@ -61,11 +61,17 @@ public sealed class PandaBadge : Control
     public static readonly DependencyProperty AccentBrushProperty = AccentBrushPropertyKey.DependencyProperty;
 
     private readonly RotateTransform _rainbowRotation = new(0d);
+    public static readonly DependencyProperty ArtworkProperty = DependencyProperty.Register(
+        nameof(Artwork), typeof(ImageSource), typeof(PandaBadge));
+    public ImageSource? Artwork => (ImageSource?)GetValue(ArtworkProperty);
 
     /// <summary>构造：默认使用自带模板（无资源依赖）。</summary>
     public PandaBadge()
     {
         DefaultStyleKey = typeof(PandaBadge);
+        Loaded += (_, _) => ApplyVisual();
+        Unloaded += (_, _) => _rainbowRotation.BeginAnimation(RotateTransform.AngleProperty, null);
+        IsVisibleChanged += (_, _) => ApplyVisual();
         ApplyVisual();
     }
 
@@ -111,9 +117,10 @@ public sealed class PandaBadge : Control
         var visual = LevelVisuals.Resolve(LevelCode);
 
         SetValue(GlyphPropertyKey, visual.Emoji);
+        SetValue(ArtworkProperty, AssetProvider.TryLoadImage($"level.{visual.Code}.badge", out var image) ? image : null);
         SetValue(AccentBrushPropertyKey, Views.Converters.LevelAccentBrushConverter.BrushFor(visual.Accent));
 
-        var animated = IsAnimated && visual.Animated;
+        var animated = IsAnimated && visual.Animated && IsVisible && SystemParameters.ClientAreaAnimation;
 
         if (!animated)
         {
@@ -123,7 +130,19 @@ public sealed class PandaBadge : Control
             return;
         }
 
-        RenderTransform = _rainbowRotation;
+        // Animate the ring's paint, never rotate the face or label.
+        _rainbowRotation.CenterX = 0.5;
+        _rainbowRotation.CenterY = 0.5;
+        var rainbow = new LinearGradientBrush
+        {
+            RelativeTransform = _rainbowRotation,
+            GradientStops = new GradientStopCollection
+            {
+                new(Colors.Coral, 0), new(Colors.Gold, 0.2), new(Colors.LimeGreen, 0.4),
+                new(Colors.DeepSkyBlue, 0.6), new(Colors.MediumPurple, 0.8), new(Colors.Coral, 1),
+            },
+        };
+        SetValue(AccentBrushPropertyKey, rainbow);
 
         // ≈2.4s 一圈，避免过快造成视觉噪声；系统减少动画时根本不会走到这里。
         var animation = new DoubleAnimation(0d, 360d, TimeSpan.FromSeconds(2.4))

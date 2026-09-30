@@ -282,6 +282,10 @@ public enum NotificationCategory
 /// <summary>通知服务（FR-W-NOTI-*）。</summary>
 public interface IUserNotificationService
 {
+    /// <summary>Distinct gamification IDs share the existing progress preference.</summary>
+    void NotifyProgress(SemanticNotificationId semanticId, string title, string body)
+        => Notify(NotificationCategory.Progress, title, body);
+
     /// <summary>
     /// 按分类推送通知。
     /// 实现必须处理：① 窗口前台聚焦时**不弹**聊天类通知（FR-W-NOTI-2）；

@@ -64,6 +64,7 @@ public sealed partial class LoginViewModel : ObservableObject
 
     /// <summary>窗口标题。</summary>
     public string TitleText => I18n.T("login.title");
+    public string UnsignedNoticeText => I18n.T("release.unsignedNotice");
 
     /// <summary>用户名标签。</summary>
     public string UsernameLabel => I18n.T("login.username");

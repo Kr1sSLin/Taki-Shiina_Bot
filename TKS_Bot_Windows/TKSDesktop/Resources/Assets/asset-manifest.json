@@ -37,7 +37,7 @@
     },
     {
       "logicalName": "level.PANDA_LV1.badge",
-      "fileName": "badge-lv1.svg",
+      "fileName": "badge-lv1.png",
       "expectedSizes": [64, 128],
       "kind": "badge",
       "status": "placeholder",
@@ -45,42 +45,42 @@
     },
     {
       "logicalName": "level.PANDA_LV2.badge",
-      "fileName": "badge-lv2.svg",
+      "fileName": "badge-lv2.png",
       "expectedSizes": [64, 128],
       "kind": "badge",
       "status": "placeholder"
     },
     {
       "logicalName": "level.PANDA_LV3.badge",
-      "fileName": "badge-lv3.svg",
+      "fileName": "badge-lv3.png",
       "expectedSizes": [64, 128],
       "kind": "badge",
       "status": "placeholder"
     },
     {
       "logicalName": "level.PANDA_LV4.badge",
-      "fileName": "badge-lv4.svg",
+      "fileName": "badge-lv4.png",
       "expectedSizes": [64, 128],
       "kind": "badge",
       "status": "placeholder"
     },
     {
       "logicalName": "level.PANDA_LV5.badge",
-      "fileName": "badge-lv5.svg",
+      "fileName": "badge-lv5.png",
       "expectedSizes": [64, 128],
       "kind": "badge",
       "status": "placeholder"
     },
     {
       "logicalName": "level.PANDA_LV6.badge",
-      "fileName": "badge-lv6.svg",
+      "fileName": "badge-lv6.png",
       "expectedSizes": [64, 128],
       "kind": "badge",
       "status": "placeholder"
     },
     {
       "logicalName": "level.PANDA_LV7.badge",
-      "fileName": "badge-lv7.svg",
+      "fileName": "badge-lv7.png",
       "expectedSizes": [64, 128],
       "kind": "badge",
       "status": "placeholder",
@@ -88,7 +88,7 @@
     },
     {
       "logicalName": "level.NONE.badge",
-      "fileName": "badge-none.svg",
+      "fileName": "badge-none.png",
       "expectedSizes": [64, 128],
       "kind": "badge",
       "status": "placeholder",
@@ -96,7 +96,7 @@
     },
     {
       "logicalName": "item.coffee.icon",
-      "fileName": "item-coffee.svg",
+      "fileName": "item-coffee.png",
       "expectedSizes": [48, 96],
       "kind": "itemIcon",
       "status": "placeholder",
@@ -104,28 +104,28 @@
     },
     {
       "logicalName": "item.noodles.icon",
-      "fileName": "item-noodles.svg",
+      "fileName": "item-noodles.png",
       "expectedSizes": [48, 96],
       "kind": "itemIcon",
       "status": "placeholder"
     },
     {
       "logicalName": "item.gamepad.icon",
-      "fileName": "item-gamepad.svg",
+      "fileName": "item-gamepad.png",
       "expectedSizes": [48, 96],
       "kind": "itemIcon",
       "status": "placeholder"
     },
     {
       "logicalName": "item.white_dragon.icon",
-      "fileName": "item-white-dragon.svg",
+      "fileName": "item-white-dragon.png",
       "expectedSizes": [48, 96],
       "kind": "itemIcon",
       "status": "placeholder"
     },
     {
       "logicalName": "item.energy_bar.icon",
-      "fileName": "item-energy-bar.svg",
+      "fileName": "item-energy-bar.png",
       "expectedSizes": [48, 96],
       "kind": "itemIcon",
       "status": "placeholder"

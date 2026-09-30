@@ -509,11 +509,14 @@ public sealed class RestClient : IDisposable
                 _logger.LogWarning(
                     "业务失败（HTTP 200 + code != 0）method={Method} path={Path} traceId={TraceId} code={Code}",
                     method.Method, path, traceId, info.Code.Value);
-                return ApiResult.Fail<T>(TksApiException.Business(
+                return new ApiResult<T>(TksApiException.Business(
                     info.Code.Value,
                     info.Message,
                     attempt.HttpStatus,
-                    info.TraceId ?? traceId));
+                    info.TraceId ?? traceId).ToError())
+                {
+                    FailureValue = SuccessFromEnvelope<T>(attempt.Body, info.TraceId ?? traceId).Value,
+                };
             }
 
             return SuccessFromEnvelope<T>(attempt.Body, info.TraceId ?? traceId);

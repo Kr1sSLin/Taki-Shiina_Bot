@@ -90,6 +90,13 @@ public static class SelfTestHost
             RunDatabaseSection(runner);
             RunConfigSection(runner);
             RunGamificationSection(runner);
+            runner.Section("资源清单", r =>
+            {
+                var audit = Views.AssetValidation.Audit(Path.Combine(AppContext.BaseDirectory, Views.AssetProvider.ManifestRelativePath));
+                r.Check("资源清单", "所有正式资源存在且尺寸匹配", audit.Errors.Count == 0, string.Join("; ", audit.Errors));
+                r.Check("资源清单", "占位资源不计入正式通过数", audit.Total == audit.Placeholder + audit.FinalPassed,
+                    $"total={audit.Total}, placeholder={audit.Placeholder}, finalPassed={audit.FinalPassed}");
+            });
 
             await RunIntegrationSectionAsync(runner).ConfigureAwait(false);
         }

@@ -167,6 +167,45 @@ namespace TKSDesktop.Views
                 resources["Tks.Brush.OpaqueFallback"] = gradient;
             }
 
+            if (resources[$"{prefix}GlassTint"] is Color tint)
+            {
+                var surface = new LinearGradientBrush
+                {
+                    StartPoint = new Point(0, 0),
+                    EndPoint = new Point(1, 1),
+                    GradientStops = new GradientStopCollection
+                    {
+                        new(Color.FromArgb(dark ? (byte)150 : (byte)166, tint.R, tint.G, tint.B), 0),
+                        new(Color.FromArgb(dark ? (byte)68 : (byte)94, tint.R, tint.G, tint.B), 0.12),
+                        new(Color.FromArgb(dark ? (byte)112 : (byte)130, tint.R, tint.G, tint.B), 1),
+                    },
+                };
+                surface.Freeze();
+                resources["Tks.Brush.GlassSurface"] = surface;
+
+                var border = new LinearGradientBrush
+                {
+                    StartPoint = new Point(0, 0),
+                    EndPoint = new Point(1, 1),
+                    GradientStops = new GradientStopCollection
+                    {
+                        new(dark ? Color.FromArgb(120, 255, 255, 255) : Color.FromArgb(205, 255, 255, 255), 0),
+                        new(dark ? Color.FromArgb(52, 255, 255, 255) : Color.FromArgb(105, 255, 255, 255), 0.45),
+                        new(dark ? Color.FromArgb(28, 255, 255, 255) : Color.FromArgb(48, 255, 255, 255), 1),
+                    },
+                };
+                border.Freeze();
+                resources["Tks.Brush.GlassBorder"] = border;
+
+                var button = new SolidColorBrush(Color.FromArgb(
+                    dark ? (byte)118 : (byte)106,
+                    tint.R,
+                    tint.G,
+                    tint.B));
+                button.Freeze();
+                resources["Tks.Brush.GlassButton"] = button;
+            }
+
             Current = dark;
         }
     }

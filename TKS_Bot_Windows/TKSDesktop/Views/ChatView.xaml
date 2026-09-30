@@ -223,19 +223,75 @@
 
     <Grid>
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
+        <!-- Search is deliberately separate from the send composer. -->
+        <Border x:Name="SearchPanel" Grid.Row="0" Margin="8,4,8,8" Padding="10"
+                Style="{StaticResource Tks.Style.GlassCapsule}"
+                Visibility="{Binding IsSearchOpen, Converter={StaticResource Tks.BoolToVisibility}}">
+            <StackPanel>
+                <DockPanel LastChildFill="True">
+                    <Button DockPanel.Dock="Right" Margin="6,0,0,0"
+                            Style="{StaticResource Tks.Button.Ghost}"
+                            Content="{Binding CloseSearchText}" Command="{Binding CloseSearchCommand}" />
+                    <Button DockPanel.Dock="Right" Margin="6,0,0,0"
+                            Style="{StaticResource Tks.Button.Primary}"
+                            Content="{Binding SearchButtonText}" Command="{Binding SearchMessagesCommand}" />
+                    <TextBox x:Name="SearchBox" MinWidth="110"
+                             Text="{Binding SearchTerm, UpdateSourceTrigger=PropertyChanged}"
+                             KeyDown="SearchBox_KeyDown"
+                             AutomationProperties.Name="{Binding SearchText}" />
+                </DockPanel>
+                <TextBlock Margin="0,6,0,2" Style="{StaticResource Tks.Text.Caption}"
+                           Text="{Binding SearchStatusText}" />
+                <ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto"
+                              Style="{StaticResource Tks.ScrollViewer}">
+                    <ItemsControl ItemsSource="{Binding SearchResults}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Button Style="{StaticResource Tks.Button.Ghost}"
+                                        HorizontalContentAlignment="Left" Margin="0,2"
+                                        Click="SearchResult_Click">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding TimestampText}" />
+                                        <TextBlock TextWrapping="Wrap" MaxWidth="460">
+                                            <Run Text="{Binding Before}" />
+                                            <Run Text="{Binding Match}" FontWeight="Bold"
+                                                 Foreground="{DynamicResource Tks.Brush.Accent}" />
+                                            <Run Text="{Binding After}" />
+                                        </TextBlock>
+                                    </StackPanel>
+                                </Button>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </StackPanel>
+        </Border>
+
         <!-- ============ Message list (FR-W-CHAT-16: virtualized) ============ -->
-        <Grid Grid.Row="0">
-            <ScrollViewer x:Name="MessageScrollViewer"
-                          Style="{StaticResource Tks.ScrollViewer}"
-                          Padding="8,4">
-                <ItemsControl x:Name="MessageItems"
+        <Grid Grid.Row="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+                <ItemsControl x:Name="MessageItems" Grid.Row="1"
                               ItemsSource="{Binding Messages}"
                               ItemTemplate="{StaticResource Tks.MessageTemplate}"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
                               Focusable="False">
+                    <ItemsControl.Template>
+                        <ControlTemplate TargetType="ItemsControl">
+                            <ScrollViewer x:Name="MessageScrollViewer" CanContentScroll="True"
+                                          Style="{StaticResource Tks.ScrollViewer}" Padding="8,4">
+                                <ItemsPresenter />
+                            </ScrollViewer>
+                        </ControlTemplate>
+                    </ItemsControl.Template>
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
                             <VirtualizingStackPanel IsItemsHost="True"
@@ -246,19 +302,18 @@
                         </ItemsPanelTemplate>
                     </ItemsControl.ItemsPanel>
                 </ItemsControl>
-            </ScrollViewer>
 
             <!-- Upward pagination: one page = ProtocolConstants.LocalFirstPageSize rows. -->
             <Button Style="{StaticResource Tks.Button.Ghost}"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Top"
-                    Margin="0,4,0,0"
+                    Margin="0,20,0,8"
                     Command="{Binding LoadMoreCommand}"
                     Content="{Binding LoadMoreText}"
                     Visibility="{Binding CanLoadMore, Converter={StaticResource Tks.BoolToVisibility}}" />
 
             <!-- Typing stage strip (FR-W-CHAT-14). -->
-            <Border HorizontalAlignment="Left"
+            <Border Grid.Row="1" HorizontalAlignment="Left"
                     VerticalAlignment="Bottom"
                     Margin="10,0,0,6"
                     Style="{StaticResource Tks.Badge}"
@@ -268,7 +323,7 @@
             </Border>
 
             <!-- Degraded mode notice (FR-W-CHAT-9). -->
-            <Border HorizontalAlignment="Right"
+            <Border Grid.Row="1" HorizontalAlignment="Right"
                     VerticalAlignment="Bottom"
                     Margin="0,0,10,6"
                     Style="{StaticResource Tks.Badge}"
@@ -285,7 +340,7 @@
         </Grid>
 
         <!-- ============ Composer ============ -->
-        <Grid Grid.Row="1" Margin="8,0,8,8">
+        <Grid Grid.Row="2" Margin="8,0,8,8">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -328,98 +383,143 @@
 
             <!-- Emoji panel: occupies layout space and pushes content up (FR-W-UI-5). -->
             <Border Grid.Row="1"
-                    Style="{StaticResource Tks.Card}"
+                    Style="{StaticResource Tks.Style.GlassPanel}"
                     Margin="0,0,0,6"
+                    Padding="12,8"
+                    CornerRadius="28"
                     Visibility="{Binding IsEmojiPanelOpen, Converter={StaticResource Tks.BoolToVisibility}}">
-                <StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
-                        <Button Style="{StaticResource Tks.Button.Ghost}"
-                                Content="{Binding EmojiCategorySmileys}"
-                                Command="{Binding SelectEmojiCategoryCommand}"
-                                CommandParameter="smileys" />
-                        <Button Style="{StaticResource Tks.Button.Ghost}"
-                                Content="{Binding EmojiCategoryGestures}"
-                                Command="{Binding SelectEmojiCategoryCommand}"
-                                CommandParameter="gestures" />
-                        <Button Style="{StaticResource Tks.Button.Ghost}"
-                                Content="{Binding EmojiCategoryFaces}"
-                                Command="{Binding SelectEmojiCategoryCommand}"
-                                CommandParameter="faces" />
-                        <Button Style="{StaticResource Tks.Button.Ghost}"
-                                Content="{Binding EmojiCategoryFood}"
-                                Command="{Binding SelectEmojiCategoryCommand}"
-                                CommandParameter="food" />
-                    </StackPanel>
-
-                    <ItemsControl ItemsSource="{Binding EmojiPalette}" Height="88">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <WrapPanel Orientation="Horizontal" />
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
+                <ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <ItemsControl ItemsSource="{Binding EmojiGroups}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Button Style="{StaticResource Tks.Button.Ghost}"
-                                        Width="32"
-                                        Height="32"
-                                        MinHeight="0"
-                                        Padding="0"
-                                        Content="{Binding}"
-                                        Click="InsertEmoji_Click" />
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Label}"
+                                               Style="{StaticResource Tks.Text.Caption}"
+                                               FontWeight="SemiBold"
+                                               Margin="6,8,6,4" />
+                                    <ItemsControl ItemsSource="{Binding Glyphs}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Button Style="{StaticResource Tks.Button.EmojiGlyph}"
+                                                        Content="{Binding}"
+                                                        AutomationProperties.Name="{Binding}"
+                                                        Click="InsertEmoji_Click" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                </StackPanel>
+                </ScrollViewer>
             </Border>
 
             <!-- Input bar: multiline, Enter sends / Shift+Enter breaks (FR-W-CHAT-1 / FR-W-SET-8). -->
-            <Border Grid.Row="2"
-                    Style="{StaticResource Tks.Style.GlassCapsule}"
-                    Padding="8">
+            <Grid Grid.Row="2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="5*" />
+                    <ColumnDefinition Width="90*" />
+                    <ColumnDefinition Width="5*" />
+                </Grid.ColumnDefinitions>
+            <Border Grid.Column="1"
+                    x:Name="ComposerCapsule"
+                    Style="{StaticResource Tks.Style.ReferenceComposer}"
+                    BorderBrush="{DynamicResource Tks.Brush.ComposerRim}"
+                    BorderThickness="1.4"
+                    Effect="{x:Null}"
+                    MinHeight="78"
+                    CornerRadius="39"
+                    SizeChanged="ComposerCapsule_SizeChanged"
+                    Padding="10">
+                <Border.LayoutTransform>
+                    <ScaleTransform ScaleX="0.9" ScaleY="0.9" />
+                </Border.LayoutTransform>
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
                     <Button Grid.Column="0"
-                            Style="{StaticResource Tks.Button.Toolbar}"
-                            Content="{Binding AddImageText}"
-                            ToolTip="{Binding AddImageText}"
-                            Command="{Binding AddImageCommand}" />
+                            x:Name="EmojiButton"
+                            Style="{StaticResource Tks.Button.ComposerIcon}"
+                            ToolTip="{Binding EmojiButtonText}"
+                            AutomationProperties.Name="{Binding EmojiButtonText}"
+                            Command="{Binding ToggleEmojiPanelCommand}">
+                        <Viewbox Width="26" Height="26">
+                        <Grid Width="30" Height="30">
+                            <Ellipse Stroke="{DynamicResource Tks.Brush.ComposerIcon}" StrokeThickness="2.7" />
+                            <Ellipse Width="3.4" Height="3.4" Fill="{DynamicResource Tks.Brush.ComposerIcon}"
+                                     HorizontalAlignment="Left" VerticalAlignment="Top" Margin="7.2,8,0,0" />
+                            <Ellipse Width="3.4" Height="3.4" Fill="{DynamicResource Tks.Brush.ComposerIcon}"
+                                     HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,8,7.2,0" />
+                            <Path Data="M 7,17 C 10,23 20,23 23,17"
+                                  Stroke="{DynamicResource Tks.Brush.ComposerIcon}"
+                                  StrokeThickness="2.4"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round" />
+                        </Grid>
+                        </Viewbox>
+                    </Button>
 
-                    <TextBox Grid.Column="1"
-                             x:Name="InputBox"
-                             Style="{StaticResource Tks.TextBox.Multiline}"
-                             Margin="6,0"
-                             Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
-                             IsEnabled="{Binding CanInteract}"
-                             PreviewKeyDown="InputBox_PreviewKeyDown"
-                             AutomationProperties.Name="{Binding InputPlaceholder}" />
+                    <Grid Grid.Column="1" Margin="14,0,10,0">
+                        <TextBox x:Name="InputBox"
+                                 Style="{StaticResource Tks.TextBox.Composer}"
+                                 Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
+                                 IsEnabled="{Binding CanInteract}"
+                                 PreviewKeyDown="InputBox_PreviewKeyDown"
+                                 AutomationProperties.Name="{Binding InputPlaceholder}" />
+                        <TextBlock Text="{Binding InputPlaceholder}"
+                                   Margin="4,0,0,0"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False"
+                                   FontSize="20"
+                                   Foreground="{DynamicResource Tks.Brush.ComposerPlaceholder}"
+                                   Visibility="{Binding InputText, Converter={StaticResource Tks.NullToVisibility}, ConverterParameter=Invert}" />
+                    </Grid>
 
                     <Button Grid.Column="2"
-                            Style="{StaticResource Tks.Button.Toolbar}"
-                            Content="{Binding EmojiButtonText}"
-                            ToolTip="{Binding EmojiButtonText}"
-                            Command="{Binding ToggleEmojiPanelCommand}" />
+                            x:Name="AddImageButton"
+                            Style="{StaticResource Tks.Button.ComposerIcon}"
+                            ToolTip="{Binding AddImageText}"
+                            AutomationProperties.Name="{Binding AddImageText}"
+                            IsEnabled="{Binding CanInteract}"
+                            Click="AddImage_Click">
+                        <Viewbox Width="24" Height="28">
+                        <Grid Width="30" Height="36">
+                            <Path Data="M 24,9 L 24,25 C 24,36 7,36 7,25 L 7,8 C 7,-1 20,-1 20,8 L 20,24 C 20,29 12,29 12,24 L 12,9"
+                                  Stroke="{DynamicResource Tks.Brush.ComposerIcon}"
+                                  StrokeThickness="2.2"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  StrokeLineJoin="Round"
+                                  Fill="Transparent" />
+                        </Grid>
+                        </Viewbox>
+                    </Button>
 
                     <Button Grid.Column="3"
-                            Style="{StaticResource Tks.Button.Primary}"
-                            Margin="6,0,0,0"
-                            Content="{Binding SendText}"
+                            x:Name="SendButton"
+                            Style="{StaticResource Tks.Button.ComposerSend}"
+                            ToolTip="{Binding SendKeyHintText}"
+                            AutomationProperties.Name="{Binding SendText}"
                             Command="{Binding SendCommand}"
-                            IsEnabled="{Binding CanInteract}" />
-
-                    <TextBlock Grid.Column="4"
-                               Style="{StaticResource Tks.Text.Caption}"
-                               Margin="8,0,0,0"
-                               VerticalAlignment="Center"
-                               Text="{Binding SendKeyHintText}" />
+                            IsEnabled="{Binding CanInteract}">
+                        <Viewbox Width="26" Height="26">
+                            <Grid Width="32" Height="32">
+                                <Path Data="M 1,13 L 30,2 L 19,31 L 13,23 L 24,8 L 8,19 Z"
+                                      Fill="White" />
+                            </Grid>
+                        </Viewbox>
+                    </Button>
                 </Grid>
             </Border>
+            </Grid>
         </Grid>
     </Grid>
 </UserControl>

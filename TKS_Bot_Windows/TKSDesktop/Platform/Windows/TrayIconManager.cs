@@ -143,10 +143,11 @@ public sealed class TrayIconManager : ITrayIcon, IDisposable
                 return false;
             }
 
-            _baseIcon ??= BitmapFrame.Create(new Uri($"pack://application:,,,/{IconRelativePath}", UriKind.Absolute));
+            _baseIcon ??= Views.AssetProvider.TryLoadImage("app.icon", out var artwork)
+                ? artwork : BitmapFrame.Create(new Uri($"pack://application:,,,/{IconRelativePath}", UriKind.Absolute));
             _icon = new TaskbarIcon
             {
-                // 直接写 pack URI，避免依赖尚未交付的 AssetProvider（FR-W-UI-12 的清单机制由资源层负责）。
+                // Use manifest artwork when delivered, otherwise the packaged placeholder.
                 IconSource = _baseIcon,
                 ToolTipText = NativeMethods.ClampTooltip(_statusText),
             };
@@ -358,10 +359,14 @@ public sealed class TrayIconManager : ITrayIcon, IDisposable
 
         try
         {
-            // Keep the packaged ICO as the source. H.NotifyIcon 2.3.x accepts
-            // URI-backed BitmapFrame/ICO sources, but replacing it at runtime
-            // with generated WPF bitmaps is not supported by its async converter.
-            // State remains explicit in the tooltip and opacity below.
+            // H.NotifyIcon requires URI-backed images; never assign a generated bitmap.
+            var logicalName = _state switch
+            {
+                TrayState.Online => "tray.online",
+                TrayState.Unread => "tray.unread",
+                _ => "tray.offline",
+            };
+            _icon.IconSource = Views.AssetProvider.TryLoadImage(logicalName, out var artwork) ? artwork : _baseIcon;
             switch (_state)
             {
                 case TrayState.Online:
@@ -400,9 +405,20 @@ public sealed class TrayIconManager : ITrayIcon, IDisposable
 
     private ImageSource StateIcon(TrayState state)
     {
+        var logicalName = state switch
+        {
+            TrayState.Online => "tray.online",
+            TrayState.Unread => "tray.unread",
+            _ => "tray.offline",
+        };
         if (_stateIcons.TryGetValue(state, out var cached))
         {
             return cached;
+        }
+        if (Views.AssetProvider.TryLoadImage(logicalName, out var artwork))
+        {
+            _stateIcons[state] = artwork;
+            return artwork;
         }
 
         var drawing = new DrawingVisual();

@@ -91,6 +91,12 @@ public interface IWindowChrome
     /// <summary>系统窗口级模糊（DWM）是否可用。不可用时前端必须降级为不透明渐变（FR-W-UI-3）。</summary>
     bool IsSystemBlurAvailable { get; }
 
+    /// <summary>
+    /// 在窗口句柄创建后应用系统级 Acrylic / blur 背景。
+    /// 返回是否实际应用成功；失败时前端必须使用不透明降级样式。
+    /// </summary>
+    bool TryApplySystemBlur(IntPtr hwnd, bool dark);
+
     /// <summary>系统是否要求「减少动画」（FR-W-UI-11）。</summary>
     bool IsAnimationReduced { get; }
 

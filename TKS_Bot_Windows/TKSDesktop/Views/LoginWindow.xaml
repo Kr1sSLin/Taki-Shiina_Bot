@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="{Binding TitleText}"
         Width="420"
-        Height="360"
+        Height="420"
         SizeToContent="Manual"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
@@ -40,10 +40,14 @@
                    FontSize="{DynamicResource Tks.Font.Display}"
                    Text="{Binding AppName}" />
 
-        <TextBlock Grid.Row="1"
+        <StackPanel Grid.Row="1">
+        <TextBlock
                    Style="{StaticResource Tks.Text.Caption}"
                    Margin="0,2,0,12"
                    Text="{Binding TitleText}" />
+        <TextBlock Style="{StaticResource Tks.Text.Caption}" TextWrapping="Wrap" Margin="0,0,0,12"
+                   Text="{Binding UnsignedNoticeText}" />
+        </StackPanel>
 
         <StackPanel Grid.Row="2">
             <TextBlock Style="{StaticResource Tks.Text.SectionHeader}"

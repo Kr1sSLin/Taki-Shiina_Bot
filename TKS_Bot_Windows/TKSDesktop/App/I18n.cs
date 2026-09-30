@@ -32,6 +32,7 @@ public static class I18n
 
         /* ---- 登录 ---- */
         ["login.title"] = "登录",
+        ["release.unsignedNotice"] = "此版本未签名。SmartScreen 可能提示“不常见的应用”；仅在来源可信且 SHA256 核对一致后选择“仍要运行”。",
         ["login.username"] = "用户名",
         ["login.password"] = "密码",
         ["login.submit"] = "登录",
@@ -55,8 +56,15 @@ public static class I18n
         ["conn.reconnect.manual.fullsync"] = "手动重连后将执行全量同步",
 
         /* ---- 聊天（FR-W-CHAT-*） ---- */
-        ["chat.input.placeholder"] = "说点什么…",
+        ["chat.input.placeholder"] = "输入消息",
         ["chat.send"] = "发送",
+        ["emoji.open"] = "表情",
+        ["emoji.smileys"] = "笑脸",
+        ["emoji.gestures"] = "手势",
+        ["emoji.hearts"] = "爱心",
+        ["emoji.animals"] = "动物",
+        ["emoji.food"] = "食物",
+        ["emoji.objects"] = "物品",
         ["chat.notConnected"] = "未连接到服务器",
         ["chat.queued"] = "已排队（{0} 秒内合并）",
         ["chat.typing"] = "立希正在输入…",
@@ -68,6 +76,9 @@ public static class I18n
         ["chat.connectionLost"] = "连接已断开，消息未能送达",
         ["chat.emptyReply"] = "立希似乎不知道说什么…",
         ["chat.search.placeholder"] = "搜索聊天记录",
+        ["chat.search.action"] = "搜索",
+        ["chat.search.count"] = "找到 {0} 条记录（最多显示 100 条）",
+        ["chat.search.failed"] = "搜索失败，请重试",
         ["chat.search.noResult"] = "没有匹配的记录",
         ["chat.search.tooShort"] = "请至少输入 1 个字符",
         ["chat.clear.confirm"] = "确定清空本地聊天记录吗？服务端数据不受影响。",
@@ -82,6 +93,9 @@ public static class I18n
 
         /* ---- 图片（FR-W-IMG-*） ---- */
         ["image.add"] = "添加图片",
+        ["image.fileDialog.title"] = "选择要发送的图片",
+        ["image.fileDialog.filter"] = "图片文件",
+        ["image.fileDialog.failed"] = "无法打开文件选择器，请重试",
         ["image.paste.empty"] = "剪贴板中没有图片",
         ["image.tooMany"] = "最多只能添加 {0} 张图片",
         ["image.invalidType"] = "仅支持 JPG 与 PNG 格式",
@@ -155,6 +169,7 @@ public static class I18n
         ["points.reason.ITEM_REFUND"] = "互动失败退回",
         ["points.reason.ADMIN_ADJUST"] = "管理员调整",
         ["points.reason.unknown"] = "其他变动",
+        ["points.filter.all"] = "全部事由",
         ["points.column.time"] = "时间",
         ["points.column.reason"] = "事由",
         ["points.column.change"] = "变动",

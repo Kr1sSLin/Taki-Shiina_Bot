@@ -53,6 +53,7 @@ dependencies {
     kapt(libs.hilt.compiler)
     implementation(libs.gson)
     implementation("io.coil-kt:coil-compose:2.6.0")
+    testImplementation("junit:junit:4.13.2")
 }
 
 kapt {

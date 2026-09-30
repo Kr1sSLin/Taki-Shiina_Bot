@@ -19,7 +19,9 @@ import os
 import tempfile
 import unittest
 
-_TMP = tempfile.TemporaryDirectory()
+from ws_api_import_fixture import ensure_ws_api_env
+
+ensure_ws_api_env()
 # httpx 会读代理环境变量；本机若设了 socks 代理会让 import 直接失败。
 # 本用例不发真实请求，清掉即可。
 for _var in ("ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
@@ -30,7 +32,6 @@ os.environ.setdefault("AUTH_JWT_SECRET", "")
 os.environ["BOT_HTTP_TOKEN"] = "test-access-token"
 os.environ.setdefault("AUTH_USER_ID", "test_user")
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-key")
-os.environ.setdefault("BOT_DATA_DIR", _TMP.name)
 
 TEST_TOKEN = "test-access-token"
 AUTH_HEADER = {"Authorization": f"Bearer {TEST_TOKEN}"}
@@ -88,6 +89,11 @@ class HttpChatTimelineTestCase(unittest.TestCase):
         api = self.http_api
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
+        from services.history_store import HistoryStore
+        from unittest.mock import patch
+        history_patch = patch.object(api, "history_store", HistoryStore(os.path.join(self._tmp.name, "history.json")))
+        history_patch.start()
+        self.addCleanup(history_patch.stop)
 
         # 把 timeline 指向临时目录，避免污染真实数据
         timeline_file = os.path.join(self._tmp.name, "chat_timeline.json")
@@ -178,6 +184,30 @@ class HttpChatTimelineTestCase(unittest.TestCase):
         items = self.http_api.timeline_store.load([])
         ids = [x.get("messageId") for x in items]
         self.assertEqual(len(ids), len(set(ids)), f"timeline messageId 必须唯一: {ids}")
+
+    def test_chat_storage_failure_returns_generic_error(self):
+        import copy
+        from unittest.mock import AsyncMock, patch
+        before = copy.deepcopy(self.http_api.state.user_chat_history)
+        original_append = self.http_api.append_timeline
+
+        async def _fail(_items):
+            raise RuntimeError("sensitive storage path")
+
+        self.http_api.append_timeline = _fail
+        self.addCleanup(lambda: setattr(self.http_api, "append_timeline", original_append))
+        with patch.object(self.http_api, "extract_user_facts", AsyncMock()) as extract:
+            response = self._post_chat("req-storage-fail")
+            extract.assert_not_called()
+        # Creating an empty per-user context is harmless; no failed message may persist.
+        self.assertEqual(
+            {key: value for key, value in self.http_api.state.user_chat_history.items() if value},
+            {key: value for key, value in before.items() if value},
+        )
+        self.assertFalse(os.path.exists(os.path.join(self._tmp.name, "history.json")))
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["code"], 5000)
+        self.assertNotIn("sensitive storage path", response.text)
 
 
 if __name__ == "__main__":

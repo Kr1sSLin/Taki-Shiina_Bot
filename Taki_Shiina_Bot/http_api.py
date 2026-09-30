@@ -15,10 +15,11 @@ from pydantic import BaseModel
 from auth_utils import AuthContext, DeviceEntry, parse_device_tokens, resolve_auth_context
 from app_constants import EMOTIONAL_TRIGGERS, LORE_TRIGGERS, USER_MEMO
 from app_state import AppState
-from secure_storage import SecureJsonStore
 from services.history_store import HistoryStore
 from services.memory_service import MemoryService
 from services.prompt_service import PromptService
+from services.timeline_store import TimelineStore
+from services.file_lock import FileLockTimeoutError
 from services.weather_service import WeatherService
 from text_utils import (
     clean_short_term_history,
@@ -32,6 +33,8 @@ from time_utils import build_time_block
 
 _base_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_base_dir, ".env"))
+_data_dir = os.path.abspath(os.getenv("BOT_DATA_DIR") or _base_dir)
+os.makedirs(_data_dir, exist_ok=True)
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 QWEATHER_API_KEY = os.getenv("QWEATHER_API_KEY")
@@ -62,9 +65,9 @@ except ValueError as exc:
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-state = AppState(history_file=os.path.join(_base_dir, "chat_history.json"))
-db = MemoryService(_base_dir)
-weather_service = WeatherService(_base_dir, QWEATHER_API_KEY, MY_LAT, MY_LON)
+state = AppState(history_file=os.path.join(_data_dir, "chat_history.json"))
+db = MemoryService(_data_dir)
+weather_service = WeatherService(_data_dir, QWEATHER_API_KEY, MY_LAT, MY_LON)
 history_store = HistoryStore(state.history_file)
 state.user_chat_history.update(history_store.load())
 
@@ -84,14 +87,26 @@ prompt_service = PromptService(
 )
 
 app = FastAPI(title="TakiShiina Bot HTTP API")
-TIMELINE_FILE = os.path.join(_base_dir, "chat_timeline.json")
-MEMORY_TIMELINE_FILE = os.path.join(_base_dir, "memory_timeline.json")
-TIMELINE_LOCK = asyncio.Lock()
-MEMORY_TIMELINE_LOCK = asyncio.Lock()
+TIMELINE_FILE = os.path.join(_data_dir, "chat_timeline.json")
+MEMORY_TIMELINE_FILE = os.path.join(_data_dir, "memory_timeline.json")
 
-timeline_store = SecureJsonStore(TIMELINE_FILE, logger)
-memory_timeline_store = SecureJsonStore(MEMORY_TIMELINE_FILE, logger)
+timeline_store = TimelineStore(TIMELINE_FILE, logger)
+memory_timeline_store = TimelineStore(MEMORY_TIMELINE_FILE, logger)
 
+
+
+def configure_unified_runtime(runtime) -> None:
+    """Bind HTTP handlers to the canonical ws_api runtime in unified mode only."""
+    global state, db, weather_service, history_store, client, prompt_service
+    global timeline_store, memory_timeline_store
+    state = runtime.state
+    db = runtime.db
+    weather_service = runtime.weather_service
+    history_store = runtime.history_store
+    client = runtime.client
+    prompt_service = runtime.prompt_service
+    timeline_store = runtime.timeline_store
+    memory_timeline_store = runtime.memory_timeline_store
 
 def _missing_required_tokens() -> list[str]:
     if DEVICE_TOKEN_ERROR:
@@ -120,68 +135,44 @@ def _trace_text(label: str, user_id: str, text: str):
     logger.info(f"[TRACE][{user_id}] {label}: {compact}")
 
 
+def _timeline_backend(store, path: str) -> TimelineStore:
+    """Return the shared backend; tolerate legacy tests injecting SecureJsonStore."""
+    if isinstance(store, TimelineStore) and store.path == path:
+        return store
+    return TimelineStore(path, logger)
+
+
 def _load_timeline() -> list[dict]:
-    """读取时间线。⚠️ **只在「文件不存在」时**返回空列表。
+    """Strict consistent snapshot; corruption and key mismatch propagate."""
+    return _timeline_backend(timeline_store, TIMELINE_FILE).snapshot()
 
-    文件存在但读不出来必须抛出：调用方是「load → extend → save 整份列表」，
-    拿到 [] 之后一 save 就会把整份历史覆盖掉。
 
-    注意 `SecureJsonStore.load()` 有**两条**吞异常的路径，必须一并挡住：
-      ① 加密文件但 `DATA_ENC_KEY` 不匹配 → 抛 DataDecryptError；
-      ② 文件被写坏 / 截断 / json 非法 → `load()` 内部 catch 后返回默认值**而不抛**。
-    上一版只判了 ①（手工 exists 判断 + `load()`），因此 ② 仍会静默覆盖历史。
-    `load_strict` 对两者都抛，是 append 路径唯一正确的读取方式。
-    """
-    return timeline_store.load_strict([])
-
+async def _load_timeline_async() -> list[dict]:
+    return await _timeline_backend(timeline_store, TIMELINE_FILE).snapshot_async()
 
 async def append_timeline(items: list[dict]):
-    """把消息写入 chat_timeline.json —— 客户端 GET /chat/history 读的就是这个文件。
-
-    ⚠️ 必须与 ws_api.append_timeline 行为一致：用户项的 messageId 用客户端传来的
-    requestId，客户端才能按 messageId 把本地那条 `error` 记录修复成 `sent`。
-    早前 HTTP 兜底通道漏写此处，导致走 REST 发出的消息永远进不了历史，
-    任何次数的同步都无法把它从「发送失败」修复回来。
-
-    注：ws_api 与 http_api 是两个进程，这把锁只保证进程内互斥；
-    SecureJsonStore 的原子写保证文件不会损坏，但两进程并发追加仍可能丢写。
-    REST 是低频兜底通道，暂接受该残余风险。
-    """
-    async with TIMELINE_LOCK:
-        try:
-            data = _load_timeline()
-        except Exception as e:
-            # 读不出来就绝不写回：宁可这条消息进不了历史，也不能覆盖整份历史
-            logger.error(f"读取时间线失败，放弃本次追加以避免覆盖历史: {e}")
-            return
-        data.extend(items)
-        if len(data) > 3000:
-            data = data[-3000:]
-        try:
-            timeline_store.save_strict(data)
-        except Exception as e:
-            logger.error(f"保存时间线失败: {e}")
-
+    """Cross-process atomic strict load → extend → trim → save."""
+    try:
+        await _timeline_backend(timeline_store, TIMELINE_FILE).append_async(items)
+    except Exception:
+        logger.exception("读取或保存时间线失败，未写回")
+        raise
 
 def _load_memory_timeline() -> list[dict]:
-    """同上：记忆时间线的严格读取（读失败必须让调用方感知）。"""
-    return memory_timeline_store.load_strict([])
+    """Strict consistent memory snapshot."""
+    return _timeline_backend(memory_timeline_store, MEMORY_TIMELINE_FILE).snapshot()
+
+
+async def _load_memory_timeline_async() -> list[dict]:
+    return await _timeline_backend(memory_timeline_store, MEMORY_TIMELINE_FILE).snapshot_async()
 
 
 async def append_memory_timeline(items: list[dict]):
-    async with MEMORY_TIMELINE_LOCK:
-        try:
-            data = _load_memory_timeline()
-        except Exception as e:
-            logger.error(f"读取记忆时间线失败，放弃本次追加以避免覆盖历史: {e}")
-            return
-        data.extend(items)
-        if len(data) > 3000:
-            data = data[-3000:]
-        try:
-            memory_timeline_store.save_strict(data)
-        except Exception as e:
-            logger.error(f"保存记忆时间线失败: {e}")
+    try:
+        await _timeline_backend(memory_timeline_store, MEMORY_TIMELINE_FILE).append_async(items)
+    except Exception:
+        logger.exception("读取或保存记忆时间线失败，未写回")
+        raise
 
 
 async def extract_user_facts(user_id: str, message: str):
@@ -312,7 +303,7 @@ async def chat_history(
     auth = _require_http_auth(authorization, trace_id)
 
     try:
-        items = _load_timeline()
+        items = await _load_timeline_async()
         filtered = [
             x
             for x in items
@@ -320,11 +311,17 @@ async def chat_history(
         ]
         filtered = filtered[-max(1, min(limit, 500)) :]
         return response_body(0, "ok", {"items": filtered}, trace_id)
-    except Exception as error:
+    except FileLockTimeoutError:
+        logger.exception("history timeline lock timeout")
+        return JSONResponse(
+            status_code=503,
+            content=response_body(50301, "服务暂时不可用，请稍后重试", None, trace_id),
+        )
+    except Exception:
         logger.exception("history failed")
         return JSONResponse(
             status_code=500,
-            content=response_body(5000, f"系统异常: {error}", None, trace_id),
+            content=response_body(5000, "系统异常，请稍后重试", None, trace_id),
         )
 
 
@@ -340,7 +337,7 @@ async def memory_facts(
     auth = _require_http_auth(authorization, trace_id)
 
     try:
-        items = _load_memory_timeline()
+        items = await _load_memory_timeline_async()
         target_user = auth.user_id
         filtered = [
             x for x in items
@@ -348,11 +345,17 @@ async def memory_facts(
         ]
         filtered = filtered[-max(1, min(limit, 500)) :]
         return response_body(0, "ok", {"items": filtered}, trace_id)
-    except Exception as error:
+    except FileLockTimeoutError:
+        logger.exception("memory timeline lock timeout")
+        return JSONResponse(
+            status_code=503,
+            content=response_body(50301, "服务暂时不可用，请稍后重试", None, trace_id),
+        )
+    except Exception:
         logger.exception("memory facts failed")
         return JSONResponse(
             status_code=500,
-            content=response_body(5000, f"系统异常: {error}", None, trace_id),
+            content=response_body(5000, "系统异常，请稍后重试", None, trace_id),
         )
 
 
@@ -367,11 +370,11 @@ async def get_city(
     try:
         city = weather_service.get_current_city()
         return response_body(0, "ok", {"city": city}, trace_id)
-    except Exception as error:
+    except Exception:
         logger.exception("get city failed")
         return JSONResponse(
             status_code=500,
-            content=response_body(5000, f"系统异常: {error}", None, trace_id),
+            content=response_body(5000, "系统异常，请稍后重试", None, trace_id),
         )
 
 
@@ -394,11 +397,11 @@ async def set_city(
     try:
         weather_service.set_city(city)
         return response_body(0, "ok", {"city": city}, trace_id)
-    except Exception as error:
+    except Exception:
         logger.exception("set city failed")
         return JSONResponse(
             status_code=500,
-            content=response_body(5000, f"系统异常: {error}", None, trace_id),
+            content=response_body(5000, "系统异常，请稍后重试", None, trace_id),
         )
 
 
@@ -506,17 +509,6 @@ async def chat(
                 timer_at, timer_text = timer_at_retry, timer_text_retry
 
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        history.append({"role": "user", "content": message_text, "ts": now_ms - 1})
-        history.append({"role": "assistant", "content": cleaned_reply, "ts": now_ms})
-        if len(history) > 300:
-            state.user_chat_history[user_id] = history[-300:]
-        history_store.save(state.user_chat_history)
-
-        state.last_activity[user_id] = datetime.now(timezone.utc)
-        state.last_bot_response_time[user_id] = datetime.now(timezone.utc)
-
-        asyncio.create_task(extract_user_facts(user_id, message_text))
-
         final_reply = inject_emojis(sanitize_taki_reply(cleaned_reply))
         _trace_text("D_FINAL", user_id, final_reply)
 
@@ -547,6 +539,17 @@ async def chat(
             ]
         )
 
+        # Timeline is the durable delivery record. Do not update conversational
+        # context or extract facts from a request whose timeline write failed.
+        history.append({"role": "user", "content": message_text, "ts": now_ms - 1})
+        history.append({"role": "assistant", "content": cleaned_reply, "ts": now_ms})
+        if len(history) > 300:
+            state.user_chat_history[user_id] = history[-300:]
+        history_store.save(state.user_chat_history)
+        state.last_activity[user_id] = datetime.now(timezone.utc)
+        state.last_bot_response_time[user_id] = datetime.now(timezone.utc)
+        asyncio.create_task(extract_user_facts(user_id, message_text))
+
         usage = response.usage
         usage_data = {
             "promptTokens": getattr(usage, "prompt_tokens", 0),
@@ -569,17 +572,23 @@ async def chat(
         return JSONResponse(status_code=200, content=response_body(0, "ok", data, trace_id))
     except HTTPException:
         raise
-    except Exception as error:
+    except FileLockTimeoutError:
+        logger.exception("chat timeline lock timeout")
+        return JSONResponse(
+            status_code=503,
+            content=response_body(50301, "服务暂时不可用，请稍后重试", None, trace_id),
+        )
+    except Exception:
         logger.exception("chat failed")
         return JSONResponse(
             status_code=500,
-            content=response_body(5000, f"系统异常: {error}", None, trace_id),
+            content=response_body(5000, "系统异常，请稍后重试", None, trace_id),
         )
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    host = os.getenv("BOT_HTTP_HOST", "0.0.0.0")
+    host = os.getenv("BOT_HTTP_HOST", "127.0.0.1")
     port = int(os.getenv("BOT_HTTP_PORT", "8000"))
     uvicorn.run("http_api:app", host=host, port=port, reload=False)

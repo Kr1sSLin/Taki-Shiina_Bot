@@ -26,95 +26,17 @@
 from __future__ import annotations
 
 import copy
-import errno
 import os
 import threading
-import time
 from contextlib import contextmanager
+import time
 from typing import Any, Iterator
 
 from secure_storage import SecureJsonStore
+from services.file_lock import acquire_file_lock, release_file_lock
 
-try:  # POSIX（Linux/macOS）：flock 原生阻塞，且区分独占锁与共享锁
-    import fcntl
-except ImportError:  # pragma: no cover - Windows
-    fcntl = None  # type: ignore[assignment]
-
-try:  # Windows：底层是 LockFile，只有独占区域锁
-    import msvcrt
-except ImportError:  # pragma: no cover - POSIX
-    msvcrt = None  # type: ignore[assignment]
-
-
-# ==================== 跨进程文件锁（PRD EDGE-1） ====================
-
-# Windows 区域锁按“字节区间”互斥：所有进程必须锁同一区间才能互斥，故固定锁第 0 字节。
-_WIN_LOCK_OFFSET = 0
-_WIN_LOCK_BYTES = 1
-# msvcrt.LK_LOCK 内部只重试 10 次（约 1 秒/次）后抛异常，无法表达“一直阻塞”，
-# 故改用 LK_NBLCK（非阻塞）+ 短睡眠循环，实现与 flock(LOCK_EX) 等价的真阻塞语义。
-_WIN_LOCK_RETRY_INTERVAL = 0.02
-# 只有“已被他人锁定”类错误才继续重试；其它错误（权限、句柄非法等）立即抛，
-# 以免把真实故障伪装成“一直在等锁”。
-_WIN_LOCK_RETRY_ERRNOS = frozenset(
-    code
-    for code in (
-        getattr(errno, "EACCES", None),
-        getattr(errno, "EAGAIN", None),
-        getattr(errno, "EDEADLOCK", None),
-    )
-    if code is not None
-)
-
-
-def acquire_file_lock(fd: int, *, exclusive: bool) -> None:
-    """在 ``fd`` 上**阻塞**获取跨进程文件锁，直到成功为止（双端同一套调用语义）。
-
-    - POSIX（Linux/macOS）：``fcntl.flock``；``exclusive=True`` → ``LOCK_EX``，
-      ``exclusive=False`` → ``LOCK_SH``，与改动前完全一致。
-    - Windows：``msvcrt.locking`` 底层是 ``LockFile``，**只有独占区域锁，没有共享锁语义**，
-      因此共享请求在此降级为同一字节区间（第 0 字节）的独占锁。
-
-    共享锁降级的安全性（``exclusive=False`` 的唯一调用点是 ``snapshot()`` 读快照）：
-    降级只会把锁“加强”，不会降低互斥强度——
-
-    1. 不产生竞态：锁更强不可能让两个读-改-写重叠，最多让并发只读退化为串行；
-    2. 不产生丢更新/超扣：扣分路径本来就走独占锁 ``transaction()``，语义未变；
-    3. 不引入死锁环路：本项目所有加锁点都是“同一时刻只持有一把锁”
-       （``snapshot()`` 与 ``transaction()`` 从不嵌套，已核实全部调用点），
-       跨进程各自独立取锁、无 AB-BA 交叉，故不存在环路等待；
-    4. 代价仅是并发读串行化（读路径本身是毫秒级短事务）。
-
-    注意：同一进程内用**不同 fd** 重复加锁同样会阻塞（Linux flock 与 Windows LockFile
-    行为一致），因此调用方不得嵌套加锁。
-    """
-    if fcntl is not None:
-        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
-        return
-    if msvcrt is None:  # pragma: no cover - 既非 POSIX 也非 Windows 的平台
-        raise RuntimeError("当前平台既无 fcntl 也无 msvcrt，无法实现跨进程文件锁")
-    # Windows 分支：msvcrt 无共享锁，exclusive 在此被有意忽略（共享 → 独占降级）。
-    while True:
-        try:
-            os.lseek(fd, _WIN_LOCK_OFFSET, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, _WIN_LOCK_BYTES)
-            return
-        except OSError as exc:
-            if exc.errno not in _WIN_LOCK_RETRY_ERRNOS:
-                raise
-            time.sleep(_WIN_LOCK_RETRY_INTERVAL)
-
-
-def release_file_lock(fd: int) -> None:
-    """释放 ``acquire_file_lock`` 取得的锁（失败向上抛，不静默吞掉）。"""
-    if fcntl is not None:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return
-    if msvcrt is None:  # pragma: no cover - 既非 POSIX 也非 Windows 的平台
-        return
-    os.lseek(fd, _WIN_LOCK_OFFSET, os.SEEK_SET)
-    msvcrt.locking(fd, msvcrt.LK_UNLCK, _WIN_LOCK_BYTES)
-
+# ``acquire_file_lock`` / ``release_file_lock`` are imported above and re-exported
+# here for backward compatibility with existing callers and tests.
 
 SCHEMA_VERSION = 1
 

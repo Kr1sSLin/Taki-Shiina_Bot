@@ -73,6 +73,9 @@ internal static class NativeMethods
     /// <summary><c>ACCENT_ENABLE_BLURBEHIND</c>（Win10 模糊）。</summary>
     internal const int AccentEnableBlurBehind = 3;
 
+    /// <summary><c>ACCENT_ENABLE_ACRYLICBLURBEHIND</c>（Win10 1803+ Acrylic）。</summary>
+    internal const int AccentEnableAcrylicBlurBehind = 4;
+
     /// <summary><c>ACCENT_DISABLED</c>。</summary>
     internal const int AccentDisabled = 0;
 
@@ -243,6 +246,10 @@ internal static class NativeMethods
     [DllImport("dwmapi.dll", PreserveSig = true, SetLastError = false)]
     internal static extern int DwmIsCompositionEnabled(out int enabled);
 
+    /// <summary>把 DWM 背景延伸至整个客户区，令系统背景材质在 WPF 内容后可见。</summary>
+    [DllImport("dwmapi.dll", PreserveSig = true, SetLastError = false)]
+    internal static extern int DwmExtendFrameIntoClientArea(IntPtr hwnd, ref Margins margins);
+
     /* ============================== kernel32.dll ============================== */
 
     /// <summary>当前线程 id（<see cref="AttachThreadInput"/> 的 <c>idAttach</c>）。</summary>
@@ -331,6 +338,16 @@ internal static class NativeMethods
         internal int AccentFlags;
         internal int GradientColor;
         internal int AnimationId;
+    }
+
+    /// <summary><c>DwmExtendFrameIntoClientArea</c> 的边距；四边为 -1 表示整个客户区。</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct Margins
+    {
+        internal int Left;
+        internal int Right;
+        internal int Top;
+        internal int Bottom;
     }
 
     /* ============================== 辅助 ============================== */

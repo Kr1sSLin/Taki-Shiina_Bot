@@ -14,11 +14,12 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 import time
 from typing import Any
 
-from fastapi import APIRouter, Body, Header, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from api.v1.deps import (
@@ -35,7 +36,24 @@ from services.points_events import points_changed_event
 from services.points_service import InsufficientPointsError
 from time_utils import get_business_today, parse_business_date
 
-router = APIRouter()
+def require_admin_access(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """Require ordinary API auth plus the independent admin shared secret."""
+    trace_id = resolve_trace_id(request)
+    require_auth(authorization, trace_id)
+    expected = (os.getenv("ADMIN_API_TOKEN", "") or "").strip()
+    supplied = (x_admin_token or "").strip()
+    if not expected or not supplied or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": 40301, "message": "管理员鉴权失败", "data": None, "traceId": trace_id},
+        )
+
+
+router = APIRouter(dependencies=[Depends(require_admin_access)])
 
 
 @router.get("/admin/gamification-config")
@@ -59,8 +77,8 @@ async def update_gamification_config(
         return business_error(CODE_INVALID_PARAM, "请求体不能为空", None, trace_id, http_status=400)
     try:
         config = gamification.config.update_sections(payload)
-    except ConfigValidationError as exc:
-        return business_error(CODE_INVALID_PARAM, f"配置校验失败: {exc}", None, trace_id, http_status=400)
+    except ConfigValidationError:
+        return business_error(CODE_INVALID_PARAM, "配置校验失败", None, trace_id, http_status=400)
     return ok(config, trace_id, message="配置已更新")
 
 
@@ -109,11 +127,12 @@ async def user_progress(
 
 # ==================== 测试 / 运维接口 ====================
 # ⚠️ 以下接口只用于联调与测试：同样需要 JWT 鉴权，且所有改动都会留下积分流水，
-#    便于随时对账与回滚。生产环境可用 ENABLE_ADMIN_TEST_API=0 一次性关闭。
+#    便于随时对账与回滚。安全缺省为关闭；仅在隔离测试环境显式设置
+#    ENABLE_ADMIN_TEST_API=1 后启用。
 
 
 def _test_api_enabled() -> bool:
-    return (os.getenv("ENABLE_ADMIN_TEST_API", "1") or "1").strip() != "0"
+    return (os.getenv("ENABLE_ADMIN_TEST_API", "0") or "0").strip() == "1"
 
 
 class PointsAdjustReq(BaseModel):
@@ -160,8 +179,8 @@ async def adjust_points(
             trace_id,
             http_status=400,
         )
-    except ValueError as exc:
-        return business_error(CODE_INVALID_PARAM, str(exc), None, trace_id, http_status=400)
+    except ValueError:
+        return business_error(CODE_INVALID_PARAM, "参数值无效", None, trace_id, http_status=400)
 
     data = {
         "userId": target,

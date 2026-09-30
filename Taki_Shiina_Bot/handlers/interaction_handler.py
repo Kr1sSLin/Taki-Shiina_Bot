@@ -47,7 +47,7 @@ CODE_INVALID_PARAM = 40200
 CODE_INSUFFICIENT_POINTS = 40201
 CODE_ITEM_NOT_FOUND = 40202
 CODE_AI_FAILED_REFUNDED = 40204
-
+CODE_STORAGE_FAILED_REFUNDED = 40205
 # 最终失败兜底文案（PRD FR-9：已扣减积分自动退回 + 失败兜底文案）
 DEFAULT_FALLBACK_TEXT = "……啧，刚走神了。\n东西我收下了，等下再说。"
 
@@ -130,6 +130,7 @@ class InteractionSendResult:
             CODE_INSUFFICIENT_POINTS: "INSUFFICIENT_POINTS",
             CODE_ITEM_NOT_FOUND: "ITEM_NOT_FOUND",
             CODE_AI_FAILED_REFUNDED: "AI_FAILED_REFUNDED",
+            CODE_STORAGE_FAILED_REFUNDED: "STORAGE_FAILED_REFUNDED",
             CODE_INVALID_PARAM: "INVALID_PARAM",
         }.get(self.error_code, "UNKNOWN")
 
@@ -359,13 +360,15 @@ class InteractionHandler:
                 f"[互动] DeepSeek 最终失败: user={user_id}, item={item['id']}, "
                 f"attempts={exc.attempts}, elapsedMs={elapsed_ms}, 累计失败={self._ai_failure_count}"
             )
-            await self._handle_ai_failure(user_id, item, request_id, cost, str(exc), exc.attempts, elapsed_ms)
+            refunded = await self._handle_ai_failure(
+                user_id, item, request_id, cost, str(exc), exc.attempts, elapsed_ms
+            )
             result.ok = False
             result.error_code = CODE_AI_FAILED_REFUNDED
-            result.message = "Taki 暂时没回应，积分已退回"
-            result.refunded = True
+            result.message = "Taki 暂时没回应，积分已退回" if refunded else "互动失败，请联系管理员核对积分"
+            result.refunded = refunded
             result.attempts = exc.attempts
-            result.fallback_text = DEFAULT_FALLBACK_TEXT
+            result.fallback_text = DEFAULT_FALLBACK_TEXT if refunded else None
             result.balance = self.points_service.get_balance(user_id)
             self._remember(request_id, result)
             await self._push(user_id, {"type": "chat.typing", "payload": {"typing": False}})
@@ -387,45 +390,60 @@ class InteractionHandler:
         timeline_user_content = f"{item.get('icon', '')} {item['name']}".strip()
         if attachment:
             timeline_user_content = f"{timeline_user_content} · {attachment}"
-        await self.append_timeline(
-            # ⚠️ 被摘走（合进本次礼物回复）的聊天消息也**必须逐条写时间线**。
-            #    它们的送达确认此前只存在于 live 帧 `requestIds` 与 HTTP 响应
-            #    `mergedRequestIds` 里；一旦两者都没到达（断线 / 超时 / 应用被杀），
-            #    客户端本地那几条 `error` 气泡就再也无法通过 GET /chat/history 和解，
-            #    界面永久显示「发送失败」，而服务端其实早已把它们答进这条回复了。
-            #
-            #    锚点用 now_ms - 1（而非 now_ms）：这些文字消息在时序上**早于**礼物本身，
-            #    必须落在礼物行（now_ms - 1）之前，否则会与礼物行**时间戳并列**，
-            #    客户端按 timestamp 排序时两条气泡的先后变得不确定。
-            build_user_timeline_items(merged_items, now_ms - 1, user_id=user_id)
-            + [
+        try:
+            await self.append_timeline(
+                # 被摘走（合进本次礼物回复）的聊天消息也必须逐条写时间线。
+                build_user_timeline_items(merged_items, now_ms - 1, user_id=user_id)
+                + [
+                    {
+                        "messageId": f"interaction_user_{request_id}",
+                        "userId": user_id,
+                        "role": "user",
+                        "content": timeline_user_content,
+                        "timestamp": now_ms - 1,
+                        "contentType": "interaction",
+                        "itemId": item["id"],
+                        "itemName": item["name"],
+                        "itemIcon": item.get("icon", ""),
+                        "costPoints": cost,
+                        "attachment": attachment or None,
+                    },
+                    {
+                        "messageId": message_id,
+                        "userId": user_id,
+                        "role": "bot",
+                        "content": final_reply,
+                        "timestamp": now_ms,
+                        "contentType": "interaction",
+                        "itemId": item["id"],
+                        "itemName": item["name"],
+                        "itemIcon": item.get("icon", ""),
+                    },
+                ]
+            )
+        except Exception:
+            self.logger.exception("[互动] 时间线写入失败，执行幂等退款")
+            refunded = await self._refund_charge(user_id, item, request_id, cost)
+            result.ok = False
+            result.error_code = CODE_STORAGE_FAILED_REFUNDED
+            result.message = "保存失败，积分已退回" if refunded else "保存失败，请联系管理员核对积分"
+            result.refunded = refunded
+            result.balance = self.points_service.get_balance(user_id)
+            self._remember(request_id, result)
+            await self._push(user_id, {"type": "chat.typing", "payload": {"typing": False}})
+            await self._push(
+                user_id,
                 {
-                    # 与 requestId 绑定的确定性 messageId：客户端本地乐观插入同一条时可直接去重
-                    "messageId": f"interaction_user_{request_id}",
-                    "userId": user_id,
-                    "role": "user",
-                    "content": timeline_user_content,
-                    "timestamp": now_ms - 1,
-                    "contentType": "interaction",
-                    "itemId": item["id"],
-                    "itemName": item["name"],
-                    "itemIcon": item.get("icon", ""),
-                    "costPoints": cost,
-                    "attachment": attachment or None,
+                    "type": "bot.error",
+                    "requestId": request_id,
+                    "payload": {
+                        "errorCode": "STORAGE_FAILED_REFUNDED",
+                        "message": "消息保存失败，请稍后重试",
+                        "requestIds": [request_id, *merged_request_ids],
+                    },
                 },
-                {
-                    "messageId": message_id,
-                    "userId": user_id,
-                    "role": "bot",
-                    "content": final_reply,
-                    "timestamp": now_ms,
-                    "contentType": "interaction",
-                    "itemId": item["id"],
-                    "itemName": item["name"],
-                    "itemIcon": item.get("icon", ""),
-                },
-            ]
-        )
+            )
+            return result
 
         if timer_at and timer_text:
             result.timer_instruction = {"target": timer_at, "text": timer_text}
@@ -518,8 +536,72 @@ class InteractionHandler:
         reason: str,
         attempts: int,
         elapsed_ms: int,
-    ) -> None:
-        """FR-9：退回积分 + 记 ITEM_REFUND 流水 + 下发兜底文案 + 飞书告警。"""
+    ) -> bool:
+        """FR-9：幂等退回积分；仅在失败记录持久化后下发兜底完成帧。"""
+        refunded = await self._refund_charge(user_id, item, request_id, cost)
+        # Detailed AI failure reason remains in logs/alerts only, never client events.
+
+        now_ms = int(time.time() * 1000)
+        failure_message_id = f"interaction_fail_{uuid.uuid4().hex}"
+        try:
+            await self.append_timeline(
+                [
+                    {
+                        "messageId": failure_message_id,
+                        "userId": user_id,
+                        "role": "bot",
+                        "content": DEFAULT_FALLBACK_TEXT,
+                        "timestamp": now_ms,
+                        "contentType": "interaction",
+                        "itemId": item["id"],
+                        "interactionFailed": True,
+                    }
+                ]
+            )
+        except Exception:
+            self.logger.exception("[互动] AI失败兜底时间线写入失败")
+            await self._push(
+                user_id,
+                {
+                    "type": "bot.error",
+                    "requestId": request_id,
+                    "payload": {
+                        "errorCode": "STORAGE_FAILED_REFUNDED",
+                        "message": "消息保存失败，请稍后重试",
+                        "requestIds": [request_id],
+                    },
+                },
+            )
+        else:
+            await self._push(
+                user_id,
+                {
+                    "type": "chat.reply.stream",
+                    "requestId": request_id,
+                    "payload": {
+                        "delta": "",
+                        "done": True,
+                        "messageId": failure_message_id,
+                        "finalContent": DEFAULT_FALLBACK_TEXT,
+                        "timestamp": now_ms,
+                        "requestIds": [request_id],
+                        "messageKind": "interaction_failed",
+                        "interactionItemId": item["id"],
+                        "interactionFailed": True,
+                    },
+                },
+            )
+        self._alert(
+            f"⚠️ 互动回复生成失败（已退款）\n用户: {user_id}\n物品: {item['id']}（{cost} 积分）\n"
+            f"重试次数: {attempts}\n耗时: {elapsed_ms}ms\n原因: {reason}\n"
+            f"累计失败次数: {self._ai_failure_count}"
+        )
+        return refunded
+
+    async def _refund_charge(
+        self, user_id: str, item: dict[str, Any], request_id: str, cost: int
+    ) -> bool:
+        """Refund an interaction charge exactly once via the points ledger key."""
         try:
             refund = self.points_service.refund_item(
                 user_id=user_id,
@@ -532,51 +614,14 @@ class InteractionHandler:
             if refund.created:
                 balance = self.points_service.get_balance(user_id)
                 await self._push(user_id, points_changed_event(refund.entry, balance=balance))
+            return True
         except Exception as exc:
             self.logger.exception(f"[互动] 积分退回失败，需人工核对: user={user_id}, key={request_id}, err={exc}")
             self._alert(
                 f"❗ 互动积分退回失败\n用户: {user_id}\n物品: {item['id']}\n"
                 f"幂等键: {request_id}\n金额: {cost}\n错误: {exc}"
             )
-
-        now_ms = int(time.time() * 1000)
-        await self.append_timeline(
-            [
-                {
-                    "messageId": f"interaction_fail_{uuid.uuid4().hex}",
-                    "userId": user_id,
-                    "role": "bot",
-                    "content": DEFAULT_FALLBACK_TEXT,
-                    "timestamp": now_ms,
-                    "contentType": "interaction",
-                    "itemId": item["id"],
-                    "interactionFailed": True,
-                }
-            ]
-        )
-        await self._push(
-            user_id,
-            {
-                "type": "chat.reply.stream",
-                "requestId": request_id,
-                "payload": {
-                    "delta": "",
-                    "done": True,
-                    "messageId": f"interaction_fail_{uuid.uuid4().hex}",
-                    "finalContent": DEFAULT_FALLBACK_TEXT,
-                    "timestamp": now_ms,
-                    "requestIds": [request_id],
-                    "messageKind": "interaction_failed",
-                    "interactionItemId": item["id"],
-                    "interactionFailed": True,
-                },
-            },
-        )
-        self._alert(
-            f"⚠️ 互动回复生成失败（已退款）\n用户: {user_id}\n物品: {item['id']}（{cost} 积分）\n"
-            f"重试次数: {attempts}\n耗时: {elapsed_ms}ms\n原因: {reason}\n"
-            f"累计失败次数: {self._ai_failure_count}"
-        )
+            return False
 
     # ==================== 内部：上下文组装（FR-7） ====================
     async def build_prompt_preview(

@@ -46,7 +46,7 @@ namespace TKSDesktop.Core.Services.Chat;
 /// <see cref="IAuthService"/>（取本机 deviceId，仅用于 EDGE-W-4 的回声比对）、
 /// <see cref="IAttachmentPort"/>（FR-W-IMG-6 附件绑定）。缺失时功能降级并记日志，不影响发送主链路。</para>
 /// </summary>
-public sealed class ChatService : IChatService, IDisposable
+public sealed class ChatService : IChatService, IInteractionDelivery, IDisposable
 {
     /// <summary>未连接提示（i18n key）。</summary>
     private const string NoticeNotConnected = "chat.notConnected";
@@ -568,6 +568,50 @@ public sealed class ChatService : IChatService, IDisposable
     }
 
     /// <summary>`done=true` 收尾（§10.3）：删占位 → 批量送达 → 拆分落库 → 排程提醒 → 通知。</summary>
+    public async Task BeginAsync(string requestId, string itemId, string? text)
+    {
+        await _repository.UpsertMessageAsync(new ChatMessageRecord(requestId, "user", "interaction",
+            string.IsNullOrWhiteSpace(text) ? itemId : text, ProtocolConstants.StatusSending, NowMs)).ConfigureAwait(false);
+        await RaiseRowAsync(requestId).ConfigureAwait(false);
+        await RaiseTypingAsync(new ChatTypingState(true, "interaction_merge", null)).ConfigureAwait(false);
+    }
+
+    public async Task CompleteAsync(string requestId, InteractionSendDataDto? response, bool success, string? errorCode)
+    {
+        await _frameGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var existing = await _repository.GetMessageAsync(requestId).ConfigureAwait(false);
+            // A successful WS response can precede a lost HTTP response.
+            if (success || existing?.Status != ProtocolConstants.StatusSent)
+                await _repository.UpdateMessageStatusAsync(requestId,
+                    success ? ProtocolConstants.StatusSent : ProtocolConstants.StatusError, errorCode).ConfigureAwait(false);
+            await RaiseRowAsync(requestId).ConfigureAwait(false);
+            var ids = (response?.MergedRequestIds ?? []).Append(requestId).Distinct(StringComparer.Ordinal).ToList();
+            if (response is not null && (!string.IsNullOrWhiteSpace(response.MessageId) || ids.Count > 1))
+            {
+                var payload = new ChatReplyStreamPayloadDto
+                {
+                    Done = true,
+                    MessageId = response.MessageId,
+                    FinalContent = response.Reply ?? response.FallbackText,
+                    RequestIds = success ? ids : response.MergedRequestIds ?? [],
+                    MessageKind = success ? "interaction" : "interaction_failed",
+                    InteractionItemName = response.Item?.Name,
+                    InteractionItemIcon = response.Item?.Icon,
+                    InteractionFailed = !success,
+                    TimerInstruction = response.TimerInstruction,
+                };
+                await FinishStreamAsync(requestId, payload).ConfigureAwait(false);
+            }
+            await RaiseTypingAsync(new ChatTypingState(false, null, null)).ConfigureAwait(false);
+        }
+        finally
+        {
+            _frameGate.Release();
+        }
+    }
+
     private async Task FinishStreamAsync(string requestId, ChatReplyStreamPayloadDto payload)
     {
         var entry = _streaming.Complete(requestId);

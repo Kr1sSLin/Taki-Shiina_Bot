@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -19,11 +20,18 @@ from api.v1.level import router as level_router
 from api.v1.points import router as points_router
 
 TEST_TOKEN = "test-access-token"
-AUTH_HEADER = {"Authorization": f"Bearer {TEST_TOKEN}"}
+USER_HEADER = {"Authorization": f"Bearer {TEST_TOKEN}"}
+AUTH_HEADER = {**USER_HEADER, "X-Admin-Token": "test-admin-token"}
+ADMIN_HEADER = AUTH_HEADER
 
 
 class ApiEndpointsTestCase(unittest.TestCase):
     def setUp(self):
+        self._admin_api_env = patch.dict(
+            "os.environ", {"ENABLE_ADMIN_TEST_API": "1", "ADMIN_API_TOKEN": "test-admin-token"}
+        )
+        self._admin_api_env.start()
+        self.addCleanup(self._admin_api_env.stop)
         self._tmp, self.rig = make_rig(
             ai_outcomes=["谁让你买的。\n收下了。"],
             retry_rules={"max_retries": 1, "total_timeout_seconds": 1.0, "attempt_timeout_seconds": 0.2},
@@ -45,6 +53,23 @@ class ApiEndpointsTestCase(unittest.TestCase):
         )
         register_gamification(self.rig.gamification)
         self.client = TestClient(app)
+
+    def test_admin_test_api_can_be_disabled(self):
+        with patch.dict("os.environ", {"ENABLE_ADMIN_TEST_API": "0"}):
+            response = self.client.post(
+                "/api/v1/admin/points/adjust", headers=ADMIN_HEADER, json={"amount": 1}
+            )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["code"], 40301)
+
+    def test_admin_requires_independent_token_in_addition_to_ordinary_auth(self):
+        missing = self.client.get("/api/v1/admin/gamification-config", headers=USER_HEADER)
+        wrong = self.client.get(
+            "/api/v1/admin/gamification-config",
+            headers={**AUTH_HEADER, "X-Admin-Token": "wrong"},
+        )
+        self.assertEqual(missing.status_code, 403)
+        self.assertEqual(wrong.status_code, 403)
 
     def set_balance(self, amount: int):
         from services.progress_store import PointsStore
