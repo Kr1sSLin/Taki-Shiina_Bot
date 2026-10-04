@@ -714,6 +714,9 @@
 }
 
 .emoji-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   height: 32px;
   border: none;
   border-radius: var(--radius-sm);

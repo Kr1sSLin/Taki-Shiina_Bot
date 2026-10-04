@@ -181,6 +181,19 @@ BIZ_TZ_OFFSET_HOURS=8
 完整变量（含飞书告警、设备白名单、数据迁移开关等）请见 `.env.example`。
 
 ### 依赖安装
+
+Linux 服务器支持一键配置依赖、`.env` 和 systemd 开机启动（统一后端入口）：
+
+```bash
+git pull
+bash scripts/setup-backend.sh
+```
+
+首次按提示填写账号、密码和 DeepSeek API Key；以后拉取更新后重跑即可。已有配置和数据密钥会保留。
+系统要求、无交互更新、HTTPS 反代及运维命令见 **[Linux 后端部署说明](scripts/README_backend_linux.md)**。
+
+手动安装依赖：
+
 ```bash
 cd Taki_Shiina_Bot
 pip install -r requirements.txt

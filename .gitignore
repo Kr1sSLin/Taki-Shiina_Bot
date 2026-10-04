@@ -31,6 +31,8 @@ build.old/
 .build-android.sh
 
 # Python 虚拟环境（Windows 为 Scripts/，POSIX 为 bin/）
+__pycache__/
+*.py[cod]
 .venv/
 venv/
 ENV/

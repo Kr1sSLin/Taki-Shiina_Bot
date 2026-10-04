@@ -18,6 +18,9 @@ internal static class NativeMethods
     /// <summary>全局热键回调消息（<c>RegisterHotKey</c>）。</summary>
     internal const int WmHotkey = 0x0312;
 
+    internal const int WmSysCommand = 0x0112;
+    internal const int ScKeyMenu = 0xF100;
+
     /// <summary>电源广播（FR-W-CONN-7 / EDGE-W-12）。</summary>
     internal const int WmPowerBroadcast = 0x0218;
 
@@ -139,6 +142,7 @@ internal static class NativeMethods
 
     /// <summary><c>SW_RESTORE</c>：还原最小化窗口（§8.7 第 3 步）。</summary>
     internal const int SwRestore = 9;
+    internal const int SwShow = 5;
 
     /// <summary>托盘 tooltip 上限（<c>szTip</c> 为 128 个 <c>WCHAR</c>，含终止符）。</summary>
     internal const int MaxTooltipChars = 127;
@@ -159,11 +163,19 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool AllowSetForegroundWindow(uint processId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsWindowEnabled(IntPtr hWnd);
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr GetForegroundWindow();
@@ -255,6 +267,10 @@ internal static class NativeMethods
     /// <summary>当前线程 id（<see cref="AttachThreadInput"/> 的 <c>idAttach</c>）。</summary>
     [DllImport("kernel32.dll")]
     internal static extern uint GetCurrentThreadId();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetNamedPipeServerProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint processId);
 
     /* ============================== shell32.dll / combase.dll ============================== */
 

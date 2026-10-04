@@ -43,14 +43,7 @@ public partial class LoginWindow : Window
     {
         _viewModel.ApplyNotice(noticeKey);
 
-        if (IsVisible)
-        {
-            Activate();
-            return;
-        }
-
-        Show();
-        UsernameBox.Focus();
+        if (WindowActivation.Restore(this) && IsEnabled && IsActive) UsernameBox.Focus();
     }
 
     /// <summary>关闭窗口（登录成功切换主界面时调用）。</summary>
