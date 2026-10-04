@@ -179,6 +179,13 @@ public sealed class SingleInstanceGuard : IDisposable
                 using var connectCts = new CancellationTokenSource(remaining);
                 await client.ConnectAsync(connectCts.Token).ConfigureAwait(false);
 
+                // A process launched by Explorer can transfer its foreground
+                // permission to the already-running IPC server before waking it.
+                if (NativeMethods.GetNamedPipeServerProcessId(client.SafePipeHandle, out var ownerPid))
+                {
+                    _ = NativeMethods.AllowSetForegroundWindow(ownerPid);
+                }
+
                 await client.WriteAsync(bytes, connectCts.Token).ConfigureAwait(false);
                 await client.FlushAsync(connectCts.Token).ConfigureAwait(false);
 
@@ -272,11 +279,10 @@ public sealed class SingleInstanceGuard : IDisposable
 
         try
         {
-            // ① 最小化时必须先还原，否则 SetForegroundWindow 无效。
-            if (NativeMethods.IsIconic(windowHandle))
-            {
-                _ = NativeMethods.ShowWindow(windowHandle, NativeMethods.SwRestore);
-            }
+            // Show a tray-hidden window as well as restoring a minimized one.
+            // SW_SHOW preserves an existing maximized state.
+            var showCommand = NativeMethods.IsIconic(windowHandle) ? NativeMethods.SwRestore : NativeMethods.SwShow;
+            _ = NativeMethods.ShowWindow(windowHandle, showCommand);
 
             // ② 直接尝试（当前进程是前台进程时即可成功）。
             if (NativeMethods.SetForegroundWindow(windowHandle))
@@ -294,14 +300,14 @@ public sealed class SingleInstanceGuard : IDisposable
             if (foregroundThread == 0 || foregroundThread == currentThread)
             {
                 // 无前台窗口或已是本线程：再试一次还原 + 聚焦。
-                _ = NativeMethods.ShowWindow(windowHandle, NativeMethods.SwRestore);
+                _ = NativeMethods.ShowWindow(windowHandle, showCommand);
                 return NativeMethods.SetForegroundWindow(windowHandle);
             }
 
             var attached = NativeMethods.AttachThreadInput(currentThread, foregroundThread, true);
             try
             {
-                _ = NativeMethods.ShowWindow(windowHandle, NativeMethods.SwRestore);
+                _ = NativeMethods.ShowWindow(windowHandle, showCommand);
                 return NativeMethods.SetForegroundWindow(windowHandle);
             }
             finally

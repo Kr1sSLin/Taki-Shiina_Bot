@@ -18,6 +18,7 @@
 *.sh            text eol=lf
 gradlew         text eol=lf
 *.bash          text eol=lf
+.githooks/*     text eol=lf
 
 # ---- Windows 脚本：必须 CRLF ----
 *.bat           text eol=crlf

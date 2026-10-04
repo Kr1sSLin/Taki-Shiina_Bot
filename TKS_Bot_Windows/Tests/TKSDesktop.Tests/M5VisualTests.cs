@@ -30,6 +30,13 @@ public sealed class M5VisualTests
     // Called on the existing isolated WPF test's STA thread; no input automation.
     internal static void CheckResources(Application app, string root)
     {
+        var emojiImages = new EmojiImageConverter();
+        foreach (var glyph in EmojiGroup.All.SelectMany(group => group.Glyphs))
+        {
+            var image = Assert.IsType<BitmapImage>(emojiImages.Convert(glyph, typeof(ImageSource), null!, CultureInfo.InvariantCulture));
+            Assert.Equal(72, image.PixelWidth);
+            Assert.Equal(72, image.PixelHeight);
+        }
         foreach (var shape in new[] { "Star", "Cloud", "Lightning", "Heart", "Circle", "Moon", "Smile", "Flower" })
             Assert.IsAssignableFrom<Geometry>(app.Resources[$"Tks.Doodle.{shape}"]);
         Assert.Equal(8, ((DrawingGroup)((DrawingBrush)app.Resources["Tks.Brush.DoodleTile"]).Drawing).Children.Count);

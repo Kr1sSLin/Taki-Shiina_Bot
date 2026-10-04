@@ -15,6 +15,13 @@ android {
         buildConfigField("String", "WS_BASE_URL", "\"wss://takishiinabot.top\"")
     }
 
+    buildTypes {
+        debug {
+            buildConfigField("String", "API_BASE_URL", "\"https://staging.takishiinabot.top/api/v1/\"")
+            buildConfigField("String", "WS_BASE_URL", "\"wss://staging.takishiinabot.top\"")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

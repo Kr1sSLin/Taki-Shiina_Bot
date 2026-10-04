@@ -34,6 +34,7 @@
 
     <UserControl.Resources>
         <local:LocalImageConverter x:Key="TksLocalImage" />
+        <local:EmojiImageConverter x:Key="TksEmojiImage" />
 
         <!-- One bubble template for every message kind (FR-W-INT-6: no separate component). -->
         <DataTemplate x:Key="Tks.MessageTemplate" DataType="{x:Type vm:MessageItemViewModel}">
@@ -383,6 +384,7 @@
 
             <!-- Emoji panel: occupies layout space and pushes content up (FR-W-UI-5). -->
             <Border Grid.Row="1"
+                    x:Name="EmojiPanel"
                     Style="{StaticResource Tks.Style.GlassPanel}"
                     Margin="0,0,0,6"
                     Padding="12,8"
@@ -404,9 +406,13 @@
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <Button Style="{StaticResource Tks.Button.EmojiGlyph}"
-                                                        Content="{Binding}"
+                                                        Tag="{Binding}"
                                                         AutomationProperties.Name="{Binding}"
-                                                        Click="InsertEmoji_Click" />
+                                                        Click="InsertEmoji_Click">
+                                                    <Image Width="28" Height="28" Stretch="Uniform"
+                                                           Source="{Binding Converter={StaticResource TksEmojiImage}}"
+                                                           RenderOptions.BitmapScalingMode="HighQuality" />
+                                                </Button>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
@@ -420,9 +426,9 @@
             <!-- Input bar: multiline, Enter sends / Shift+Enter breaks (FR-W-CHAT-1 / FR-W-SET-8). -->
             <Grid Grid.Row="2">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="5*" />
-                    <ColumnDefinition Width="90*" />
-                    <ColumnDefinition Width="5*" />
+                    <ColumnDefinition Width="9.5*" />
+                    <ColumnDefinition Width="81*" />
+                    <ColumnDefinition Width="9.5*" />
                 </Grid.ColumnDefinitions>
             <Border Grid.Column="1"
                     x:Name="ComposerCapsule"
@@ -435,7 +441,7 @@
                     SizeChanged="ComposerCapsule_SizeChanged"
                     Padding="10">
                 <Border.LayoutTransform>
-                    <ScaleTransform ScaleX="0.9" ScaleY="0.9" />
+                    <ScaleTransform ScaleX="0.81" ScaleY="0.81" />
                 </Border.LayoutTransform>
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -448,10 +454,11 @@
                     <Button Grid.Column="0"
                             x:Name="EmojiButton"
                             Style="{StaticResource Tks.Button.ComposerIcon}"
+                            Background="Transparent"
                             ToolTip="{Binding EmojiButtonText}"
                             AutomationProperties.Name="{Binding EmojiButtonText}"
                             Command="{Binding ToggleEmojiPanelCommand}">
-                        <Viewbox Width="26" Height="26">
+                        <Viewbox Width="26" Height="26" IsHitTestVisible="False">
                         <Grid Width="30" Height="30">
                             <Ellipse Stroke="{DynamicResource Tks.Brush.ComposerIcon}" StrokeThickness="2.7" />
                             <Ellipse Width="3.4" Height="3.4" Fill="{DynamicResource Tks.Brush.ComposerIcon}"
@@ -490,9 +497,9 @@
                             AutomationProperties.Name="{Binding AddImageText}"
                             IsEnabled="{Binding CanInteract}"
                             Click="AddImage_Click">
-                        <Viewbox Width="24" Height="28">
+                        <Viewbox Width="24" Height="28" IsHitTestVisible="False">
                         <Grid Width="30" Height="36">
-                            <Path Data="M 24,9 L 24,25 C 24,36 7,36 7,25 L 7,8 C 7,-1 20,-1 20,8 L 20,24 C 20,29 12,29 12,24 L 12,9"
+                            <Path Data="M 24,10 L 24,25 C 24,36 6,36 6,25 L 6,8 C 6,-1 19,-1 19,8 L 19,24 C 19,29 11,29 11,24 L 11,8"
                                   Stroke="{DynamicResource Tks.Brush.ComposerIcon}"
                                   StrokeThickness="2.2"
                                   StrokeStartLineCap="Round"
@@ -510,9 +517,9 @@
                             AutomationProperties.Name="{Binding SendText}"
                             Command="{Binding SendCommand}"
                             IsEnabled="{Binding CanInteract}">
-                        <Viewbox Width="26" Height="26">
+                        <Viewbox Width="26" Height="26" IsHitTestVisible="False">
                             <Grid Width="32" Height="32">
-                                <Path Data="M 1,13 L 30,2 L 19,31 L 13,23 L 24,8 L 8,19 Z"
+                                <Path Data="M 2,14 L 30,3 L 19,31 L 13,23 L 24,9 L 8,20 Z"
                                       Fill="White" />
                             </Grid>
                         </Viewbox>

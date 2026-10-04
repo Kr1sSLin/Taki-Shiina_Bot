@@ -1,6 +1,27 @@
 /.codex
 /openspec
 
+# 本地安全检查工具及配套配置、测试和说明文档
+/.githooks/pre-commit
+/.github/workflows/privacy.yml
+/scripts/privacy_check.py
+/scripts/tests/test_privacy_check.py
+/scripts/README_privacy.md
+
+# Local secrets and migration backups (at every project depth).
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.bak
+*.bak.*
+**/.claude/settings.local.json
+/TKS_Bot_Android/keystore.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
+
 # 本地文档：保留在工作区，不纳入 Git（匹配任意层级的 docs 目录）
 [dD][oO][cC][sS]/
 
@@ -31,6 +52,8 @@ build.old/
 .build-android.sh
 
 # Python 虚拟环境（Windows 为 Scripts/，POSIX 为 bin/）
+__pycache__/
+*.py[cod]
 .venv/
 venv/
 ENV/

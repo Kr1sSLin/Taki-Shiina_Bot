@@ -289,7 +289,7 @@ public partial class ChatView : UserControl
     /// <summary>插入 emoji 到输入框（FR-W-UI-5）。</summary>
     private void InsertEmoji_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is Button { Content: string emoji } && _viewModel is { } chat)
+        if (sender is Button { Tag: string emoji } && _viewModel is { } chat)
         {
             var caret = InputBox.SelectionStart;
             InputBox.SelectedText = emoji;

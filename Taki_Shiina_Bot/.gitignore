@@ -3,6 +3,9 @@
 .env.save
 .env.local
 .env.*.local
+.env.bak.*
+.env.setup-*.tmp
+.setup-backend.lock
 
 # 用户数据和隐私
 chat_history.json
