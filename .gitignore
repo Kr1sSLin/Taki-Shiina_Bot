@@ -84,3 +84,21 @@ TKS_Bot_Linux/SingletonSocket
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# M0 本地验证环境与所有测试文件（已跟踪文件不会被自动移出索引）
+.venv-m0/
+[tT]ests/
+[tT]est/
+androidTest/
+**/test_*.py
+**/conftest.py
+**/*_fixture.py
+**/*.test.*
+**/*.spec.*
+**/*Tests.cs
+**/*Test.kt
+**/*Tests.kt
+**/*[tT]est*.ts
+**/*[tT]est*.mjs
+**/*[tT]est*.ps1
+**/*[tT]est*.cs

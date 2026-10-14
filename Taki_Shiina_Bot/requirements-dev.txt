@@ -18,8 +18,8 @@
 #   ./.venv/bin/python -m pip install -U pip
 #   ./.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
 #
-# 跑测试（两端一致；--ignore 的历史用例引用了已移除的 split_into_bubbles）：
-#   <venv python> -m pytest tests/ -q --ignore=tests/test_text_utils.py
+# 跑测试（两端一致，默认收集全部测试）：
+#   <venv python> -m pytest tests/ -q
 #
 # 本地开发启动：Windows 用 scripts/run_dev.ps1（内置前置检查），Linux 见 docs/部署_nginx与多进程路由.md
 pytest

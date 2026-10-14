@@ -22,6 +22,8 @@ from services.timeline_store import TimelineStore
 from services.file_lock import FileLockTimeoutError
 from services.weather_service import WeatherService
 from text_utils import (
+    compute_debounce_window,
+    extract_timer_instruction,
     clean_short_term_history,
     inject_emojis,
     is_repetitive_reply,
@@ -257,24 +259,14 @@ def _require_http_auth(authorization: str | None, trace_id: str) -> AuthContext:
 
 
 def parse_timer_instruction(raw_reply: str):
-    import re
-
-    timer_pattern = r"\[\[TIMER:(\d{1,2}:\d{2})\|(.*?)\]\]"
-    match = re.search(timer_pattern, raw_reply or "")
-    if not match:
-        return raw_reply, None, None
-    target_time_str = match.group(1)
-    reminder_text = match.group(2)
-    cleaned_reply = re.sub(timer_pattern, "", raw_reply).strip()
-    return cleaned_reply, target_time_str, reminder_text
+    return extract_timer_instruction(raw_reply)
 
 
 def calc_debounce_window(user_id: str):
-    bot_last = state.last_bot_response_time.get(user_id)
-    if not bot_last:
-        return 8.0
-    seconds_since_response = (datetime.now(timezone.utc) - bot_last).total_seconds()
-    return 20.0 if seconds_since_response < 40.0 else 8.0
+    return compute_debounce_window(
+        state.last_bot_response_time.get(user_id), datetime.now(timezone.utc),
+        8.0, 20.0, 40.0,
+    )
 
 
 @app.middleware("http")

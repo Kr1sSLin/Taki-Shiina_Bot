@@ -2,12 +2,11 @@ import asyncio
 import datetime
 import os
 import random
-import re
 import uuid
 import traceback
 from datetime import timedelta, timezone
 
-from text_utils import with_history_timestamp
+from text_utils import compute_debounce_window, extract_timer_instruction, with_history_timestamp
 
 # 飞书告警模块（可选）
 try:
@@ -15,28 +14,6 @@ try:
     ALERT_ENABLED = True
 except (ImportError, ValueError):
     ALERT_ENABLED = False
-
-
-def compute_debounce_window(bot_last, now_utc, debounce_base, debounce_extended, debounce_extend_window):
-    if not bot_last:
-        return debounce_base
-
-    seconds_since_response = (now_utc - bot_last).total_seconds()
-    if seconds_since_response < debounce_extend_window:
-        return debounce_extended
-    return debounce_base
-
-
-def extract_timer_instruction(raw_reply):
-    timer_pattern = r"\[\[TIMER:(\d{1,2}:\d{2})\|(.*?)\]\]"
-    match = re.search(timer_pattern, raw_reply)
-    if not match:
-        return raw_reply, None, None
-
-    target_time_str = match.group(1)
-    reminder_text = match.group(2)
-    cleaned_reply = re.sub(timer_pattern, "", raw_reply).strip()
-    return cleaned_reply, target_time_str, reminder_text
 
 
 def create_chat_handler(

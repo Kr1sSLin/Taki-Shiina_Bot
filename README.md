@@ -1,6 +1,6 @@
 # TKS (Taki Shiina)
 
-TKS 项目仓库，包含 Python AI 后端与两个客户端（Android / Linux 桌面）：客户端通过 REST / WebSocket 接入后端，获取智能对话、记忆与实时推送能力。
+TKS 项目仓库，包含 Python AI 后端与三个客户端（Android / Linux / Windows 桌面）：客户端通过 REST / WebSocket 接入后端，获取智能对话、记忆与实时推送能力。
 
 > 🪟 **在 Windows 上开发请先看 [docs/开发环境_Windows.md](docs/开发环境_Windows.md)** —— 依赖版本要求、已知坑与一键脚本都在那里。
 
@@ -9,6 +9,8 @@ TKS 项目仓库，包含 Python AI 后端与两个客户端（Android / Linux �
 ```
 Taki-Shiina_Bot/
 ├── TKS_Bot_Android/         # Android AI 对话助手（Kotlin / Compose，多模块）
+├── TKS_Bot_Linux/           # Linux 桌面客户端（Electron / TypeScript）
+├── TKS_Bot_Windows/         # Windows 桌面客户端（WPF / .NET）
 └── Taki_Shiina_Bot/         # Python 后端（FastAPI / WebSocket AI 服务）
 ```
 
@@ -206,9 +208,23 @@ pip install -r requirements.txt
 cd Taki_Shiina_Bot
 python -m pytest tests/
 ```
-> 说明：仓库中 `tests/test_text_utils.py` 为历史遗留用例，引用的 `split_into_bubbles`
-> 已在早前重构中移除，属**改动前就存在**的失败用例；本次新增的积分/等级/互动用例可用
-> `python -m pytest tests/ --ignore=tests/test_text_utils.py` 全量跑通。
+M0 已将旧文本用例更新为当前清洗、去重和时间戳行为测试，默认命令无需排除文件。
+测试使用临时数据、合成凭据并阻止外部网络连接，不调用真实付费模型。
+
+可复现的 Linux x86_64 / Python 3.12 环境使用完整版本锁：
+
+```bash
+python3 -m venv .venv-m0
+.venv-m0/bin/python -m pip install -r Taki_Shiina_Bot/requirements-linux-py312.lock
+.venv-m0/bin/python scripts/verify_m0.py
+```
+
+`verify_m0.py` 检查保留的 Python/Shell/Node 脚本语法、依赖一致性、默认后端测试和部署配置测试。
+平台完整验收分别使用 Linux `npm run typecheck` / `npm run verify`、Android Gradle、Windows `scripts/verify.ps1`。
+只读数据盘点可运行 `python3 scripts/inventory_m0.py --backend-dir <后端目录> --data-dir <BOT_DATA_DIR>`。
+
+M0 记录、数据字典、决策台账与三端兼容矩阵位于 [docs/m0/README.md](docs/m0/README.md)。
+遵循本项目本地资料规则，docs 与新增测试/fixture 被 `.gitignore` 忽略；交付包和复现方式在该记录中说明。
 
 ---
 
@@ -266,8 +282,8 @@ release 产物退化为 `app-release-unsigned.apk`，构建依然可跑通。
 | 依赖 | 位置 |
 |---|---|
 | Android SDK | `/home/administrator/Android/Sdk`（`platforms;android-34` + `build-tools;34.0.0`），可用 `ANDROID_HOME` 覆盖 |
-| JDK 17 | 仓库内 `.jdk-home/jdk-17.0.20.1+1`（`TKS_Bot_Android/local.properties` 指向该 SDK） |
-| Gradle 目录 | 仓库内 `.gradle-home` / `.android-home` / `.xdg-home`（由发布脚本导出） |
+| JDK | 可用 `JAVA_HOME` 指定 JDK17/21；发布脚本默认 `.jdk-home/jdk-17.0.20.1+1`，需自行准备。M0实测使用已有 `/home/administrator/.jdks/jbr-21.0.11` |
+| Gradle 目录 | 发布脚本默认仓库内 `.gradle-home` / `.android-home` / `.xdg-home`；M0复用了本机 `~/.gradle` 的 Gradle8.13 缓存 |
 
 > 首次在缺少 SDK 的机器上构建，需先装 SDK：
 > `sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"`
@@ -275,7 +291,7 @@ release 产物退化为 `app-release-unsigned.apk`，构建依然可跑通。
 ## 🚀 快速开始
 
 ### 前置要求
-- **后端**: Python 3.11+（实测 3.14），pip；配置好 `.env`
+- **后端**: Python 3.11+（M0实测并锁定Linux/Python3.12；3.14为历史Windows记录），pip；配置好 `.env`
 - **Android 端**: Android Studio + **JDK 17 或 21**（⚠️ 不要用 JDK 26，Gradle 8.13 不支持）
 - **桌面端**: Node.js ≥ 20
 
