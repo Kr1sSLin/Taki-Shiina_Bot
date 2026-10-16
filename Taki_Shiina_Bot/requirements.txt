@@ -10,3 +10,5 @@ fastapi
 uvicorn[standard]
 websockets
 cryptography
+requests
+pydantic

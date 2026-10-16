@@ -17,10 +17,10 @@
     "pip_check": "passed",
     "test_source": "Current working tree in the existing isolated locked-dependency venv",
     "runtime_data_and_env_excluded": true,
-    "test_passed": 340,
+    "test_passed": 343,
     "subtests_passed": 164,
     "warnings": 13,
-    "duration_seconds": 44.09,
+    "duration_seconds": 40.15,
     "real_model_or_notifications_called": false,
     "git_diff_check": "passed",
     "staged_privacy_check": "10 indexed files passed",
@@ -30,9 +30,9 @@
     "benchmark": "foundation-benchmark-4000.json",
     "image_verification": "Real WS adapter with synthetic JPEG/EXIF, encrypted byte-exact persistence/restart, duplicate conflict, aggregate turn splitting, mocked Gemini original bytes, authenticated cross-device original download and restoration gate; no external model call",
     "remaining_external_check": "Built-in Uvicorn image frame size configured; external Uvicorn launch and upstream proxies must be checked in staging",
-    "sync_revision": 3,
+    "sync_revision": 4,
     "sync_date": "2026-10-16",
-    "sync_note": "Backend full suite completed with 340 tests and 164 subtests; client checks repeated after image history filename hardening",
+    "sync_note": "After merging remote M0, backend full suite passed 343 tests and 164 subtests; client checks passed before the merge and were not rerun because the merge changed backend and documentation only",
     "client_verification": {
       "windows": "dotnet test Tests/TKSDesktop.Tests: 217 passed, 0 failed",
       "linux": "npm run typecheck passed; npm run selftest passed with 128 assertions including byte-exact image history restoration",
@@ -62,5 +62,5 @@
   ],
   "production_migration_executed": false,
   "user_staged_changes_preserved": true,
-  "changes_committed": false
+  "changes_committed": true
 }

@@ -1,6 +1,6 @@
 # TKS (Taki Shiina)
 
-TKS 项目仓库，包含 Python AI 后端与两个客户端（Android / Linux 桌面）：客户端通过 REST / WebSocket 接入后端，获取智能对话、记忆与实时推送能力。
+TKS 项目仓库，包含 Python AI 后端与三个客户端（Android / Linux / Windows 桌面）：客户端通过 REST / WebSocket 接入后端，获取智能对话、记忆与实时推送能力。
 
 > 🪟 **在 Windows 上开发请先看 [docs/开发环境_Windows.md](docs/开发环境_Windows.md)** —— 依赖版本要求、已知坑与一键脚本都在那里。
 
@@ -9,6 +9,8 @@ TKS 项目仓库，包含 Python AI 后端与两个客户端（Android / Linux �
 ```
 Taki-Shiina_Bot/
 ├── TKS_Bot_Android/         # Android AI 对话助手（Kotlin / Compose，多模块）
+├── TKS_Bot_Linux/           # Linux 桌面客户端（Electron / TypeScript）
+├── TKS_Bot_Windows/         # Windows 桌面客户端（WPF / .NET）
 └── Taki_Shiina_Bot/         # Python 后端（FastAPI / WebSocket AI 服务）
 ```
 
@@ -206,13 +208,28 @@ pip install -r requirements-lock.txt
 cd Taki_Shiina_Bot
 python -m pytest tests/
 ```
-锁定依赖包含运行与测试环境，基线为 Python 3.14 / Windows x64。文本测试已更新为当前文字接口，无须排除测试。阶段 A 设计和验收证据见[实施记录](design/foundation-stage-a.md)。
+锁定依赖包含运行与测试环境，阶段 A 在 Python 3.14 / Windows x64 验收。M0 另提供 Linux x86_64 / Python 3.12 的版本锁。文本测试已更新为当前文字接口，无须排除测试。阶段 A 设计和验收证据见[实施记录](design/foundation-stage-a.md)。
 
 ### 阶段 A 可靠文字链路
 
 在独立的 `BOT_DATA_DIR` 中设置 `FOUNDATION_ENABLED=1`，并配置 `DATA_ENC_KEY` 与固定的 `FOUNDATION_KEY_ID`；推荐使用统一 HTTP/WS 入口。HTTP、WS 和互动共用可靠请求、回复及恢复任务仓储。源消息与提取任务、最终回复与投递记录分别原子提交。客户端重试须保留 `requestId` 和 `clientMessageId` 配对，未提供后者时沿用 `requestId`。
 
 目录内已有 `foundation.sqlite3` 时始终使用可靠链路；关闭开关不能绕过权限记录，回退须保留数据库及对应密钥。旧 JSON 只作兼容读取，不自动迁移进 SQL。阶段 A 的 WS 图片请求会将原图字节（包括 EXIF）加密保存在源消息中，并原样发送给 Gemini 识别；须配置 `GEMINI_API_KEY`。用户已明确允许图片中的坐标，因此这部分与原 PRD FND-10 的禁止坐标规则形成例外；文字输入与识图后生成的文字描述仍执行坐标清理。历史中的图片可通过认证的 `GET /api/v1/chat/images/{request_id}/{index}` 取回原图，三端在跨设备补拉时恢复附件；无权或缺图返回 404，未核验恢复权限时返回 503。Gemini inline 请求使每轮原图有效上限为 14,000,000 字节。内置 Python 启动入口会按图片限制设置 WS 帧大小；独立 Uvicorn 命令或上游代理须另行配置对应上限。礼物退款后整轮明确失败并由用户重新发送。已有可靠数据库的目录不能启动旧 Telegram 写入入口。部署与恢复限制、合成验收记录详见实施记录。
+M0 的文本用例覆盖清洗、去重和时间戳行为。测试使用临时数据、合成凭据并阻止外部网络连接，不调用真实付费模型。
+
+可复现的 Linux x86_64 / Python 3.12 环境使用完整版本锁：
+
+```bash
+python3 -m venv .venv-m0
+.venv-m0/bin/python -m pip install -r Taki_Shiina_Bot/requirements-linux-py312.lock
+.venv-m0/bin/python scripts/verify_m0.py
+```
+
+`verify_m0.py` 检查保留的 Python/Shell/Node 脚本语法、依赖一致性、默认后端测试和部署配置测试。
+平台完整验收分别使用 Linux `npm run typecheck` / `npm run verify`、Android Gradle、Windows `scripts/verify.ps1`。
+只读数据盘点可运行 `python3 scripts/inventory_m0.py --backend-dir <后端目录> --data-dir <BOT_DATA_DIR>`。
+
+M0 记录、数据字典、决策台账与三端兼容矩阵位于 [docs/m0/README.md](docs/m0/README.md)。本地 `docs` 目录由 `.gitignore` 忽略；阶段 A 的自动化测试已纳入仓库。
 
 ---
 
@@ -270,8 +287,8 @@ release 产物退化为 `app-release-unsigned.apk`，构建依然可跑通。
 | 依赖 | 位置 |
 |---|---|
 | Android SDK | `/home/administrator/Android/Sdk`（`platforms;android-34` + `build-tools;34.0.0`），可用 `ANDROID_HOME` 覆盖 |
-| JDK 17 | 仓库内 `.jdk-home/jdk-17.0.20.1+1`（`TKS_Bot_Android/local.properties` 指向该 SDK） |
-| Gradle 目录 | 仓库内 `.gradle-home` / `.android-home` / `.xdg-home`（由发布脚本导出） |
+| JDK | 可用 `JAVA_HOME` 指定 JDK17/21；发布脚本默认 `.jdk-home/jdk-17.0.20.1+1`，需自行准备。M0实测使用已有 `/home/administrator/.jdks/jbr-21.0.11` |
+| Gradle 目录 | 发布脚本默认仓库内 `.gradle-home` / `.android-home` / `.xdg-home`；M0复用了本机 `~/.gradle` 的 Gradle8.13 缓存 |
 
 > 首次在缺少 SDK 的机器上构建，需先装 SDK：
 > `sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"`
@@ -279,7 +296,7 @@ release 产物退化为 `app-release-unsigned.apk`，构建依然可跑通。
 ## 🚀 快速开始
 
 ### 前置要求
-- **后端**: Python 3.14（锁定验收版本），pip；配置好 `.env`
+- **后端**: Python 3.11+（M0 锁定验收 Linux/Python 3.12；阶段 A 锁定验收 Windows/Python 3.14），pip；配置好 `.env`
 - **Android 端**: Android Studio + **JDK 17 或 21**（⚠️ 不要用 JDK 26，Gradle 8.13 不支持）
 - **桌面端**: Node.js ≥ 20
 

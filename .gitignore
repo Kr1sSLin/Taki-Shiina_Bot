@@ -55,6 +55,7 @@ build.old/
 .jdk-home/
 .logs/
 .test-temp/
+.venv-m0/
 .build-android.sh
 
 # Python 虚拟环境（Windows 为 Scripts/，POSIX 为 bin/）
