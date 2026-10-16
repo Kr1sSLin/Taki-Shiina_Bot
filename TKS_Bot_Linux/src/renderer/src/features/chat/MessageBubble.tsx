@@ -70,7 +70,8 @@ export function MessageBubble({ message, showTime, highlight, onRetry, onOpenIma
 
   const isUser = message.role === 'user'
   const attachments = message.attachments ?? []
-  const content = message.content.replace(HISTORY_PREFIX, '')
+  const rawContent = message.content.replace(HISTORY_PREFIX, '')
+  const content = attachments.length > 0 && rawContent.trim() === '[图片]' ? '' : rawContent
 
   const hasGift =
     message.messageKind === 'interaction' ||

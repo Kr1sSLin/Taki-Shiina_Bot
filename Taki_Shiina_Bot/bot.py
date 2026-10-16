@@ -2,7 +2,6 @@ import random
 import logging
 import os
 import sys
-import traceback
 import threading
 from datetime import timedelta, timezone, time
 
@@ -34,6 +33,8 @@ from services.history_store import HistoryStore
 from services.prompt_service import PromptService
 from services.weather_service import WeatherService
 from text_utils import inject_emojis, sanitize_taki_reply
+from services.permission_guard import require_supported_telegram_runtime
+from services.privacy_logging import install_privacy_logging
 
 # 飞书告警模块
 try:
@@ -49,6 +50,7 @@ except ValueError as e:
 # ================= 1. 配置区域 =================
 _base_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_base_dir, '.env'))
+_data_dir = os.path.abspath(os.getenv("BOT_DATA_DIR") or _base_dir)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
@@ -66,11 +68,13 @@ logging.basicConfig(
     stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
+install_privacy_logging()
+require_supported_telegram_runtime(_data_dir)
 
 # ================= 3. 应用状态与服务 =================
-state = AppState(history_file=os.path.join(_base_dir, "chat_history.json"))
-db = MemoryService(_base_dir)
-weather_service = WeatherService(_base_dir, OPENWEATHER_API_KEY, MY_LAT, MY_LON)
+state = AppState(history_file=os.path.join(_data_dir, "chat_history.json"))
+db = MemoryService(_data_dir)
+weather_service = WeatherService(_data_dir, OPENWEATHER_API_KEY, MY_LAT, MY_LON)
 history_store = HistoryStore(state.history_file)
 
 # 兼容旧调用点：后续阶段可继续将这些别名完全替换为 state.xxx
@@ -196,14 +200,14 @@ def send_startup_alert():
             try:
                 from alert_sender import FEISHU_WEBHOOK_URL
                 logger.info("📤 正在发送飞书启动通知...")
-                logger.info(f"📡 Webhook URL: {FEISHU_WEBHOOK_URL[:50] if FEISHU_WEBHOOK_URL else 'None'}...")
+                logger.info("Startup alert destination configured=%s", bool(FEISHU_WEBHOOK_URL))
                 result = send_alert("✅ 立希Bot 已成功启动并开始运行", bypass_rate_limit=True)
                 if result:
                     logger.info("✅ 飞书启动通知发送成功")
                 else:
                     logger.warning("⚠️ 飞书启动通知发送失败")
             except Exception as e:
-                logger.error(f"❌ 飞书启动通知异常: {e}")
+                logger.error("Startup alert failed", exc_info=True)
         else:
             logger.info("ℹ️ 飞书告警模块未启用，跳过启动通知")
     
@@ -214,7 +218,7 @@ def send_crash_alert(error):
     """发送崩溃告警到飞书（同步执行，因为程序即将退出）"""
     if ALERT_ENABLED:
         try:
-            error_detail = f"Bot崩溃！\n\n错误类型: {type(error).__name__}\n错误信息: {str(error)}\n\n堆栈追踪:\n{traceback.format_exc()}"
+            error_detail = f"Bot崩溃！\n\n错误类型: {type(error).__name__}"
             send_alert(error_detail, bypass_rate_limit=True)
         except Exception:
             pass
@@ -264,7 +268,7 @@ if __name__ == '__main__':
     try:
         application.run_polling()
     except Exception as e:
-        logger.critical(f"🚨 Bot崩溃: {e}")
+        logger.critical("Bot crashed", exc_info=True)
         send_crash_alert(e)
         raise
 

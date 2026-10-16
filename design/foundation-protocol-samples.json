@@ -1,0 +1,99 @@
+{
+  "scope": "Synthetic stage A HTTP/WS adapter samples; no production request was sent",
+  "http": {
+    "method": "POST",
+    "path": "/api/v1/chat",
+    "body": {
+      "requestId": "sample-request-1",
+      "message": "今天吃了青椒",
+      "userId": "ignored-client-owner",
+      "clientMessageId": "sample-request-1"
+    },
+    "identitySource": "authenticated server context",
+    "responseData": {
+      "conversationId": "conv_sample-owner",
+      "reply": "味道怎么样？",
+      "messageId": "sample-reply-1",
+      "debounceWindowSec": 8
+    }
+  },
+  "websocket": {
+    "path": "/ws/chat",
+    "message": {
+      "type": "chat.message",
+      "requestId": "sample-request-1",
+      "payload": {
+        "content": "今天吃了青椒",
+        "clientMessageId": "sample-request-1"
+      }
+    },
+    "final": {
+      "type": "chat.reply.stream",
+      "requestId": "sample-request-1",
+      "payload": {
+        "delta": "",
+        "done": true,
+        "messageId": "sample-reply-1",
+        "finalContent": "味道怎么样？",
+        "requestIds": [
+          "sample-request-1"
+        ]
+      }
+    }
+  },
+  "sharedCommandMapping": {
+    "owner": "sample-owner",
+    "request_id": "sample-request-1",
+    "client_message_id": "sample-request-1",
+    "device_id": "sample-device-1",
+    "text": "今天吃了青椒",
+    "context_revision": 0,
+    "retryExpectation": "Same authenticated owner and source ID returns original message/turn; changed body conflicts",
+    "conflict": "VersionConflict",
+    "writeFailure": "No successful response before commit"
+  },
+  "memorySync": {
+    "method": "GET",
+    "path": "/api/v1/memory/facts?cursor=0&limit=500",
+    "data": {
+      "items": [
+        {
+          "factId": "sample-fact-1",
+          "revision": 2,
+          "eventRevision": 1,
+          "sequence": 1,
+          "action": "created",
+          "enabled": false,
+          "fact": ""
+        }
+      ],
+      "nextCursor": 1,
+      "hasMore": false
+    },
+    "semantics": "Events project current permission-safe fact state; advance using nextCursor rather than timestamp alone"
+  },
+  "images": {
+    "accepted": true,
+    "transport": "chat.message.payload.images",
+    "samplePayload": {
+      "content": "请看看这张照片",
+      "images": [
+        {"mimeType": "image/jpeg", "dataBase64": "<base64-of-original-jpeg-including-exif>"}
+      ]
+    },
+    "sampleDataIsPlaceholder": true,
+    "serverStorage": "Original bytes in encrypted source request; history exposes requestId and imageCount, outbox does not include original bytes",
+    "visionInput": "Original bytes, including EXIF and visible coordinates",
+    "historyUserFields": {"requestId": "sample-request-1", "imageCount": 1, "contentType": "mixed"},
+    "download": {
+      "method": "GET",
+      "path": "/api/v1/chat/images/sample-request-1/0",
+      "authorization": "Bearer token for the same owner",
+      "response": "Original JPEG bytes and Content-Type: image/jpeg; Cache-Control: private, no-store",
+      "otherOwnerOrMissing": 404,
+      "unverifiedRestore": 503
+    },
+    "retryExpectation": "Same request and same image reuse the original turn; changing the image conflicts",
+    "limit": "Default JPEG/PNG, configured 20 MB per image, effective 14,000,000 raw bytes and 3 images per logical turn; later images start another turn"
+  }
+}

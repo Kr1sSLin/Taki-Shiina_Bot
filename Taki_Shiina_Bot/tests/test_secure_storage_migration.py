@@ -43,11 +43,8 @@ class SecureStorageMigrationTests(unittest.TestCase):
     def test_backup_write_failure_preserves_original_in_both_modes(self):
         for mode in ("load", "load_strict"):
             with self.subTest(mode=mode), patch("secure_storage.os.fsync", side_effect=OSError("disk failure")):
-                if mode == "load_strict":
-                    with self.assertRaises(OSError):
-                        self.store.load_strict([])
-                else:
-                    self.assertEqual(self.store.load([]), self.data)
+                with self.assertRaises(OSError):
+                    getattr(self.store, mode)([])
                 self.assertEqual(self.path.read_bytes(), self.original)
                 self.assertEqual(self.backups(), [])
 

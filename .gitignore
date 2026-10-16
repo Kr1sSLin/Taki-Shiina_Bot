@@ -15,8 +15,20 @@
 *.p12
 *.pfx
 
-# 本地文档：保留在工作区，不纳入 Git（匹配任意层级的 docs 目录）
-[dD][oO][cC][sS]/
+# 保留已有本地文档目录；不再忽略仓库中任意深度同名目录。
+/docs/
+/Taki_Shiina_Bot/docs/
+/TKS_Bot_Linux/docs/
+/TKS_Bot_Windows/docs/
+
+# Runtime SQLite files (ciphertext is still private user data).
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.partial
 
 # Android 构建产物（配合子项目 .gitignore，防止旧缓存被误提交）
 .gradle/
@@ -42,6 +54,7 @@ build.old/
 .xdg-home/
 .jdk-home/
 .logs/
+.test-temp/
 .build-android.sh
 
 # Python 虚拟环境（Windows 为 Scripts/，POSIX 为 bin/）

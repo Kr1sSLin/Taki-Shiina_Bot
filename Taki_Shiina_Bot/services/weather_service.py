@@ -2,6 +2,7 @@ import datetime
 import os
 
 import httpx
+from services.privacy import redact_locations
 
 
 class WeatherService:
@@ -21,7 +22,8 @@ class WeatherService:
     def get_current_city(self):
         if os.path.exists(self.city_file):
             with open(self.city_file, "r", encoding="utf-8") as f:
-                return f.read().strip()
+                city = f.read().strip()
+                return city if redact_locations(city) == city else "auto_ip"
         return "auto_ip"
 
     async def _resolve_location_id(self, loc: str) -> str | None:
@@ -81,6 +83,8 @@ class WeatherService:
             return "【当前天气】：暂时无法获取"
 
     def set_city(self, city):
+        if redact_locations(city) != city:
+            raise ValueError("仅接受城市名称，不保存详细坐标")
         with open(self.city_file, "w", encoding="utf-8") as f:
             f.write(city)
         self.cache = {"info": "未知", "time": 0}

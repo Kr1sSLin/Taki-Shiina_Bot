@@ -1,0 +1,16 @@
+{
+  "source_snapshot_files": 118,
+  "runtime_data_and_env_excluded": true,
+  "exit_code": 0,
+  "summary": "311 passed, 13 warnings, 155 subtests passed in 36.24s",
+  "pip_check": "No broken requirements found.",
+  "additional_interaction_regression": "22 passed in 6.40s",
+  "record_kind": "The summary above is the historic isolated source-snapshot run; the sync entry below re-measures the current working tree",
+  "sync_recheck_2026_10_16": {
+    "scope": "Current working tree, existing isolated locked-dependency venv (no fresh source snapshot)",
+    "backend": "340 passed, 164 subtests passed, 13 warnings, 44.09s",
+    "windows_client": "217 passed, 0 failed",
+    "linux_client": "npm run typecheck passed; npm run selftest passed with 128 assertions",
+    "android_client": "gradlew :feature:chat:testDebugUnitTest --offline: BUILD SUCCESSFUL"
+  }
+}

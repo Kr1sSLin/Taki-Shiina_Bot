@@ -32,7 +32,7 @@ from contextlib import contextmanager
 import time
 from typing import Any, Iterator
 
-from secure_storage import SecureJsonStore
+from secure_storage import DataCorruptionError, SecureJsonStore
 from services.file_lock import acquire_file_lock, release_file_lock
 
 # ``acquire_file_lock`` / ``release_file_lock`` are imported above and re-exported
@@ -87,7 +87,12 @@ class SecureTxStore:
         """把磁盘上的数据补齐成完整结构，容忍旧版本缺字段。"""
         data = self._empty()
         if not isinstance(raw, dict):
-            return data
+            raise DataCorruptionError("进度数据根节点必须是对象")
+        if raw.get("version", SCHEMA_VERSION) != SCHEMA_VERSION:
+            raise DataCorruptionError("不支持的进度数据版本")
+        for key, value in data.items():
+            if key in raw and isinstance(value, (dict, list)) and not isinstance(raw[key], type(value)):
+                raise DataCorruptionError("进度数据字段类型无效")
         for key, value in raw.items():
             if key == "meta" and isinstance(value, dict):
                 data["meta"].update(value)

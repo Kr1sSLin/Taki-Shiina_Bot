@@ -205,7 +205,9 @@ class ChatRepository @Inject constructor(
         val healed = existing.copy(
             status = syncedStatus,
             errorCode = null,
-            content = healedContent
+            content = healedContent,
+            contentType = if (contentType != ContentType.TEXT) contentType else existing.contentType,
+            modelProvider = if (modelProvider != ModelProvider.DEEPSEEK) modelProvider else existing.modelProvider
         )
         if (healed == existing) return SyncOutcome.UNCHANGED
 
@@ -285,5 +287,9 @@ class ChatRepository @Inject constructor(
 
     suspend fun getAttachmentsByMessageId(messageId: String): List<ChatAttachmentEntity> {
         return chatAttachmentDao.getByMessageId(messageId)
+    }
+
+    suspend fun getPendingHistoryAttachments(sessionId: String): List<ChatAttachmentEntity> {
+        return chatAttachmentDao.getPendingHistory(sessionId)
     }
 }

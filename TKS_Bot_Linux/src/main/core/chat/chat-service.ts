@@ -36,7 +36,7 @@ import {
 } from '@shared/ipc'
 import { bus } from '../../app/bus'
 import { createLogger } from '../../app/logger'
-import { readFileAsBase64 } from './image-service'
+import { readFileAsBase64, restoreHistoryImages } from './image-service'
 import type { ConnectionManager } from '../network/connection-manager'
 import type { RestClient } from '../network/rest-client'
 import {
@@ -244,30 +244,40 @@ export class ChatService {
     const requestId = frame.requestId
     if (!requestId) return
 
-    const existing = getMessage(requestId)
+    const payload = frame.payload
+    const messageId = payload?.clientMessageId || requestId
+    const imageCount = payload?.imageCount ?? 0
+    const restore = (): void => {
+      if (imageCount < 1) return
+      void restoreHistoryImages(this.deps.rest, messageId, requestId, imageCount)
+        .then((changed) => { if (changed) this.emitMessages([messageId], []) })
+        .catch((err) => log.warn('回声图片补拉失败', { error: err instanceof Error ? err.message : String(err) }))
+    }
+
+    const existing = getMessage(messageId)
     if (existing) {
       // ⚠️ 自己发的消息也会收到自己的回声 → 绝不能重复上屏
       if (existing.status === 'sending') {
-        updateMessageStatus(requestId, 'sent')
-        this.emitMessages([requestId], [])
+        updateMessageStatus(messageId, 'sent')
+        this.emitMessages([messageId], [])
       }
+      restore()
       return
     }
 
-    const payload = frame.payload
-    const imageCount = payload?.imageCount ?? 0
     upsertMessage({
-      messageId: requestId,
+      messageId,
       sessionId: PROTOCOL.DEFAULT_SESSION_ID,
       role: 'user',
       messageType: imageCount > 0 ? 'image' : 'text',
-      contentType: imageCount > 0 ? 'image' : 'text',
-      content: payload?.content ?? '',
+      contentType: imageCount > 0 ? (payload?.content && payload.content !== '[图片]' ? 'mixed' : 'image') : 'text',
+      content: payload?.content || (imageCount > 0 ? '[图片]' : ''),
       status: 'sent',
       timestamp: payload?.timestamp ?? Date.now()
     })
     log.info('收到其他设备回声', { requestId, originDeviceId: payload?.originDeviceId, imageCount })
-    this.emitMessages([requestId], [])
+    this.emitMessages([messageId], [])
+    restore()
   }
 
   /** `chat.queued`：展示「已排队（{debounceWindowSec}s 内合并）」（FR-CHAT-15 / EDGE-L17）。 */
@@ -719,6 +729,13 @@ export class ChatService {
       const items = data?.items ?? []
       const { inserted, updated, touchedIds } = this.ingestTimeline(items)
 
+      for (const item of items) {
+        if (item.role !== 'user' || !item.requestId || !item.imageCount) continue
+        if (await restoreHistoryImages(this.deps.rest, item.messageId, item.requestId, item.imageCount)) {
+          touchedIds.push(item.messageId)
+        }
+      }
+
       const maxTs = items.reduce((acc, it) => Math.max(acc, Number(it.timestamp) || 0), cursorBefore)
       if (maxTs > 0) setCursor('chat_history', maxTs)
 
@@ -784,12 +801,13 @@ export class ChatService {
           if (created !== 'unchanged') touchedIds.push(part.messageId)
         }
       } else {
+        const hasImages = Number(item.imageCount) > 0
         const created = upsertMessage({
           messageId: item.messageId,
           sessionId: PROTOCOL.DEFAULT_SESSION_ID,
           role: item.role === 'system' ? 'system' : 'user',
-          messageType: 'text',
-          contentType: 'text',
+          messageType: hasImages ? 'image' : 'text',
+          contentType: hasImages ? (content && content !== '[图片]' ? 'mixed' : 'image') : 'text',
           modelProvider: null,
           content,
           status: 'sent',

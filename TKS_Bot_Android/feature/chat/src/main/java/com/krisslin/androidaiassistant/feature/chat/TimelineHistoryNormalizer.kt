@@ -9,7 +9,9 @@ data class TimelineHistoryItem(
     val role: String,
     val content: String,
     val timestamp: Long,
-    val sourceTimestamp: Long = timestamp
+    val sourceTimestamp: Long = timestamp,
+    val requestId: String? = null,
+    val imageCount: Int = 0
 )
 
 /** Pure parsing/normalization for incremental history reconciliation. */
@@ -20,11 +22,21 @@ object TimelineHistoryNormalizer {
             val messageId = item.stringOrNull("messageId") ?: continue
             val role = item.stringOrNull("role") ?: continue
             val content = item.stringOrNull("content") ?: continue
-            if (content.isBlank()) continue
+            val imageCount = item.longOrNull("imageCount")?.takeIf { it in 1L..3L }?.toInt() ?: 0
+            if (content.isBlank() && imageCount == 0) continue
             val timestamp = item.longOrNull("timestamp") ?: continue
 
             if (role == "user") {
-                add(TimelineHistoryItem(messageId, role, content, timestamp))
+                add(
+                    TimelineHistoryItem(
+                        messageId = messageId,
+                        role = role,
+                        content = content.ifBlank { "[图片]" },
+                        timestamp = timestamp,
+                        requestId = item.stringOrNull("requestId"),
+                        imageCount = imageCount
+                    )
+                )
             } else {
                 BotReplySegments.create(messageId, content, timestamp).forEach { segment ->
                     add(

@@ -120,6 +120,63 @@ export class RestClient {
     this.auth = auth
   }
 
+  /** Download original history bytes without converting them to text or JSON. */
+  async downloadImage(requestId: string, index: number): Promise<{ mimeType: string; bytes: Buffer }> {
+    if (!requestId || !Number.isInteger(index) || index < 0 || index >= PROTOCOL.MAX_IMAGE_COUNT) {
+      throw new TksApiError('invalid image reference', { code: null, httpStatus: null })
+    }
+    const path = `chat/images/${encodeURIComponent(requestId)}/${index}`
+    const url = buildUrl(this.baseUrlProvider(), path)
+    const traceId = `trace_${randomUUID()}`
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(new RequestAbortError('timeout')), PROTOCOL.REST_TIMEOUT_MS)
+      try {
+        const token = this.auth.getAccessToken()
+        const response = await undiciFetch(url, {
+          method: 'GET',
+          headers: { 'x-trace-id': traceId, accept: 'image/jpeg, image/png', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+          signal: controller.signal,
+          dispatcher: dispatcherFor(url)
+        })
+        if (response.status === 401 && attempt === 0) {
+          await response.body?.cancel()
+          const refreshed = await this.auth.refreshAccessToken()
+          if (refreshed) continue
+          this.auth.onUnauthorized('refresh-failed')
+        }
+        if (!response.ok) {
+          await response.body?.cancel()
+          throw new TksApiError(`HTTP ${response.status}`, { code: null, httpStatus: response.status, traceId })
+        }
+        const mimeType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+        if (!PROTOCOL.ALLOWED_IMAGE_MIME.includes(mimeType)) {
+          await response.body?.cancel()
+          throw new TksApiError('invalid image mime', { code: null, httpStatus: response.status, traceId })
+        }
+        const reader = response.body?.getReader()
+        if (!reader) throw new TksApiError('empty image response', { code: null, httpStatus: response.status, traceId })
+        const chunks: Buffer[] = []
+        let total = 0
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          total += value.byteLength
+          if (total > PROTOCOL.MAX_IMAGE_BYTES) {
+            await reader.cancel()
+            throw new TksApiError('image too large', { code: null, httpStatus: response.status, traceId })
+          }
+          chunks.push(Buffer.from(value))
+        }
+        if (total === 0) throw new TksApiError('empty image response', { code: null, httpStatus: response.status, traceId })
+        return { mimeType, bytes: Buffer.concat(chunks, total) }
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+    throw new TksApiError('unauthorized', { code: null, httpStatus: 401, traceId })
+  }
+
   private async raw(
     url: string,
     method: string,

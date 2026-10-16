@@ -40,6 +40,10 @@ from time_utils import build_time_block, get_business_today_str
 from services.points_events import level_changed_event, makeup_card_changed_event, points_changed_event
 from services.points_service import InsufficientPointsError
 from services.progress_store import SOURCE_INTERACTION
+from services.application_service import ChatApplicationService
+from services.contracts import ChatCommand
+from services.chat_runtime import ChatFailed
+from services.privacy import redact_locations
 
 # 错误码（PRD FR-3 要求“返回明确错误码”）
 CODE_OK = 0
@@ -161,6 +165,7 @@ class InteractionHandler:
         pending_flush_waiter: Callable[[str], Any] | None = None,
         logger: logging.Logger | None = None,
         alert_sender: Callable[[str], Any] | None = None,
+        runtime_provider: Callable[[], Any] | None = None,
     ):
         self.config_service = config_service
         self.points_service = points_service
@@ -175,13 +180,14 @@ class InteractionHandler:
         self.broadcast_json = broadcast_json
         self.logger = logger or logging.getLogger(__name__)
         self.alert_sender = alert_sender
+        self.runtime_provider = runtime_provider
         # O5：读取「防抖缓冲里尚未处理」的用户文字，供礼物回复参考（客户端零改动也能兜住）
         self.pending_text_provider: Callable[[str], list[str]] | None = pending_text_provider
         # B 方案：等静默窗口结束并摘走缓冲消息，使「文字 + 礼物」只产生一条回复
         self.pending_flush_waiter = pending_flush_waiter
         # 幂等重放的短期缓存：requestId → 结果（进程内，配合账本幂等键双重防重）
-        self._recent_results: dict[str, InteractionSendResult] = {}
-        self._recent_order: list[str] = []
+        self._recent_results: dict[tuple[str, str], InteractionSendResult] = {}
+        self._recent_order: list[tuple[str, str]] = []
         self._recent_limit = 200
         self._ai_failure_count = 0
 
@@ -215,11 +221,18 @@ class InteractionHandler:
         device_id: str | None = None,
         attachment: str | None = None,
     ) -> InteractionSendResult:
+        async with self.state.sessions.session(user_id):
+            return await self._send(user_id, item_id, request_id, device_id, attachment)
+
+    async def _send(self, user_id, item_id, request_id, device_id, attachment):
         """`attachment`（O5）：送礼时用户输入框里的附言，会随礼物一起交给模型。"""
         request_id = (request_id or "").strip() or uuid.uuid4().hex
-        attachment = (attachment or "").strip()
+        attachment = redact_locations((attachment or "").strip())
+        runtime = self.runtime_provider() if self.runtime_provider is not None else None
+        if runtime is not None:
+            return await self._send_reliable(runtime, user_id, item_id, request_id, device_id, attachment)
 
-        cached = self._recent_results.get(request_id)
+        cached = self._recent_results.get((user_id, request_id))
         if cached is not None:
             replay = InteractionSendResult(**{**cached.__dict__, "duplicate": True})
             return replay
@@ -384,13 +397,13 @@ class InteractionHandler:
         now_ms = int(time.time() * 1000)
 
         # 模型历史里带上「附言」（客户端 text 或摘来的缓冲文字都算）
-        self._append_history(user_id, item, final_reply, now_ms, attachment=prompt_attachment)
         # 时间线只并入**客户端传来的附言**：摘来的缓冲文字在客户端本来就已是一条独立气泡，
         # 再并进来会重复显示，因此这里只标出物品本身。
         timeline_user_content = f"{item.get('icon', '')} {item['name']}".strip()
         if attachment:
             timeline_user_content = f"{timeline_user_content} · {attachment}"
         try:
+            self._append_history(user_id, item, final_reply, now_ms, attachment=prompt_attachment)
             await self.append_timeline(
                 # 被摘走（合进本次礼物回复）的聊天消息也必须逐条写时间线。
                 build_user_timeline_items(merged_items, now_ms - 1, user_id=user_id)
@@ -483,6 +496,152 @@ class InteractionHandler:
             f"cost={cost}, balance={result.balance}"
         )
         return result
+
+    async def _send_reliable(self, runtime, user_id, item_id, request_id, device_id, attachment):
+        """Keep the points ledger's rules; SQL owns the single durable chat result."""
+        existing = await runtime.request(user_id, request_id)
+        charge = self.points_service.find_ledger_entry(user_id, f"item_send:{user_id}:{request_id}")
+        refund = self.points_service.find_ledger_entry(user_id, f"item_refund:{user_id}:{request_id}")
+        if existing:
+            source = existing["source"]
+            metadata = source.get("metadata") or {}
+            item = metadata.get("item") or {}
+            if source.get("intent") != "interaction" or item.get("id") != item_id or metadata.get("attachment", "") != attachment:
+                return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_INVALID_PARAM,
+                                             message="请求标识已用于其他输入", balance=self.points_service.get_balance(user_id))
+        else:
+            item = self.config_service.get_item(item_id)
+            if not item or (not item.get("is_active") and charge is None):
+                return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_ITEM_NOT_FOUND,
+                                             message="物品不存在或已下架", balance=self.points_service.get_balance(user_id))
+            metadata = {"item": {key: item.get(key) for key in ("id", "name", "icon", "cost_points")},
+                        "attachment": attachment, "prompt_template": self.config_service.render_prompt(item),
+                        "business_date": get_business_today_str()}
+        if charge and charge.get("related_item_id") != item_id:
+            return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_INVALID_PARAM,
+                                         message="请求标识已用于其他物品", balance=self.points_service.get_balance(user_id))
+        cost = abs(int(charge["change_amount"])) if charge else int(item["cost_points"])
+        if refund:
+            return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_AI_FAILED_REFUNDED,
+                                         message="此前互动失败，积分已退回", item=item, duplicate=True, refunded=True,
+                                         balance=self.points_service.get_balance(user_id), fallback_text=DEFAULT_FALLBACK_TEXT)
+        result = InteractionSendResult(True, user_id, item_id, request_id, item=item,
+                                       duplicate=charge is not None,
+                                       balance=self.points_service.get_balance(user_id))
+        turn_id = existing["turn_id"] if existing else None
+        try:
+            if turn_id is None:
+                text = f"{item.get('icon', '')} {item['name']}".strip()
+                if attachment:
+                    text += f" · {attachment}"
+                command = ChatCommand(user_id, request_id, f"interaction_user_{request_id}", device_id or "interaction",
+                                      text, channel="ws", intent="interaction", metadata=metadata)
+                receipts = await runtime.accept([command], delay=20 if not attachment else 0, merge_pending=not attachment)
+                turn_id = receipts[0]["turn_id"]
+            try:
+                deduction = await runtime.charge_interaction(
+                    user_id, request_id,
+                    lambda: self.points_service.deduct_for_item(user_id, item_id, cost, request_id,
+                                                               metadata.get("business_date") or get_business_today_str()),
+                )
+            except InsufficientPointsError:
+                await runtime.cancel(user_id, turn_id)
+                return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_INSUFFICIENT_POINTS,
+                                             message=f"积分不足，需要 {cost} 积分", item=item, balance=self.points_service.get_balance(user_id))
+            result.duplicate = not deduction.created
+            result.charged = cost if deduction.created else 0
+            result.balance = self.points_service.get_balance(user_id)
+            if deduction.created:
+                await self._push(user_id, points_changed_event(deduction.entry, balance=result.balance))
+                try:
+                    activity = self.points_service.record_user_activity(user_id, source=SOURCE_INTERACTION)
+                    result.rewards = [dict(entry) for entry in activity.rewards]
+                    result.balance = activity.balance
+                    for entry in activity.rewards:
+                        await self._push(user_id, points_changed_event(entry))
+                    if activity.level is not None and activity.level.level_changed:
+                        result.level_event = level_changed_event(activity.level)
+                        await self._push(user_id, result.level_event)
+                except Exception as error:
+                    self.logger.warning("interaction activity failed (%s)", type(error).__name__)
+                try:
+                    if self.makeup_card_service.ensure_initial_grant(user_id):
+                        await self._push(user_id, makeup_card_changed_event(self.makeup_card_service.get_summary(user_id), "MONTHLY_GRANT"))
+                except Exception as error:
+                    self.logger.warning("interaction makeup grant failed (%s)", type(error).__name__)
+            # No model can claim this gift until its durable payment gate opens.
+            await runtime.confirm_interaction(user_id, request_id)
+            if not attachment and self.pending_flush_waiter is not None and existing is None:
+                await self._push(user_id, {"type": "chat.typing", "payload": {"typing": True, "stage": "interaction_merge"}})
+                try:
+                    # These sources were accepted by WS already. Never insert them a second time.
+                    await self.pending_flush_waiter(user_id)
+                except Exception as error:
+                    self.logger.warning("interaction merge wait failed (%s)", type(error).__name__)
+            await runtime.ready(user_id, [turn_id])
+            await self._push(user_id, {"type": "chat.typing", "payload": {"typing": True, "stage": "interaction"}})
+            rules = self.config_service.get_points_rules().get("deepseek_retry", {})
+            timeout = min(15, max(0.01, float(rules.get("total_timeout_seconds", 15) or 15)))
+            durable = await runtime.wait(user_id, turn_id, timeout=timeout)
+        except asyncio.CancelledError:
+            # Disconnecting a waiter does not revoke a paid, accepted operation.
+            raise
+        except Exception as error:
+            self.logger.warning("interaction operation failed (%s)", type(error).__name__)
+            if turn_id is None:
+                # An accept error can occur after commit. Resolve uncertainty before refunding.
+                recovered = await runtime.request(user_id, request_id)
+                turn_id = recovered["turn_id"] if recovered else None
+            durable = await runtime.cancel(user_id, turn_id) if turn_id else None
+            if durable is None:
+                charge = self.points_service.find_ledger_entry(user_id, f"item_send:{user_id}:{request_id}")
+                if charge is not None:
+                    result.refunded = await self._refund_charge(user_id, item, request_id, abs(int(charge["change_amount"])))
+                result.ok = False
+                storage_failure = not isinstance(error, (ChatFailed, TimeoutError)) or getattr(error, "category", "") == "storage"
+                result.error_code = CODE_STORAGE_FAILED_REFUNDED if storage_failure else CODE_AI_FAILED_REFUNDED
+                result.message = "互动失败，积分已退回" if result.refunded else ("消息保存失败，未扣积分" if charge is None else "互动失败，请联系管理员核对积分")
+                result.balance = self.points_service.get_balance(user_id)
+                result.fallback_text = DEFAULT_FALLBACK_TEXT if result.refunded else None
+                await self._push(user_id, {"type": "chat.typing", "payload": {"typing": False}})
+                await self._push(user_id, {"type": "bot.error", "requestId": request_id,
+                                            "payload": {"errorCode": result._error_code_text(), "message": result.message,
+                                                        "requestIds": [request_id]}})
+                return result
+        # The SQL result and required outbox are already committed. No fallible
+        # mirror writes or direct reply pushes may turn this into a refund.
+        result.reply = durable["reply"]
+        result.message_id = durable["messageId"]
+        result.timer_instruction = durable.get("timerInstruction")
+        result.attempts = durable.get("attempts", 1)
+        result.merged_request_ids = [identity for identity in durable.get("requestIds", []) if identity != request_id]
+        return result
+
+    async def reconcile_reliable(self, source):
+        """Compensate an unconfirmed durable intent after a crash, exactly once.
+
+        The repository has already moved its payment gate to ``reconciling``;
+        neither a late confirmation nor a model result can succeed afterwards.
+        """
+        if source.get("intent") != "interaction":
+            raise ValueError("reconciliation requires an interaction source")
+        runtime = self.runtime_provider() if self.runtime_provider else None
+        if runtime is None:
+            raise RuntimeError("reconciliation runtime is unavailable")
+        owner, request_id = source["owner"], source["request_id"]
+        item = source["metadata"]["item"]
+        charge = self.points_service.find_ledger_entry(owner, f"item_send:{owner}:{request_id}")
+        if charge is not None:
+            amount = int(charge.get("change_amount", 0))
+            if charge.get("related_item_id") != item["id"] or amount >= 0:
+                raise ValueError("reconciliation charge identity is inconsistent")
+            refund = self.points_service.find_ledger_entry(owner, f"item_refund:{owner}:{request_id}")
+            if refund is None:
+                if not await self._refund_charge(owner, item, request_id, -amount):
+                    raise RuntimeError("interaction refund remains unresolved")
+            elif refund.get("related_item_id") != item["id"] or int(refund.get("change_amount", 0)) != -amount:
+                raise ValueError("reconciliation refund identity is inconsistent")
+        await runtime.cancel(owner, source["turn_id"])
 
     # ==================== 内部：DeepSeek ====================
     async def _call_deepseek(self, messages: list[dict]) -> tuple[str, int]:
@@ -662,27 +821,11 @@ class InteractionHandler:
           以「【他刚刚还说】」的形式附在指令块，避免答非所问。
         """
         history = self.state.user_chat_history.setdefault(user_id, [])
-        weather_info = await self.weather_service.get_weather_str(force=True)
-
-        # 服务端判定时段后注入（不再让模型自己按 HH:MM 猜）
-        time_str = build_time_block()
-
-        system_prompt = await self.prompt_service.get_system_prompt(user_id)
-        system_content = f"{system_prompt}\n{time_str}\n{weather_info}\n\n{TIME_ENFORCEMENT}"
-
-        separator = "──── 新的一天 ────"
-        sep_idx = -1
-        for index in range(len(history) - 1, -1, -1):
-            if history[index].get("role") == "system" and history[index].get("content") == separator:
-                sep_idx = index
-                break
-        recent_history = history[sep_idx + 1 :] if sep_idx >= 0 else history
-        recent_history = [
-            msg
-            for msg in recent_history
-            if not (msg.get("role") == "system" and msg.get("content") == separator)
-        ][-10:]
-        recent_history, polluted_tails = clean_short_term_history(recent_history, min_repeat=3)
+        service = ChatApplicationService(self.state, self.history_store, self.prompt_service, self.weather_service)
+        _, system_content = await service.system_context(user_id)
+        recent_history, polluted_tails = service.history_context(
+            history if getattr(service, "legacy_allowed", True) else [], limit=10, after_separator=True
+        )
 
         # EDGE-9：模板在请求发起时快照，后台更新只对之后的请求生效
         interaction_prompt = self.config_service.render_prompt(item)
@@ -705,10 +848,7 @@ class InteractionHandler:
         if attachment and attachment.strip():
             user_turn = f"{user_turn}{attachment.strip()}"
 
-        messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
-        messages.extend(with_history_timestamp(msg) for msg in recent_history)
-        messages.append({"role": "system", "content": anchor_prompt})
-        messages.append({"role": "user", "content": user_turn})
+        messages = service.messages(system_content, recent_history, anchor_prompt, {"role": "user", "content": user_turn})
         return messages, polluted_tails
 
     def _pending_user_texts(self, user_id: str, limit: int = 160) -> str:
@@ -731,18 +871,14 @@ class InteractionHandler:
         now_ms: int,
         attachment: str = "",
     ) -> None:
-        history = self.state.user_chat_history.setdefault(user_id, [])
         user_record = f"（用户送了你{item.get('icon', '')}{item['name']}）"
         if attachment and attachment.strip():
             user_record = f"{user_record}{attachment.strip()}"
-        history.append({"role": "user", "content": user_record, "ts": now_ms - 1})
-        history.append({"role": "assistant", "content": reply, "ts": now_ms})
-        if len(history) > 300:
-            self.state.user_chat_history[user_id] = history[-300:]
-        try:
-            self.history_store.save(self.state.user_chat_history)
-        except Exception as exc:
-            self.logger.error(f"[互动] 保存历史失败: {exc}")
+        service = ChatApplicationService(self.state, self.history_store, self.prompt_service, self.weather_service)
+        service.commit_history(user_id, [
+            {"role": "user", "content": user_record, "ts": now_ms - 1},
+            {"role": "assistant", "content": reply, "ts": now_ms},
+        ])
 
     # ==================== 内部：杂项 ====================
     async def push_event(self, user_id: str, event: dict[str, Any]) -> None:
@@ -756,8 +892,9 @@ class InteractionHandler:
             self.logger.warning(f"[互动] 推送事件失败: {exc}")
 
     def _remember(self, request_id: str, result: InteractionSendResult) -> None:
-        self._recent_results[request_id] = result
-        self._recent_order.append(request_id)
+        key = (result.user_id, request_id)
+        self._recent_results[key] = result
+        self._recent_order.append(key)
         while len(self._recent_order) > self._recent_limit:
             stale = self._recent_order.pop(0)
             self._recent_results.pop(stale, None)

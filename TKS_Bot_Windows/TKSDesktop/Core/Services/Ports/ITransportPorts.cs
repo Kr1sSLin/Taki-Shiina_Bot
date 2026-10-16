@@ -90,6 +90,22 @@ public interface IRestPort
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>Authenticated original image bytes from a reliable chat source.</summary>
+public sealed record HistoryImageBytes(string MimeType, byte[] Bytes);
+
+/// <summary>Optional binary history transport; legacy sync fakes may omit it.</summary>
+public interface IHistoryImagePort
+{
+    Task<PortCall<HistoryImageBytes>> GetHistoryImageAsync(
+        string requestId, int index, CancellationToken cancellationToken = default);
+}
+
+/// <summary>Bind a WS echo's original images to its local user message.</summary>
+public interface IHistoryImageRestorer
+{
+    Task RestoreEchoImagesAsync(string requestId, string messageId, int imageCount, CancellationToken ct = default);
+}
+
 /// <summary>
 /// 文件系统端口（窄接口）。
 ///

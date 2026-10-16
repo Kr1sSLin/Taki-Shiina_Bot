@@ -7,11 +7,15 @@ using TKSDesktop.Core.Services.Ports;
 namespace TKSDesktop.Core.Network;
 
 /// <summary>将 REST 客户端接入同步服务窄端口。</summary>
-public sealed class RestPortAdapter : IRestPort
+public sealed class RestPortAdapter : IRestPort, IHistoryImagePort
 {
     private readonly RestClient _rest;
 
     public RestPortAdapter(RestClient rest) => _rest = rest;
+
+    public async Task<PortCall<HistoryImageBytes>> GetHistoryImageAsync(
+        string requestId, int index, CancellationToken cancellationToken = default)
+        => ToPortCall(await _rest.GetHistoryImageAsync(requestId, index, cancellationToken).ConfigureAwait(false), static data => data);
 
     public async Task<PortCall<RestChatDataDto>> SendChatAsync(RestChatRequestDto request, CancellationToken cancellationToken = default)
         => ToPortCall(await _rest.PostAsync<RestChatDataDto>("/chat", request,

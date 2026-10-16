@@ -1142,6 +1142,24 @@ async function run(): Promise<number> {
     services.images.listDraft().length
   )
 
+  // 跨设备历史只携带 requestId/imageCount；原图必须另取、原样落在私有附件目录。
+  const historyImageMessageId = randomUUID()
+  msgRepo.upsertMessage({ messageId: historyImageMessageId, sessionId: 'default_session', role: 'user',
+    content: '[图片]', status: 'sent', timestamp: Date.now(), messageType: 'image', contentType: 'image' })
+  const { restoreHistoryImages } = await import('./core/chat/image-service')
+  let imageDownloads = 0
+  const imageRest = { downloadImage: async () => {
+    imageDownloads += 1
+    return { mimeType: 'image/png', bytes: TINY_PNG }
+  } } as Parameters<typeof restoreHistoryImages>[0]
+  const imageRestored = await restoreHistoryImages(imageRest, historyImageMessageId, 'remote-source-id', 1)
+  const historyAttachment = msgRepo.listAttachmentsByMessage(historyImageMessageId)[0]
+  const imageRestoredAgain = await restoreHistoryImages(imageRest, historyImageMessageId, 'remote-source-id', 1)
+  check('历史原图补拉保留原始字节、可通过现有附件记录展示且全量重拉幂等',
+    imageRestored && !imageRestoredAgain && imageDownloads === 1 &&
+      !!historyAttachment && readFileSync(historyAttachment.localPath).equals(TINY_PNG) &&
+      msgRepo.getMessage(historyImageMessageId)?.attachments?.length === 1)
+
   /* -------------------------------- 日志 ------------------------------ */
   section('§8 / NFR-6 / NFR-7 日志与凭据安全')
   const logDir = paths().logsDir

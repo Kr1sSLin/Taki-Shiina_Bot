@@ -69,6 +69,7 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
     private readonly ILogger<ChatService> _logger;
     private readonly IAuthService? _auth;
     private readonly IAttachmentPort? _attachments;
+    private readonly IHistoryImageRestorer? _imageRestorer;
     private readonly TimeProvider _timeProvider;
 
     private readonly StreamingAccumulator _streaming;
@@ -108,7 +109,8 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         TimeProvider? timeProvider = null,
         IAuthService? authService = null,
         IAttachmentPort? attachmentPort = null,
-        IRestPort? rest = null)
+        IRestPort? rest = null,
+        IHistoryImageRestorer? imageRestorer = null)
     {
         ArgumentNullException.ThrowIfNull(repository);
         ArgumentNullException.ThrowIfNull(wss);
@@ -126,6 +128,7 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         _logger = logger;
         _auth = authService;
         _attachments = attachmentPort;
+        _imageRestorer = imageRestorer;
         _timeProvider = timeProvider ?? TimeProvider.System;
 
         _streaming = new StreamingAccumulator(_timeProvider);
@@ -454,27 +457,30 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
             return;
         }
 
-        var existing = await _repository.GetMessageAsync(requestId).ConfigureAwait(false);
+        var messageId = string.IsNullOrWhiteSpace(payload.ClientMessageId) ? requestId : payload.ClientMessageId;
+        var existing = await _repository.GetMessageAsync(messageId).ConfigureAwait(false);
         if (existing is not null)
         {
             // 幂等：同一 requestId 只保留一条；仍在 sending 时补一次终态（其它设备已确认送达）。
             if (string.Equals(existing.Status, ProtocolConstants.StatusSending, StringComparison.Ordinal))
             {
                 await _repository
-                    .UpdateMessageStatusAsync(requestId, ProtocolConstants.StatusSent, null)
+                    .UpdateMessageStatusAsync(messageId, ProtocolConstants.StatusSent, null)
                     .ConfigureAwait(false);
-                await RaiseRowAsync(requestId).ConfigureAwait(false);
+                await RaiseRowAsync(messageId).ConfigureAwait(false);
             }
+
+            await RestoreEchoImagesQuietlyAsync(requestId, messageId, payload.ImageCount).ConfigureAwait(false);
 
             return;
         }
 
         var hasImages = payload.ImageCount > 0;
         var record = new ChatMessageRecord(
-            requestId,
+            messageId,
             "user",
-            hasImages ? "image" : "text",
-            payload.Content ?? string.Empty,
+            hasImages ? (string.IsNullOrWhiteSpace(payload.Content) ? "image" : "mixed") : "text",
+            hasImages && string.IsNullOrWhiteSpace(payload.Content) ? ProtocolConstants.ImagePlaceholder : payload.Content ?? string.Empty,
             ProtocolConstants.StatusSent,
             payload.Timestamp > 0 ? payload.Timestamp : NowMs,
             MessageType: hasImages ? "image" : "text");
@@ -482,7 +488,22 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         await _repository.UpsertMessageAsync(record).ConfigureAwait(false);
         await RaiseMessageChangedAsync(ToView(record)).ConfigureAwait(false);
 
+        await RestoreEchoImagesQuietlyAsync(requestId, messageId, payload.ImageCount).ConfigureAwait(false);
+
         _logger.LogInformation("已入库其它设备的回声 requestId={RequestId} images={ImageCount}", requestId, payload.ImageCount);
+    }
+
+    private async Task RestoreEchoImagesQuietlyAsync(string requestId, string messageId, int imageCount)
+    {
+        if (imageCount < 1 || _imageRestorer is null) return;
+        try
+        {
+            await _imageRestorer.RestoreEchoImagesAsync(requestId, messageId, imageCount).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "回声图片补拉失败 requestId={RequestId}", requestId);
+        }
     }
 
     /// <summary>`chat.queued`（FR-W-CHAT-15 / EDGE-W-17）：窗口秒数**必须**取服务端下发值。</summary>

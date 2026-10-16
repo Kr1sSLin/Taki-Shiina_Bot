@@ -159,6 +159,9 @@ public sealed class ChatReplyStreamPayloadDto
 /// <summary>`chat.message.echo` 的 payload（多设备回声）。</summary>
 public sealed class ChatEchoPayloadDto
 {
+    [JsonPropertyName("clientMessageId")]
+    public string? ClientMessageId { get; set; }
+
     [JsonPropertyName("content")]
     public string? Content { get; set; }
 

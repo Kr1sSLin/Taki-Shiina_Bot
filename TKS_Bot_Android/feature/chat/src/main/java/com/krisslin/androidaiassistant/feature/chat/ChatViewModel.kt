@@ -87,13 +87,14 @@ class ChatViewModel @Inject constructor(
 
     // 当前会话 ID
     private val sessionId: String = "default_session"
+    private val imageAttachmentManager = ChatImageAttachmentManager(context, chatRepository, sessionId, chatApi)
     private val timelineSynchronizer = ChatTimelineSynchronizer(
         chatApi = chatApi,
         chatRepository = chatRepository,
         userFactRepository = userFactRepository,
-        sessionId = sessionId
+        sessionId = sessionId,
+        imageAttachmentManager = imageAttachmentManager
     )
-    private val imageAttachmentManager = ChatImageAttachmentManager(context, chatRepository, sessionId)
 
     // 流式消息内容缓存: requestId -> 累积内容
     private val streamingContentCache = ConcurrentHashMap<String, StringBuilder>()
@@ -165,8 +166,17 @@ class ChatViewModel @Inject constructor(
             runCatching { chatRepository.deleteBlankBotMessages() }
             chatRepository.observeMessagesWithAttachments(sessionId).collect { pairs ->
                 val uiMessages = pairs.map { (entity, attachments) ->
+                    val remote = attachments.filter { it.attachmentId.startsWith("remote_") }
+                    val downloaded = remote.filter { it.uploadState == "downloaded" }
+                    val local = attachments.filter { !it.attachmentId.startsWith("remote_") }
+                    val visibleAttachments = when {
+                        remote.isEmpty() -> local
+                        downloaded.size == remote.size -> downloaded
+                        local.isNotEmpty() -> local
+                        else -> downloaded
+                    }
                     entity.toUiModel(
-                        attachments.map { att ->
+                        visibleAttachments.map { att ->
                             ChatAttachmentUi(
                                 id = att.attachmentId,
                                 localUri = att.localUri,
@@ -624,18 +634,26 @@ class ChatViewModel @Inject constructor(
     private suspend fun handleUserEcho(message: IncomingMessage.UserEcho) {
         val requestId = message.requestId ?: return
         val payload = message.payload
+        val messageId = payload.clientMessageId?.takeIf { it.isNotBlank() } ?: requestId
         val content = when {
             payload.content.isNotBlank() -> payload.content
             payload.imageCount > 0 -> "[图片×${payload.imageCount}]"
             else -> return
         }
         chatRepository.saveExternalMessage(
-            messageId = requestId,
+            messageId = messageId,
             sessionId = sessionId,
             role = MessageRole.USER,
             content = content,
-            timestamp = payload.timestamp
+            timestamp = payload.timestamp,
+            contentType = HistoryImageRestorePolicy.contentType(content, payload.imageCount),
+            modelProvider = if (payload.imageCount > 0) ModelProvider.GEMINI else ModelProvider.DEEPSEEK
         )
+        if (payload.imageCount > 0) {
+            viewModelScope.launch {
+                imageAttachmentManager.restoreHistoryImages(requestId, messageId, payload.imageCount)
+            }
+        }
     }
 
     /**
@@ -949,7 +967,7 @@ class ChatViewModel @Inject constructor(
     private fun ChatMessageEntity.toUiModel(attachments: List<ChatAttachmentUi>) = ChatMessageUi(
         id = messageId,
         role = role,
-        content = content,
+        content = HistoryImageRestorePolicy.displayContent(content, contentType, attachments.isNotEmpty()),
         contentType = contentType,
         modelProvider = modelProvider,
         attachments = attachments,

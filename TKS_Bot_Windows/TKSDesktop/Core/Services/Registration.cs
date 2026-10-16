@@ -44,7 +44,17 @@ public static class Registration
         services.AddSingleton<Chat.ChatService>();
         services.AddSingleton<IChatService>(sp => sp.GetRequiredService<Chat.ChatService>());
         services.AddSingleton<IInteractionDelivery>(sp => sp.GetRequiredService<Chat.ChatService>());
-        services.AddSingleton<ISyncService, Sync.SyncService>();
+        services.AddSingleton(sp => new Sync.SyncService(
+            sp.GetRequiredService<IChatRepositoryPort>(),
+            sp.GetRequiredService<IRestPort>(),
+            sp.GetRequiredService<IUiDispatcher>(),
+            sp.GetRequiredService<ILogger<Sync.SyncService>>(),
+            sp.GetService<IWssPort>(),
+            sp.GetRequiredService<IAttachmentPort>(),
+            sp.GetRequiredService<IFileStoragePort>(),
+            sp.GetRequiredService<IPaths>()));
+        services.AddSingleton<ISyncService>(sp => sp.GetRequiredService<Sync.SyncService>());
+        services.AddSingleton<IHistoryImageRestorer>(sp => sp.GetRequiredService<Sync.SyncService>());
         services.AddSingleton<IMediaService, Media.MediaService>();
         services.AddSingleton<IGamificationService, GamificationService>();
 

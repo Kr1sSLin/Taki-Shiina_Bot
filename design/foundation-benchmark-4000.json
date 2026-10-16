@@ -1,0 +1,17 @@
+{
+  "python": "3.14.0",
+  "platform": "win32",
+  "facts": 4000,
+  "write_p50_ms": 2.954,
+  "write_p95_ms": 3.771,
+  "search_and_probe_ms": 886.787,
+  "search_peak_bytes": 908866,
+  "result_limit": 1000,
+  "returned_matches": 1000,
+  "known_probe_recall": 1.0,
+  "backup_restore_rebuild_ms": 660.078,
+  "restored_matches": 1000,
+  "restored_tail_found": true,
+  "restore_guard_verified": true,
+  "note": "Synthetic bounded substring retrieval and first/middle/last probes; not semantic recall or a production capacity claim."
+}

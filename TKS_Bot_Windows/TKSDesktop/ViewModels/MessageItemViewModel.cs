@@ -127,7 +127,7 @@ public sealed partial class MessageItemViewModel : ObservableObject
     {
         ArgumentNullException.ThrowIfNull(view);
 
-        Content = view.Content ?? string.Empty;
+        Content = view.AttachmentPaths.Count > 0 && view.Content == ProtocolConstants.ImagePlaceholder ? string.Empty : view.Content ?? string.Empty;
         Status = view.Status ?? string.Empty;
         ErrorCode = view.ErrorCode;
         IsHistorySeparator = view.IsHistorySeparator;

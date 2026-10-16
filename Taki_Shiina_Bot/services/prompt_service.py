@@ -4,6 +4,8 @@ import os
 from datetime import timedelta, timezone
 
 from time_utils import next_hour_boundary
+from services.privacy import scrub_locations
+from services.permission_guard import PermissionGuard
 
 
 class PromptService:
@@ -17,6 +19,7 @@ class PromptService:
         self.scene_cache = scene_cache
         self.user_memo = user_memo
         self.logger = logger
+        self.permission_guard = getattr(memory_service, "permission_guard", None) or PermissionGuard(getattr(memory_service, "base_dir", None))
         self._refresh_tasks: dict[str, asyncio.Task] = {}
         self._last_refresh_at: dict[str, float] = {}
 
@@ -27,9 +30,12 @@ class PromptService:
             if asyncio.iscoroutine(result):
                 await result
         except Exception as exc:
-            self.logger.warning(f"⚠️ 通知 owner 失败(已忽略): {exc}")
+            self.logger.warning("Owner notification failed", exc_info=True)
 
     async def generate_scene(self, user_id):
+        if not self.permission_guard.owner_context_allowed(user_id):
+            self.invalidate_scene(user_id)
+            return ""
         utc_now = datetime.datetime.now(timezone.utc)
         beijing_now = utc_now + timedelta(hours=8)
         hour = beijing_now.hour
@@ -58,7 +64,7 @@ class PromptService:
 【立希当前状态】：
 - 情绪底色：（一句话描述情绪，说明会如何影响说话方式）
 - 正在做：（一句话描述活动，说明会如何影响回复节奏）
-⚠️ 上述状态会影响语气和节奏，但不改变对 Kris 的核心态度。不要直接说出状态，让它自然流露。
+⚠️ 上述状态会影响语气和节奏，但不改变对用户的核心态度。不要直接说出状态，让它自然流露。
 """
 
         try:
@@ -69,13 +75,17 @@ class PromptService:
                 max_tokens=200,
             )
             scene_text = response.choices[0].message.content.strip()
-            self.logger.info(f"🎲 [场景生成] {user_id} → \n{scene_text}")
-            asyncio.create_task(self._notify_safe(f"🎭 [场景切换]\n\n{scene_text}"))
-            return scene_text
         except Exception as e:
-            self.logger.error(f"❌ 场景生成失败，使用默认状态: {e}")
-            asyncio.create_task(self._notify_safe(f"⚠️ [场景生成失败] 已回退默认状态\n错误：{e}"))
-            return "【立希当前状态】：\n- 情绪底色：心情平稳，但懒得多说话。\n- 正在做：坐着发呆，手机放在旁边。\n⚠️ 上述状态会影响语气和节奏，但不改变对 Kris 的核心态度。不要直接说出状态，让它自然流露。"
+            self.logger.error("Scene generation failed; using the default state", exc_info=True)
+            asyncio.create_task(self._notify_safe(f"⚠️ [场景生成失败] 已回退默认状态\n错误类型：{type(e).__name__}"))
+            scene_text = "【立希当前状态】：\n- 情绪底色：心情平稳，但懒得多说话。\n- 正在做：坐着发呆，手机放在旁边。\n⚠️ 上述状态会影响语气和节奏，但不改变对用户的核心态度。不要直接说出状态，让它自然流露。"
+        if not self.permission_guard.owner_context_allowed(user_id):
+            self.invalidate_scene(user_id)
+            return ""
+        scene_text = scrub_locations(scene_text)
+        self.logger.info("场景生成完成 chars=%d", len(scene_text))
+        asyncio.create_task(self._notify_safe(f"🎭 [场景切换]\n\n{scene_text}"))
+        return scene_text
 
     async def get_random_scene(self, user_id):
         """取当前「立希当前状态」。
@@ -84,10 +94,15 @@ class PromptService:
         绝不在用户请求链路上等一次 LLM 调用（否则会吃掉 3 秒 SLA / 互动 15 秒预算）。
         整点主动刷新由 ws_api 的 `scene_refresh_scheduler` 负责，这里是兜底自愈。
         """
+        if not self.permission_guard.owner_context_allowed(user_id):
+            self.invalidate_scene(user_id)
+            return ""
         cache = self.scene_cache.get(user_id)
         now = datetime.datetime.now(timezone.utc)
         if cache is None:
             scene_text = await self.generate_scene(user_id)
+            if not scene_text:
+                return ""
             self.scene_cache[user_id] = {"scene": scene_text, "expires_at": next_hour_boundary(now)}
             self.logger.info(f"🕐 [初始场景] 下次切换：{self.scene_cache[user_id]['expires_at'].strftime('%H:%M')} UTC")
             return scene_text
@@ -120,13 +135,14 @@ class PromptService:
 
     async def refresh_scene(self, user_id):
         """重新生成并写入心情缓存（整点任务、内部接口、过期兜底都走这里）。"""
-        try:
-            scene_text = await self.generate_scene(user_id)
-        except Exception as exc:  # generate_scene 内部已兜底，这里再保一层
-            self.logger.error(f"❌ [场景刷新] 失败，保留旧心情: user={user_id}, err={exc}")
-            return self.scene_cache.get(user_id, {}).get("scene")
+        if not self.permission_guard.owner_context_allowed(user_id):
+            self.invalidate_scene(user_id)
+            return ""
+        # generate_scene handles provider failures; permission/storage errors
+        # must propagate instead of returning stale private cache entries.
+        scene_text = await self.generate_scene(user_id)
         if not scene_text:
-            return self.scene_cache.get(user_id, {}).get("scene")
+            return ""
         self.scene_cache[user_id] = {
             "scene": scene_text,
             "expires_at": next_hour_boundary(datetime.datetime.now(timezone.utc)),
@@ -135,10 +151,22 @@ class PromptService:
 
     def invalidate_scene(self, user_id) -> None:
         self.scene_cache.pop(user_id, None)
+        self.scene_cache.pop(str(user_id), None)
 
-    async def get_system_prompt(self, user_id):
-        user_dynamic_info = self.memory_service.get_profile(user_id)
-        scene_info = await self.get_random_scene(user_id)
+    async def get_system_prompt(self, user_id, *, allow_private_context=True):
+        # Check even when the caller explicitly excludes legacy context: an
+        # unverified restore closes every model path, including current input.
+        allowed = self.permission_guard.owner_context_allowed(user_id)
+        allow_private_context = bool(allow_private_context and allowed)
+        if not allow_private_context:
+            self.invalidate_scene(user_id)
+        user_dynamic_info = self.memory_service.get_profile(user_id) if allow_private_context else ""
+        scene_info = await self.get_random_scene(user_id) if allow_private_context else ""
+        user_memo = self.user_memo if allow_private_context else ""
+        if allow_private_context and not self.permission_guard.owner_context_allowed(user_id):
+            allow_private_context = False
+            user_dynamic_info = scene_info = user_memo = ""
+            self.invalidate_scene(user_id)
         base_prompt = f"""
 你现在的身份是：椎名立希 (Taki Shiina)。
 【基础设定】：
@@ -200,7 +228,7 @@ class PromptService:
 ……就一会\" （嘴上嫌弃，实际秒答应）
 
 【当前情报】：
-{self.user_memo}
+{user_memo}
 
 【长期记忆档案】：
 {user_dynamic_info}
@@ -272,4 +300,6 @@ class PromptService:
 你的回复：\"啧，知道了，到时候别赖皮。 [[TIMER:02:00|喂，两点了，快去死（划掉）快去睡！]]\"
 
 """
-        return base_prompt
+        if not allow_private_context:
+            base_prompt = base_prompt.replace("Kris", "用户")
+        return scrub_locations(base_prompt)

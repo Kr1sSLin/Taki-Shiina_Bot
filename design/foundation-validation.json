@@ -1,0 +1,66 @@
+{
+  "date": "2026-10-16",
+  "timezone": "Asia/Shanghai",
+  "scope": "Stage A F01-F06 under PRD 00/01 plus the user's later explicit image-coordinate exception",
+  "status": "implementation_and_windows_acceptance_passed_production_gate_pending",
+  "baseline": {
+    "branch": "Refactor",
+    "commit": "ecc3d07bbd88101e5725368dd02143970a76fce6",
+    "local_main": "0f8a00011078127b729742b0828cb9c384d3609c",
+    "production": "User reports latest main; server SHA not independently verified",
+    "reported_data_scale": "approximately 4000 chat/memory records"
+  },
+  "verification": {
+    "platform": "Windows",
+    "python": "3.14",
+    "fresh_environment_locked_install": "passed",
+    "pip_check": "passed",
+    "test_source": "Current working tree in the existing isolated locked-dependency venv",
+    "runtime_data_and_env_excluded": true,
+    "test_passed": 340,
+    "subtests_passed": 164,
+    "warnings": 13,
+    "duration_seconds": 44.09,
+    "real_model_or_notifications_called": false,
+    "git_diff_check": "passed",
+    "staged_privacy_check": "10 indexed files passed",
+    "working_tree_privacy_check": "foundation-privacy-check.json (refreshed 2026-10-16: 87 changed/untracked files including client sources; no credential-signature findings)",
+    "linux_ci": "configured_not_executed",
+    "process_crash_tests": "real subprocess os._exit before transaction commit and after commit before delivery",
+    "benchmark": "foundation-benchmark-4000.json",
+    "image_verification": "Real WS adapter with synthetic JPEG/EXIF, encrypted byte-exact persistence/restart, duplicate conflict, aggregate turn splitting, mocked Gemini original bytes, authenticated cross-device original download and restoration gate; no external model call",
+    "remaining_external_check": "Built-in Uvicorn image frame size configured; external Uvicorn launch and upstream proxies must be checked in staging",
+    "sync_revision": 3,
+    "sync_date": "2026-10-16",
+    "sync_note": "Backend full suite completed with 340 tests and 164 subtests; client checks repeated after image history filename hardening",
+    "client_verification": {
+      "windows": "dotnet test Tests/TKSDesktop.Tests: 217 passed, 0 failed",
+      "linux": "npm run typecheck passed; npm run selftest passed with 128 assertions including byte-exact image history restoration",
+      "android": "gradlew :feature:chat:testDebugUnitTest --rerun: BUILD SUCCESSFUL; 12 module unit tests passed, including 3 new HistoryImageRestoreTest cases",
+      "android_toolchain": "Android Studio JBR JDK 21 plus the Android SDK under %LOCALAPPDATA%; the machine default java 26 is unsupported by Gradle 8.13",
+      "not_verified": "No packaging, signing, real-device or staging-backend run for any client; no production endpoint or data was touched"
+    },
+    "open_client_gate_failures": []
+  },
+  "implemented": [
+    "HTTP/WS/interaction share authenticated durable chat runtime",
+    "Atomic source/extraction jobs and reply/event/outbox completion",
+    "Lease renewal, bounded retry, stable IDs and restart replay",
+    "Durable gift intent and ledger-backed idempotent compensation, including no-waiter failure",
+    "Permission guards for history/profile/cache/tasks and restore fail-closed",
+    "Text location egress and privacy logging boundary; user-authorized raw images encrypted in source requests and supplied unchanged to Gemini, including EXIF and visible coordinates",
+    "Image count, size, type and key prechecks; retry reuses encrypted original bytes and pending turns split at image limit",
+    "Cursor-based fact sync above 500 same-timestamp events",
+    "Interaction first-generation deadline persisted across restart/retry, capped at 15 seconds excluding debounce"
+  ],
+  "production_release_gate": [
+    "Run configured Linux clean-environment CI",
+    "Verify actual server SHA and deployed three-client versions",
+    "Rehearse production-size migration/restore with externally authoritative permission watermark",
+    "Validate actual three-client protocol and local-copy protections; current client plaintext storage documented",
+    "Run a staging Gemini image request and check external WebSocket/proxy frame limits before release"
+  ],
+  "production_migration_executed": false,
+  "user_staged_changes_preserved": true,
+  "changes_committed": false
+}

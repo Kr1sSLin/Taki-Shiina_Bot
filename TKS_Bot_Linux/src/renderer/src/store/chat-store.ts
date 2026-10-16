@@ -63,8 +63,8 @@ function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]): ChatMes
   for (const m of current) map.set(m.messageId, m)
   for (const m of incoming) {
     const prev = map.get(m.messageId)
-    // 保留附件（可能是本地已有的、而推送未带的）
-    map.set(m.messageId, prev?.attachments?.length ? { ...m, attachments: prev.attachments } : m)
+    // 补拉后的新附件优先；仅在帧未携带附件时保留本地已有图片。
+    map.set(m.messageId, m.attachments?.length ? m : prev?.attachments?.length ? { ...m, attachments: prev.attachments } : m)
   }
   return [...map.values()].sort((a, b) => a.timestamp - b.timestamp)
 }

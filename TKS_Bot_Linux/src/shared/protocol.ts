@@ -75,6 +75,9 @@ export type ChatRole = 'user' | 'bot' | 'system'
 /** 服务端 timeline 记录（`http_api.py::chat_history` / `/chat/history`）。 */
 export interface TimelineItem {
   messageId: string
+  /** Reliable image source ID; omitted on older timeline rows. */
+  requestId?: string
+  imageCount?: number
   userId: string
   role: ChatRole
   content: string
@@ -293,6 +296,7 @@ export interface WsEchoFrame {
   type: 'chat.message.echo'
   requestId: string
   payload: {
+    clientMessageId?: string
     content: string
     imageCount: number
     timestamp: number

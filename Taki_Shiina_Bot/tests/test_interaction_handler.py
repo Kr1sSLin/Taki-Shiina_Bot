@@ -182,6 +182,19 @@ class InteractionHandlerTestCase(unittest.TestCase):
         self.assertEqual(len(refunds), 1)
 
     # ---------- 幂等与并发（FR-13 / EDGE-1） ----------
+    def test_history_failure_refunds_and_never_reports_success(self):
+        from unittest.mock import patch
+        self.set_balance(20)
+        original = dict(self.rig.state.user_chat_history)
+        with patch.object(self.rig.handler.history_store, "save", side_effect=OSError("synthetic disk full")):
+            result = run(self.rig.handler.send(TEST_USER, "coffee", request_id="history-fail"))
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, 40205)
+        self.assertTrue(result.refunded)
+        self.assertEqual(self.rig.points.get_balance(TEST_USER), 21)
+        self.assertEqual(self.rig.state.user_chat_history, original if original else {TEST_USER: []})
+        self.assertFalse(any(event.get("payload", {}).get("done") is True for _user, event in self.rig.events))
+
     def test_duplicate_request_is_not_charged_twice(self):
         self.set_balance(20)
         first = run(self.rig.handler.send(TEST_USER, "coffee", request_id="dup-1"))

@@ -123,6 +123,7 @@ data class BotErrorPayload(
 data class UserEchoPayload(
     val content: String = "",
     val imageCount: Int = 0,
+    val clientMessageId: String? = null,
     val originDeviceId: String? = null,
     val timestamp: Long
 )

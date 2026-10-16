@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
@@ -16,11 +16,20 @@ from auth_utils import AuthContext, DeviceEntry, parse_device_tokens, resolve_au
 from app_constants import EMOTIONAL_TRIGGERS, LORE_TRIGGERS, USER_MEMO
 from app_state import AppState
 from services.history_store import HistoryStore
+from services.application_service import ChatApplicationService
+from services.chat_runtime import ChatFailed, get_chat_runtime
+from services.contracts import ChatCommand
+from services.foundation_store import PermissionDenied, StorageBusy, VersionConflict
+from services.text_generation import TextGenerator
+from services.vision_generation import describe_images
+from services.privacy_logging import install_privacy_logging
+from services.privacy import redact_locations, scrub_locations
 from services.memory_service import MemoryService
 from services.prompt_service import PromptService
 from services.timeline_store import TimelineStore
 from services.file_lock import FileLockTimeoutError
 from services.weather_service import WeatherService
+from secure_storage import DataCorruptionError, DataDecryptError
 from text_utils import (
     clean_short_term_history,
     inject_emojis,
@@ -64,6 +73,7 @@ except ValueError as exc:
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
+install_privacy_logging()
 
 state = AppState(history_file=os.path.join(_data_dir, "chat_history.json"))
 db = MemoryService(_data_dir)
@@ -92,6 +102,18 @@ MEMORY_TIMELINE_FILE = os.path.join(_data_dir, "memory_timeline.json")
 
 timeline_store = TimelineStore(TIMELINE_FILE, logger)
 memory_timeline_store = TimelineStore(MEMORY_TIMELINE_FILE, logger)
+_reliable_runtime_provider = None
+
+
+async def _no_live_delivery(_delivery):
+    raise ConnectionError("no live transport; inbox remains durable")
+
+
+def get_reliable_runtime():
+    if _reliable_runtime_provider is not None:
+        return _reliable_runtime_provider()
+    generator = TextGenerator(state, history_store, prompt_service, weather_service, client, parse_timer_instruction, vision_provider=describe_images)
+    return get_chat_runtime(_data_dir, generator, generator.extract, _no_live_delivery)
 
 
 
@@ -99,6 +121,7 @@ def configure_unified_runtime(runtime) -> None:
     """Bind HTTP handlers to the canonical ws_api runtime in unified mode only."""
     global state, db, weather_service, history_store, client, prompt_service
     global timeline_store, memory_timeline_store
+    global _reliable_runtime_provider
     state = runtime.state
     db = runtime.db
     weather_service = runtime.weather_service
@@ -107,6 +130,7 @@ def configure_unified_runtime(runtime) -> None:
     prompt_service = runtime.prompt_service
     timeline_store = runtime.timeline_store
     memory_timeline_store = runtime.memory_timeline_store
+    _reliable_runtime_provider = runtime.get_reliable_runtime
 
 def _missing_required_tokens() -> list[str]:
     if DEVICE_TOKEN_ERROR:
@@ -124,15 +148,22 @@ async def validate_security_config():
         joined = ", ".join(missing)
         logger.critical(f"[SECURITY] 缺少必填鉴权配置: {joined}，服务拒绝启动")
         raise RuntimeError(f"Missing required token env(s): {joined}")
+    reliable = get_reliable_runtime()
+    if reliable:
+        reliable.start()
+
+
+@app.on_event("shutdown")
+async def stop_reliable_runtime():
+    reliable = get_reliable_runtime()
+    if reliable:
+        await reliable.stop()
 
 
 def _trace_text(label: str, user_id: str, text: str):
     if not DEBUG_REPLY_TRACE:
         return
-    compact = (text or "").replace("\n", "\\n")
-    if len(compact) > 280:
-        compact = compact[:280] + "...(truncated)"
-    logger.info(f"[TRACE][{user_id}] {label}: {compact}")
+    logger.info("[TRACE] %s chars=%d", label, len(text or ""))
 
 
 def _timeline_backend(store, path: str) -> TimelineStore:
@@ -177,7 +208,8 @@ async def append_memory_timeline(items: list[dict]):
 
 async def extract_user_facts(user_id: str, message: str):
     """异步提取用户消息中的事实并存入 user_memories.json"""
-    logger.info(f"🔍 开始提取用户事实: user_id={user_id}, message={message[:50]}...")
+    message = redact_locations(message)
+    logger.info("开始提取用户事实 chars=%d", len(message))
     extraction_prompt = (
         "你是一个信息提取助手。从用户消息中提取关于用户自身的客观事实（如习惯、计划、状态、偏好等）。\n"
         "规则：\n"
@@ -194,12 +226,12 @@ async def extract_user_facts(user_id: str, message: str):
             temperature=0.3,
         )
         raw = resp.choices[0].message.content or "[]"
-        logger.info(f"🔍 LLM返回: {raw[:200]}")
+        logger.info("事实提取返回 chars=%d", len(raw))
         raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         facts = json.loads(raw)
-        logger.info(f"🔍 解析到 {len(facts)} 条事实: {facts}")
+        logger.info("事实解析完成 count=%d", len(facts))
         if isinstance(facts, list):
             timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
             memory_items = []
@@ -207,7 +239,7 @@ async def extract_user_facts(user_id: str, message: str):
                 if isinstance(fact, str) and fact.strip():
                     clean_fact = fact.strip()
                     db.update_profile(user_id, clean_fact)
-                    logger.info(f"✅ 已写入事实: {clean_fact}")
+                    logger.info("事实写入完成")
                     memory_items.append(
                         {
                             "factId": f"fact_{uuid.uuid4().hex}",
@@ -219,13 +251,14 @@ async def extract_user_facts(user_id: str, message: str):
             if memory_items:
                 await append_memory_timeline(memory_items)
     except json.JSONDecodeError as e:
-        logger.warning(f"事实提取JSON解析失败: {e}, raw={raw[:200]}")
+        logger.warning("事实提取 JSON 解析失败")
     except Exception as e:
         logger.error(f"事实提取异常: {e}")
 
 
 class ChatRequest(BaseModel):
     requestId: str | None = None
+    clientMessageId: str | None = None
     conversationId: str | None = None
     userId: str | None = None
     message: str
@@ -304,6 +337,11 @@ async def chat_history(
 
     try:
         items = await _load_timeline_async()
+        reliable = get_reliable_runtime()
+        if reliable:
+            items += await asyncio.to_thread(reliable.store.history, auth.user_id, limit=3000)
+            items = list({str(item.get("messageId")): item for item in items}.values())
+            items.sort(key=lambda item: int(item.get("timestamp", 0)))
         filtered = [
             x
             for x in items
@@ -311,7 +349,7 @@ async def chat_history(
         ]
         filtered = filtered[-max(1, min(limit, 500)) :]
         return response_body(0, "ok", {"items": filtered}, trace_id)
-    except FileLockTimeoutError:
+    except (FileLockTimeoutError, StorageBusy, PermissionDenied):
         logger.exception("history timeline lock timeout")
         return JSONResponse(
             status_code=503,
@@ -325,6 +363,38 @@ async def chat_history(
         )
 
 
+@app.get("/api/v1/chat/images/{request_id}/{index}")
+async def chat_image(
+    request: Request,
+    request_id: str,
+    index: int,
+    authorization: str | None = Header(default=None),
+):
+    """Fetch one original image using the owner's authenticated request ID."""
+    trace_id = request.state.trace_id
+    private_headers = {"Cache-Control": "private, no-store", "Pragma": "no-cache", "X-Content-Type-Options": "nosniff"}
+    try:
+        auth = _require_http_auth(authorization, trace_id)
+    except HTTPException as exc:
+        exc.headers = private_headers
+        raise
+    try:
+        reliable = get_reliable_runtime()
+        if reliable is None:
+            raise PermissionDenied("reliable image store unavailable")
+        image = await asyncio.to_thread(reliable.store.read_image, auth.user_id, request_id, index)
+        if image is None:
+            return JSONResponse(status_code=404, content=response_body(40401, "图片不存在", None, trace_id), headers=private_headers)
+        mime, raw = image
+        return Response(content=raw, media_type=mime, headers=private_headers)
+    except (StorageBusy, PermissionDenied, DataCorruptionError, DataDecryptError):
+        logger.exception("image source unavailable")
+        return JSONResponse(status_code=503, content=response_body(50301, "服务暂时不可用，请稍后重试", None, trace_id), headers=private_headers)
+    except Exception:
+        logger.exception("image retrieval failed")
+        return JSONResponse(status_code=500, content=response_body(5000, "系统异常，请稍后重试", None, trace_id), headers=private_headers)
+
+
 @app.get("/api/v1/memory/facts")
 async def memory_facts(
     request: Request,
@@ -332,20 +402,29 @@ async def memory_facts(
     limit: int = 200,
     userId: str | None = None,
     authorization: str | None = Header(default=None),
+    cursor: int | None = None,
 ):
     trace_id = request.state.trace_id
     auth = _require_http_auth(authorization, trace_id)
 
     try:
-        items = await _load_memory_timeline_async()
+        items = [] if cursor is not None else await _load_memory_timeline_async()
+        reliable = get_reliable_runtime()
+        page = None
+        if reliable:
+            page = await asyncio.to_thread(reliable.store.fact_page, auth.user_id, cursor=cursor or 0, since=since, limit=max(1,min(limit,500)))
+            items += page["items"]
         target_user = auth.user_id
         filtered = [
             x for x in items
-            if int(x.get("timestamp", 0)) > since and str(x.get("userId", "")) == target_user
+            if int(x.get("timestamp", 0)) >= since and str(x.get("userId", "")) == target_user
         ]
         filtered = filtered[-max(1, min(limit, 500)) :]
-        return response_body(0, "ok", {"items": filtered}, trace_id)
-    except FileLockTimeoutError:
+        data = {"items": filtered}
+        if page is not None:
+            data.update(nextCursor=page["nextCursor"], hasMore=page["hasMore"])
+        return response_body(0, "ok", data, trace_id)
+    except (FileLockTimeoutError, StorageBusy, PermissionDenied):
         logger.exception("memory timeline lock timeout")
         return JSONResponse(
             status_code=503,
@@ -422,24 +501,38 @@ async def chat(
         )
 
     user_id = auth.user_id
-    message_text = payload.message.strip()
+    message_text = redact_locations(payload.message.strip())
+    try:
+        reliable = get_reliable_runtime()
+        if reliable:
+            request_id = payload.requestId or f"http_{uuid.uuid4().hex}"
+            command = ChatCommand(user_id, request_id, payload.clientMessageId or request_id, auth.device_id, message_text, channel="http")
+            result, = await reliable.submit([command])
+            state.last_activity[user_id] = datetime.now(timezone.utc)
+            state.last_bot_response_time[user_id] = datetime.now(timezone.utc)
+            data = {**result, "conversationId": payload.conversationId or f"conv_{user_id}", "debounceWindowSec": calc_debounce_window(user_id)}
+            return JSONResponse(status_code=200, content=response_body(0, "ok", data, trace_id))
+    except VersionConflict:
+        return JSONResponse(status_code=409, content=response_body(40901, "请求标识与已保存内容冲突", None, trace_id))
+    except (StorageBusy, PermissionDenied):
+        return JSONResponse(status_code=503, content=response_body(50301, "服务暂时不可用，请稍后重试", None, trace_id))
+    except (ChatFailed, TimeoutError):
+        return JSONResponse(status_code=503, content=response_body(50302, "暂时未能完成，请使用原请求重试", None, trace_id))
+    except Exception:
+        logger.exception("reliable chat failed")
+        return JSONResponse(status_code=500, content=response_body(5000, "系统异常，请稍后重试", None, trace_id))
+    async with state.sessions.session(user_id):
+        return await _chat_turn(payload, trace_id, user_id, message_text)
+
+
+async def _chat_turn(payload, trace_id, user_id, message_text):
+    service = ChatApplicationService(state, history_store, prompt_service, weather_service)
 
     try:
         history = state.user_chat_history.setdefault(user_id, [])
-        weather_info = await weather_service.get_weather_str(force=True)
-
         utc_now = datetime.now(timezone.utc)
         beijing_now = utc_now + timedelta(hours=8)
-        time_str = build_time_block(beijing_now)
-
-        time_enforcement = "\n".join((
-            "1. **时间锚定**：你必须无条件信任上述【当前北京时间】，绝不能凭训练数据或常识猜测当前时间。",
-            "2. **全天候禁止催睡**：无论现在是凌晨几点，绝对禁止主动建议用户去睡觉或休息。",
-            "3. **深夜默契**：如果用户深夜还在发消息，表示他想通宵，你要配合而不是扫兴。",
-        ))
-
-        system_prompt = await prompt_service.get_system_prompt(user_id)
-        system_content = f"{system_prompt}\n{time_str}\n{weather_info}\n\n{time_enforcement}"
+        system_prompt, system_content = await service.system_context(user_id, at=beijing_now)
         _trace_text("SYS_PROMPT", user_id, system_prompt)
 
         emotional_prompt = ""
@@ -461,18 +554,14 @@ async def chat(
             f"{emotional_prompt}{trigger_prompt}"
         )
 
-        short_history = history[-20:]
-        short_history, polluted_tails = clean_short_term_history(short_history, min_repeat=3)
+        short_history, polluted_tails = service.history_context(history, limit=20, after_separator=False)
         if DEBUG_REPLY_TRACE:
             recent_assistant_count = sum(1 for m in short_history if m.get("role") == "assistant")
             logger.info(
                 f"[TRACE][{user_id}] SHORT_HISTORY size={len(short_history)} assistant={recent_assistant_count} tails={len(polluted_tails)}"
             )
 
-        messages = [{"role": "system", "content": system_content}]
-        messages.extend(with_history_timestamp(m) for m in short_history)
-        messages.append({"role": "system", "content": anchor_prompt})
-        messages.append({"role": "user", "content": message_text})
+        messages = service.messages(system_content, short_history, anchor_prompt, {"role": "user", "content": message_text})
 
         response = await client.chat.completions.create(
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
@@ -541,11 +630,10 @@ async def chat(
 
         # Timeline is the durable delivery record. Do not update conversational
         # context or extract facts from a request whose timeline write failed.
-        history.append({"role": "user", "content": message_text, "ts": now_ms - 1})
-        history.append({"role": "assistant", "content": cleaned_reply, "ts": now_ms})
-        if len(history) > 300:
-            state.user_chat_history[user_id] = history[-300:]
-        history_store.save(state.user_chat_history)
+        service.commit_history(user_id, [
+            {"role": "user", "content": message_text, "ts": now_ms - 1},
+            {"role": "assistant", "content": cleaned_reply, "ts": now_ms},
+        ])
         state.last_activity[user_id] = datetime.now(timezone.utc)
         state.last_bot_response_time[user_id] = datetime.now(timezone.utc)
         asyncio.create_task(extract_user_facts(user_id, message_text))

@@ -5,6 +5,7 @@ import com.google.gson.JsonArray
 import com.krisslin.androidaiassistant.core.database.entity.UserFactEntity
 import com.krisslin.androidaiassistant.core.database.repository.ChatRepository
 import com.krisslin.androidaiassistant.core.database.repository.MessageRole
+import com.krisslin.androidaiassistant.core.database.repository.ModelProvider
 import com.krisslin.androidaiassistant.core.database.repository.SyncOutcome
 import com.krisslin.androidaiassistant.core.database.repository.UserFactRepository
 import com.krisslin.androidaiassistant.core.network.api.ChatApi
@@ -17,7 +18,8 @@ internal class ChatTimelineSynchronizer(
     private val chatApi: ChatApi,
     private val chatRepository: ChatRepository,
     private val userFactRepository: UserFactRepository,
-    private val sessionId: String
+    private val sessionId: String,
+    private val imageAttachmentManager: ChatImageAttachmentManager
 ) {
     private var historyCursorMs = 0L
     private var factCursorMs = 0L
@@ -33,6 +35,7 @@ internal class ChatTimelineSynchronizer(
     suspend fun syncHistory(force: Boolean): HistorySyncResult = runCatching {
         val response = chatApi.history(since = if (force) 0L else historyCursorMs, limit = 300)
         val items = response.getAsJsonObject("data")?.getAsJsonArray("items") ?: JsonArray()
+        imageAttachmentManager.retryPendingHistoryImages()
         var inserted = 0
         var updated = 0
         val normalized = TimelineHistoryNormalizer.normalize(items)
@@ -44,12 +47,21 @@ internal class ChatTimelineSynchronizer(
                     sessionId = sessionId,
                     role = role,
                     content = item.content,
-                    timestamp = item.timestamp
+                    timestamp = item.timestamp,
+                    contentType = HistoryImageRestorePolicy.contentType(item.content, item.imageCount),
+                    modelProvider = if (item.imageCount > 0) ModelProvider.GEMINI else ModelProvider.DEEPSEEK
                 )
             ) {
                 SyncOutcome.INSERTED -> inserted++
                 SyncOutcome.UPDATED -> updated++
                 SyncOutcome.UNCHANGED -> Unit
+            }
+            if (role == MessageRole.USER && item.imageCount > 0) {
+                imageAttachmentManager.restoreHistoryImages(
+                    requestId = item.requestId ?: item.messageId,
+                    messageId = item.messageId,
+                    imageCount = item.imageCount
+                )
             }
         }
         // Commit the cursor only after every Room write succeeds. Display timestamps

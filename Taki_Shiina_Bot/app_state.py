@@ -1,6 +1,10 @@
+from services.application_service import SessionCoordinator
+
+
 class AppState:
     def __init__(self, history_file="chat_history.json"):
         self.history_file = history_file
+        self.sessions = SessionCoordinator()
 
         self.user_chat_history = {}
         self.message_buffer = {}

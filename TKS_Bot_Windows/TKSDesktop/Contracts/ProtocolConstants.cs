@@ -186,4 +186,13 @@ public static class ProtocolConstants
 
     public const string CursorKeyChat = "chat";
     public const string CursorKeyMemory = "memory";
+
+    /* ---- 图片消息占位正文（服务端常量） ---- */
+
+    /// <summary>
+    /// 服务端在「只有图片、没有文字」时写入的占位正文（`ws_api.py`、`reliable_chat_store.py`）。
+    /// 客户端只用于回声/历史识别与显示抑制，不直接呈现给用户；
+    /// 与 <see cref="HistorySeparator"/> 同属跨端协议字面量，故集中在契约常量文件内（NFR-W-10 只约束界面文案）。
+    /// </summary>
+    public const string ImagePlaceholder = "[图片]";
 }

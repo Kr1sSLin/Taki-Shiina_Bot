@@ -31,7 +31,7 @@ internal static partial class ContractChecks
         yield return Dto("TimelineItemDto", typeof(TimelineItemDto),
             "messageId", "userId", "role", "content", "timestamp",
             "contentType", "itemId", "itemName", "itemIcon", "costPoints",
-            "interactionFailed", "messageKind", "greetingScenario", "modelProvider");
+            "interactionFailed", "messageKind", "greetingScenario", "modelProvider", "requestId", "imageCount");
         yield return Dto("ChatHistoryDataDto", typeof(ChatHistoryDataDto), "items");
         yield return Dto("UserFactDto", typeof(UserFactDto), "factId", "userId", "fact", "timestamp");
         yield return Dto("MemoryFactsDataDto", typeof(MemoryFactsDataDto), "items");
@@ -58,7 +58,7 @@ internal static partial class ContractChecks
             "timerInstruction", "requestIds", "messageKind", "greetingScenario",
             "interactionItemId", "interactionItemName", "interactionItemIcon", "interactionFailed");
         yield return Dto("ChatEchoPayloadDto", typeof(ChatEchoPayloadDto),
-            "content", "imageCount", "timestamp", "originDeviceId");
+            "content", "imageCount", "clientMessageId", "timestamp", "originDeviceId");
         yield return Dto("ChatQueuedPayloadDto", typeof(ChatQueuedPayloadDto), "debounceWindowSec");
         yield return Dto("BotErrorPayloadDto", typeof(BotErrorPayloadDto),
             "errorCode", "message", "requestIds", "timestamp");

@@ -86,6 +86,7 @@ _mount_unique(
     http_api.app.routes,
     include=lambda path, _route: path in {
         "/api/v1/chat/history",
+        "/api/v1/chat/images/{request_id}/{index}",
         "/api/v1/memory/facts",
         "/api/v1/settings/city",
         "/api/v1/chat",
@@ -100,6 +101,7 @@ _mount_unique(
 # starts its four scheduler families once; http_api has no background schedulers.
 app.router.add_event_handler("startup", ws_api.validate_security_config)
 app.router.add_event_handler("startup", ws_api.on_startup)
+app.router.add_event_handler("shutdown", ws_api.stop_reliable_runtime)
 
 
 @app.get("/healthz")
@@ -123,4 +125,4 @@ if __name__ == "__main__":
 
     host = os.getenv("BOT_UNIFIED_HOST", "127.0.0.1")
     port = int(os.getenv("BOT_UNIFIED_PORT", "8000"))
-    uvicorn.run("unified_api:app", host=host, port=port, reload=False)
+    uvicorn.run("unified_api:app", host=host, port=port, reload=False, ws_max_size=ws_api.VISION_WS_MAX_SIZE, ws_max_queue=4)

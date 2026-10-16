@@ -196,7 +196,7 @@ bash scripts/setup-backend.sh
 
 ```bash
 cd Taki_Shiina_Bot
-pip install -r requirements.txt
+pip install -r requirements-lock.txt
 ```
 
 主要依赖：`fastapi`、`uvicorn[standard]`、`websockets`、`openai`、`google-genai`、`httpx`、`cryptography`、`Pillow`、`reportlab`。
@@ -206,9 +206,13 @@ pip install -r requirements.txt
 cd Taki_Shiina_Bot
 python -m pytest tests/
 ```
-> 说明：仓库中 `tests/test_text_utils.py` 为历史遗留用例，引用的 `split_into_bubbles`
-> 已在早前重构中移除，属**改动前就存在**的失败用例；本次新增的积分/等级/互动用例可用
-> `python -m pytest tests/ --ignore=tests/test_text_utils.py` 全量跑通。
+锁定依赖包含运行与测试环境，基线为 Python 3.14 / Windows x64。文本测试已更新为当前文字接口，无须排除测试。阶段 A 设计和验收证据见[实施记录](design/foundation-stage-a.md)。
+
+### 阶段 A 可靠文字链路
+
+在独立的 `BOT_DATA_DIR` 中设置 `FOUNDATION_ENABLED=1`，并配置 `DATA_ENC_KEY` 与固定的 `FOUNDATION_KEY_ID`；推荐使用统一 HTTP/WS 入口。HTTP、WS 和互动共用可靠请求、回复及恢复任务仓储。源消息与提取任务、最终回复与投递记录分别原子提交。客户端重试须保留 `requestId` 和 `clientMessageId` 配对，未提供后者时沿用 `requestId`。
+
+目录内已有 `foundation.sqlite3` 时始终使用可靠链路；关闭开关不能绕过权限记录，回退须保留数据库及对应密钥。旧 JSON 只作兼容读取，不自动迁移进 SQL。阶段 A 的 WS 图片请求会将原图字节（包括 EXIF）加密保存在源消息中，并原样发送给 Gemini 识别；须配置 `GEMINI_API_KEY`。用户已明确允许图片中的坐标，因此这部分与原 PRD FND-10 的禁止坐标规则形成例外；文字输入与识图后生成的文字描述仍执行坐标清理。历史中的图片可通过认证的 `GET /api/v1/chat/images/{request_id}/{index}` 取回原图，三端在跨设备补拉时恢复附件；无权或缺图返回 404，未核验恢复权限时返回 503。Gemini inline 请求使每轮原图有效上限为 14,000,000 字节。内置 Python 启动入口会按图片限制设置 WS 帧大小；独立 Uvicorn 命令或上游代理须另行配置对应上限。礼物退款后整轮明确失败并由用户重新发送。已有可靠数据库的目录不能启动旧 Telegram 写入入口。部署与恢复限制、合成验收记录详见实施记录。
 
 ---
 
@@ -275,7 +279,7 @@ release 产物退化为 `app-release-unsigned.apk`，构建依然可跑通。
 ## 🚀 快速开始
 
 ### 前置要求
-- **后端**: Python 3.11+（实测 3.14），pip；配置好 `.env`
+- **后端**: Python 3.14（锁定验收版本），pip；配置好 `.env`
 - **Android 端**: Android Studio + **JDK 17 或 21**（⚠️ 不要用 JDK 26，Gradle 8.13 不支持）
 - **桌面端**: Node.js ≥ 20
 

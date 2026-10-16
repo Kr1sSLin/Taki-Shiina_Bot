@@ -12,6 +12,12 @@ public sealed class TimelineItemDto
     [JsonPropertyName("messageId")]
     public string MessageId { get; set; } = string.Empty;
 
+    [JsonPropertyName("requestId")]
+    public string? RequestId { get; set; }
+
+    [JsonPropertyName("imageCount")]
+    public int ImageCount { get; set; }
+
     [JsonPropertyName("userId")]
     public string UserId { get; set; } = string.Empty;
 

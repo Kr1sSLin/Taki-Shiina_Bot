@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using System.Security.Cryptography;
 using TKSDesktop.Contracts;
 using TKSDesktop.Contracts.Dtos;
 using TKSDesktop.Core.Platform;
@@ -37,7 +38,7 @@ namespace TKSDesktop.Core.Services.Sync;
 /// <para><b>依赖</b>：只依赖窄接口。构造末尾的 <see cref="IWssPort"/> 为可选：提供时
 /// 「连接层要求全量同步」标志会让增量调用自动升级为 <c>since=0</c>（FR-W-SYNC-4）。</para>
 /// </summary>
-public sealed class SyncService : ISyncService, IDisposable
+public sealed class SyncService : ISyncService, IHistoryImageRestorer, IDisposable
 {
     /// <summary>同步失败事件里的阶段标识（聊天历史）。</summary>
     private const string StageChat = "sync.chat";
@@ -50,6 +51,10 @@ public sealed class SyncService : ISyncService, IDisposable
     private readonly IUiDispatcher _dispatcher;
     private readonly ILogger<SyncService> _logger;
     private readonly IWssPort? _wss;
+    private readonly IHistoryImagePort? _images;
+    private readonly IAttachmentPort? _attachments;
+    private readonly IFileStoragePort? _files;
+    private readonly IPaths? _paths;
 
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -69,7 +74,10 @@ public sealed class SyncService : ISyncService, IDisposable
         IRestPort rest,
         IUiDispatcher dispatcher,
         ILogger<SyncService> logger,
-        IWssPort? wss = null)
+        IWssPort? wss = null,
+        IAttachmentPort? attachments = null,
+        IFileStoragePort? files = null,
+        IPaths? paths = null)
     {
         ArgumentNullException.ThrowIfNull(repository);
         ArgumentNullException.ThrowIfNull(rest);
@@ -81,6 +89,10 @@ public sealed class SyncService : ISyncService, IDisposable
         _dispatcher = dispatcher;
         _logger = logger;
         _wss = wss;
+        _images = rest as IHistoryImagePort;
+        _attachments = attachments;
+        _files = files;
+        _paths = paths;
     }
 
     /// <inheritdoc />
@@ -268,6 +280,7 @@ public sealed class SyncService : ISyncService, IDisposable
             foreach (var item in items)
             {
                 written += await IngestTimelineItemAsync(item, ct).ConfigureAwait(false);
+                await RestoreHistoryImagesAsync(item, ct).ConfigureAwait(false);
                 maxTimestamp = Math.Max(maxTimestamp, item.Timestamp);
             }
 
@@ -382,7 +395,8 @@ public sealed class SyncService : ISyncService, IDisposable
             content,
             ProtocolConstants.StatusSent,
             timestamp,
-            ModelProvider: item.ModelProvider);
+            ModelProvider: item.ModelProvider,
+            MessageType: item.ImageCount > 0 ? "image" : "text");
 
         var userOutcome = await _repository.UpsertMessageAsync(userRecord, ct).ConfigureAwait(false);
         return userOutcome == MessageWriteOutcome.Unchanged ? 0 : 1;
@@ -402,11 +416,127 @@ public sealed class SyncService : ISyncService, IDisposable
             return "interaction";
         }
 
+        if (item.ImageCount > 0 && item.ContentType is not ("image" or "mixed"))
+        {
+            return string.IsNullOrWhiteSpace(item.Content) || item.Content == ProtocolConstants.ImagePlaceholder ? "image" : "mixed";
+        }
+
         return item.ContentType switch
         {
             "text" or "image" or "mixed" => item.ContentType,
             _ => "text",
         };
+    }
+
+    /// <summary>Restore exact original bytes after the user row exists, then bind through the normal attachment table.</summary>
+    private async Task RestoreHistoryImagesAsync(TimelineItemDto item, CancellationToken ct)
+    {
+        if (item.Role != "user" || string.IsNullOrWhiteSpace(item.RequestId) || item.ImageCount == 0)
+        {
+            return;
+        }
+        if (item.ImageCount < 0 || item.ImageCount > ProtocolConstants.MaxImageCount)
+        {
+            throw new InvalidOperationException("invalid history image count");
+        }
+        if (_images is null || _attachments is null || _files is null || _paths is null)
+        {
+            throw new InvalidOperationException("history image restore is not configured");
+        }
+
+        var attached = await _attachments.ListByMessageAsync(item.MessageId, ct).ConfigureAwait(false);
+        var existing = new List<AttachmentDraft>();
+        foreach (var attachment in attached)
+        {
+            if (_files.FileExists(attachment.LocalPath)) existing.Add(attachment);
+            else await _attachments.DeleteAsync(attachment.AttachmentId, ct).ConfigureAwait(false);
+        }
+        if (existing.Count >= item.ImageCount) return;
+
+        var localHashes = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var attachment in existing)
+        {
+            var localBytes = _files.TryReadAllBytes(attachment.LocalPath);
+            if (localBytes is null) continue;
+            var hash = Convert.ToHexString(SHA256.HashData(localBytes));
+            localHashes[hash] = localHashes.GetValueOrDefault(hash) + 1;
+        }
+
+        _files.CreateDirectory(_paths.AttachmentsDir);
+        for (var index = 0; index < item.ImageCount; index++)
+        {
+            var image = await _images.GetHistoryImageAsync(item.RequestId, index, ct).ConfigureAwait(false);
+            if (!image.Success || image.Value is null)
+            {
+                throw new InvalidOperationException($"history image download failed at index {index}");
+            }
+            var bytes = image.Value.Bytes;
+            var mime = image.Value.MimeType;
+            var valid = mime switch
+            {
+                "image/png" => bytes.AsSpan().StartsWith(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }),
+                "image/jpeg" => bytes.Length >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff,
+                _ => false,
+            };
+            if (!valid || bytes.Length > ProtocolConstants.MaxImageBytes)
+            {
+                throw new InvalidOperationException("invalid history image response");
+            }
+            var hash = Convert.ToHexString(SHA256.HashData(bytes));
+            if (localHashes.GetValueOrDefault(hash) > 0)
+            {
+                localHashes[hash]--;
+                continue;
+            }
+            if (_files.GetAvailableFreeSpaceBytes(_paths.AttachmentsDir)
+                < ProtocolConstants.AttachmentFreeSpaceReserveBytes + bytes.Length)
+            {
+                throw new IOException("insufficient attachment storage");
+            }
+
+            var destination = Path.Combine(_paths.AttachmentsDir,
+                $"history-{Guid.NewGuid():N}.{(mime == "image/png" ? "png" : "jpg")}");
+            _files.WriteAllBytes(destination, bytes);
+            try
+            {
+                var draft = await _attachments.InsertDraftAsync(mime, destination, bytes.Length, null, null, ct)
+                    .ConfigureAwait(false);
+                try
+                {
+                    await _attachments.BindAsync([draft.AttachmentId], item.MessageId, ct).ConfigureAwait(false);
+                }
+                catch
+                {
+                    await _attachments.DeleteAsync(draft.AttachmentId, CancellationToken.None).ConfigureAwait(false);
+                    throw;
+                }
+            }
+            catch
+            {
+                _files.TryDeleteFile(destination);
+                throw;
+            }
+        }
+    }
+
+    public async Task RestoreEchoImagesAsync(string requestId, string messageId, int imageCount, CancellationToken ct = default)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await RestoreHistoryImagesAsync(new TimelineItemDto
+            {
+                RequestId = requestId,
+                MessageId = messageId,
+                ImageCount = imageCount,
+                Role = "user",
+            }, ct).ConfigureAwait(false);
+            await _dispatcher.InvokeAsync(() => ChatSynchronized?.Invoke(this, EventArgs.Empty)).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     /* ===================================================================== */
