@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictBool
 
 from auth_utils import AuthContext, DeviceEntry, parse_device_tokens, resolve_auth_context
 from app_constants import EMOTIONAL_TRIGGERS, LORE_TRIGGERS, USER_MEMO
@@ -273,6 +273,11 @@ class CityRequest(BaseModel):
     city: str
 
 
+class MemoryPermissionRequest(BaseModel):
+    enabled: StrictBool
+    expectedRevision: int = Field(ge=1, strict=True)
+
+
 def response_body(code: int, message: str, data: dict | None, trace_id: str):
     return {"code": code, "message": message, "data": data, "traceId": trace_id}
 
@@ -428,6 +433,45 @@ async def memory_facts(
             status_code=500,
             content=response_body(5000, "系统异常，请稍后重试", None, trace_id),
         )
+
+
+@app.patch("/api/v1/memory/facts/{fact_id}/permission")
+async def memory_permission(fact_id: str, payload: MemoryPermissionRequest, request: Request,
+                            authorization: str | None = Header(default=None)):
+    trace_id = request.state.trace_id
+    auth = _require_http_auth(authorization, trace_id)
+    try:
+        runtime = get_reliable_runtime()
+        if runtime is None:
+            raise PermissionDenied("reliable memory store unavailable")
+        revision = await asyncio.to_thread(runtime.store.set_permission, auth.user_id, fact_id,
+                                          enabled=payload.enabled, expected_revision=payload.expectedRevision)
+        return response_body(0, "ok", {"factId": fact_id, "revision": revision,
+                                      "modelPermission": "allowed" if payload.enabled else "blocked"}, trace_id)
+    except VersionConflict:
+        return JSONResponse(status_code=409, content=response_body(40901, "记忆版本已更新，请刷新后重试", None, trace_id))
+    except PermissionDenied:
+        return JSONResponse(status_code=403, content=response_body(40301, "当前无法操作这条记忆", None, trace_id))
+    except Exception:
+        logger.exception("memory permission update failed")
+        return JSONResponse(status_code=503, content=response_body(50301, "记忆未更新，请稍后重试", None, trace_id))
+
+
+@app.get("/api/v1/memory/facts/{fact_id}")
+async def memory_fact_detail(fact_id: str, request: Request, authorization: str | None = Header(default=None)):
+    trace_id = request.state.trace_id
+    auth = _require_http_auth(authorization, trace_id)
+    try:
+        runtime = get_reliable_runtime()
+        if runtime is None:
+            raise PermissionDenied("reliable memory store unavailable")
+        detail = await asyncio.to_thread(runtime.store.fact_detail, auth.user_id, fact_id)
+        return JSONResponse(content=response_body(0, "ok", detail, trace_id), headers={"Cache-Control": "no-store"})
+    except PermissionDenied:
+        return JSONResponse(status_code=403, content=response_body(40301, "当前无法读取这条记忆", None, trace_id))
+    except Exception:
+        logger.exception("memory detail unavailable")
+        return JSONResponse(status_code=503, content=response_body(50301, "记忆暂时无法读取，请稍后重试", None, trace_id))
 
 
 @app.get("/api/v1/settings/city")

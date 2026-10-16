@@ -7,12 +7,13 @@ import os
 
 from secure_storage import DataCorruptionError
 from services.contracts import ChatCommand, Domain, new_id
-from services.foundation_store import FoundationStore, PermissionDenied, VersionConflict
+from services.foundation_store import PermissionDenied, VersionConflict
+from services.memory_store import MemoryStore
 from services.privacy import scrub_locations
 from services.vision_limits import MAX_INLINE_IMAGE_BYTES
 
 
-class ReliableChatStore(FoundationStore):
+class ReliableChatStore(MemoryStore):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         with self._transaction() as conn:
@@ -32,7 +33,7 @@ class ReliableChatStore(FoundationStore):
     def _save_turn(self, conn, row, value, *, status=None, generation=None):
         conn.execute("UPDATE chat_turns SET status=?,generation=?,body=? WHERE id=?", (status or row["status"], generation or row["generation"], self.cipher.encrypt(Domain.DERIVED, row["owner"], row["id"], value), row["id"]))
 
-    def accept(self, commands: list[ChatCommand], *, delay=0, merge_pending=False):
+    def accept(self, commands: list[ChatCommand], *, delay=0, merge_pending=False, memory_first=False):
         if not commands or len({c.owner for c in commands}) != 1 or not 0 <= delay <= 20:
             raise ValueError("a bounded batch for one authenticated owner is required")
         owner = self.cipher.index("owner", commands[0].owner)
@@ -105,17 +106,19 @@ class ReliableChatStore(FoundationStore):
                 conn.execute("INSERT INTO chat_turns VALUES (?,?,'pending',1,?,?,?)", (turn_id, owner, now, now + 120, self.cipher.encrypt(Domain.DERIVED, owner, turn_id, turn_body)))
                 turn_row, _ = self._turn(conn, turn_id)
             turn_id = turn_row["id"]
+            turn_body["memory_first"] = bool(memory_first or turn_body.get("memory_first"))
             seen = set()
             for command, request_key, client_key in pending:
                 if request_key in seen:
                     raise VersionConflict("duplicate request within the same batch")
                 seen.add(request_key)
                 message_id = new_id()
-                conn.execute("INSERT INTO requests VALUES (?,?,?,?,?,?)", (owner, request_key, client_key, message_id, turn_id, self.cipher.encrypt(Domain.SOURCE_MESSAGE, owner, message_id, asdict(command))))
+                conn.execute("INSERT INTO requests VALUES (?,?,?,?,?,?)", (owner, request_key, client_key, message_id, turn_id, self.cipher.encrypt(Domain.SOURCE_MESSAGE, owner, message_id, {**asdict(command), "received_at": now})))
                 turn_body["sources"].append(message_id)
                 turn_body["image_count"] += len((command.metadata or {}).get("images") or [])
                 turn_body["image_bytes"] += sum(len(base64.b64decode(image["dataBase64"])) for image in ((command.metadata or {}).get("images") or []))
-                self._enqueue(conn, owner, "extract", message_id, {"kind": "extract", "message_id": message_id, "turn_id": turn_id, "dependencies": []})
+                extraction_epoch = self._extraction_epoch(conn, owner)
+                self._enqueue(conn, owner, "extract", message_id, {"kind": "extract", "message_id": message_id, "turn_id": turn_id, "permission_epoch": extraction_epoch, "dependencies": []})
                 if command.intent == "interaction":
                     turn_body.setdefault("payments", {})[message_id] = "pending"
                     recovery = self._enqueue(conn, owner, "interaction_reconcile", message_id, {"kind": "interaction_reconcile", "message_id": message_id, "turn_id": turn_id, "dependencies": []})
@@ -134,6 +137,12 @@ class ReliableChatStore(FoundationStore):
         if payload.get("kind") != "chat":
             return True
         turn, body = self._turn(conn, payload["turn_id"])
+        if body.get("memory_first"):
+            for source_id in body["sources"]:
+                dedupe = self.cipher.index("job", row["owner"], "extract", source_id)
+                extraction = conn.execute("SELECT status FROM jobs WHERE dedupe=?", (dedupe,)).fetchone()
+                if extraction and extraction["status"] not in ("succeeded", "cancelled", "failed"):
+                    return False
         if any(state != "confirmed" for state in body.get("payments", {}).values()):
             return False
         # A model call holds a lease, never a SQL transaction. Other tasks and
@@ -182,6 +191,13 @@ class ReliableChatStore(FoundationStore):
                 break
         return epoch, allowed
 
+    def _extraction_epoch(self, conn, owner):
+        for event in conn.execute("SELECT * FROM events WHERE owner=? ORDER BY seq DESC", (owner,)):
+            value = self.cipher.decrypt(Domain.EVENT, owner, event["id"], event["body"])
+            if value["action"] in ("disabled", "restored"):
+                return event["seq"]
+        return 0
+
     def begin_turn(self, job):
         with self._transaction() as conn:
             self._require_ready(conn)
@@ -191,6 +207,12 @@ class ReliableChatStore(FoundationStore):
             row, body = self._turn(conn, job["payload"]["turn_id"])
             if row["owner"] != lease["owner"] or row["status"] == "completed" or row["deadline"] <= self.clock():
                 raise VersionConflict("turn is no longer current")
+            if body.get("memory_first"):
+                for source_id in body["sources"]:
+                    dedupe = self.cipher.index("job", row["owner"], "extract", source_id)
+                    extraction = conn.execute("SELECT status FROM jobs WHERE dedupe=?", (dedupe,)).fetchone()
+                    if not extraction or extraction["status"] in ("failed", "cancelled"):
+                        body.update(memory_identity_unresolved=True, memory_extraction_incomplete=True)
             sources = []
             for identity in body["sources"]:
                 source = conn.execute("SELECT * FROM requests WHERE id=? AND owner=?", (identity, row["owner"])).fetchone()
@@ -201,18 +223,38 @@ class ReliableChatStore(FoundationStore):
                     body["generation_deadline"] = min(deadline, self.clock() + 15)
                 deadline = min(deadline, body["generation_deadline"])
                 conn.execute("UPDATE chat_turns SET deadline=? WHERE id=?", (deadline, row["id"]))
-            epoch, legacy_allowed = self._permission_snapshot(conn, row["owner"])
+            epoch, _ = self._permission_snapshot(conn, row["owner"])
             body["permission_epoch"] = epoch
+            body["memory_refs"] = []
             self._save_turn(conn, row, body, status="running")
-            return {"turn_id": row["id"], "generation": row["generation"], "deadline": deadline, "owner": body["owner"], "sources": sources, "permission_epoch": epoch, "legacy_allowed": legacy_allowed}
+            return {"turn_id": row["id"], "generation": row["generation"], "deadline": deadline, "owner": body["owner"], "sources": sources, "permission_epoch": epoch, "legacy_allowed": False, "memory_refs": [], "memory_clarification": body.get("memory_clarification", False), "memory_extraction_incomplete": body.get("memory_extraction_incomplete", False)}
 
     def assert_snapshot(self, snapshot):
         with self._transaction(write=False) as conn:
             self._require_ready(conn)
-            row, _ = self._turn(conn, snapshot["turn_id"])
+            row, body = self._turn(conn, snapshot["turn_id"])
             epoch, _ = self._permission_snapshot(conn, row["owner"])
             if row["owner"] != self.cipher.index("owner", snapshot["owner"]) or row["generation"] != snapshot["generation"] or epoch != snapshot["permission_epoch"] or row["deadline"] <= self.clock() or row["status"] != "running":
                 raise VersionConflict("generation context is no longer current")
+            if body.get("memory_refs", []) != snapshot.get("memory_refs", []):
+                raise VersionConflict("selected generation memories changed")
+            self._validate_memories(conn, row["owner"], body.get("memory_refs", []))
+
+    def prepare_memories(self, snapshot, query):
+        refs = self.select_memories(snapshot["owner"], query)
+        with self._transaction() as conn:
+            self._require_ready(conn)
+            row, body = self._turn(conn, snapshot["turn_id"])
+            epoch, _ = self._permission_snapshot(conn, row["owner"])
+            if row["owner"] != self.cipher.index("owner", snapshot["owner"]) or row["status"] != "running" or row["generation"] != snapshot["generation"] or epoch != snapshot["permission_epoch"] or row["deadline"] <= self.clock():
+                raise VersionConflict("generation changed before memory selection")
+            if body.get("memory_identity_unresolved"):
+                refs = []
+            self._validate_memories(conn, row["owner"], refs)
+            body["memory_refs"] = refs
+            self._save_turn(conn, row, body)
+        snapshot["memory_refs"] = refs
+        return refs
 
     def renew(self, job_id, lease_token, *, lease_seconds=30):
         if not 0 < lease_seconds <= 300:
@@ -236,7 +278,9 @@ class ReliableChatStore(FoundationStore):
         key = self.cipher.index("owner", owner)
         with self._transaction(write=False) as conn:
             _, allowed = self._permission_snapshot(conn, key)
-            if for_model and not allowed:
+            # Raw history has no reliable fact-span provenance. O-03 permits
+            # only current turn direct input; historical prose stays display-only.
+            if for_model:
                 return []
             rows = conn.execute("SELECT * FROM chat_messages WHERE owner=? ORDER BY seq DESC LIMIT ?", (key, max(1, min(limit, 3000)))).fetchall()
             return [self.cipher.decrypt(Domain.SOURCE_MESSAGE, key, row["id"], row["body"]) for row in reversed(rows)]
@@ -283,9 +327,17 @@ class ReliableChatStore(FoundationStore):
             row, body = self._turn(conn, turn_id)
             if row["owner"] != key:
                 raise PermissionDenied("turn owner mismatch")
+            if row["status"] == "completed":
+                self._check_reply_delivery(conn, row, body)
             job = conn.execute("SELECT * FROM jobs WHERE id=?", (body["job_id"],)).fetchone()
             payload = self.cipher.decrypt(Domain.JOB, key, job["id"], job["body"])
             return {"status": row["status"], "job_status": job["status"], "deadline": row["deadline"], "result": body["result"], "failure_category": payload.get("failure_category", "generation")}
+
+    def _check_reply_delivery(self, conn, row, body):
+        epoch, _ = self._permission_snapshot(conn, row["owner"])
+        if epoch != body.get("permission_epoch"):
+            raise PermissionDenied("undelivered reply permission changed")
+        self._validate_memories(conn, row["owner"], body.get("delivery_memory_refs", []), strict_revision=False)
 
     def record_failure(self, job, category):
         if category not in ("generation", "storage"):
@@ -314,6 +366,13 @@ class ReliableChatStore(FoundationStore):
                 sources.append(self.cipher.decrypt(Domain.SOURCE_MESSAGE, row["owner"], identity, source_row["body"]))
             if not isinstance(result.get("reply"), str) or not result["reply"].strip():
                 raise ValueError("empty reply cannot be committed")
+            if body.get("memory_refs", []) != snapshot.get("memory_refs", []):
+                raise VersionConflict("reply memories differ from durable context")
+            self._commit_memory_usage(conn, row["owner"], row["id"], body.get("memory_refs", []))
+            body["delivery_memory_refs"] = []
+            for ref in body.get("memory_refs", []):
+                current, _ = self._fact(conn, row["owner"], ref["fact_id"])
+                body["delivery_memory_refs"].append({**ref, "revision": current["revision"]})
             image_count = sum(len((source.get("metadata") or {}).get("images") or []) for source in sources)
             has_text = any(source["text"] != "[图片]" for source in sources)
             content_type = "mixed" if image_count and has_text else "image" if image_count else "text"
@@ -345,11 +404,12 @@ class ReliableChatStore(FoundationStore):
 
     def extraction_context_allowed(self, job):
         with self._transaction(write=False) as conn:
+            self._require_ready(conn)
             row = self._lease(conn, job)
             if job["payload"].get("kind") != "extract":
                 raise PermissionDenied("job is not an extraction")
-            _, allowed = self._permission_snapshot(conn, row["owner"])
-            return allowed
+            epoch = self._extraction_epoch(conn, row["owner"])
+            return job["payload"].get("permission_epoch") == epoch
 
     def commit_extraction(self, job, facts):
         with self._transaction() as conn:
@@ -357,20 +417,23 @@ class ReliableChatStore(FoundationStore):
             row = self._lease(conn, job)
             if job["payload"].get("kind") != "extract":
                 raise PermissionDenied("job is not an extraction")
-            _, allowed = self._permission_snapshot(conn, row["owner"])
-            if not allowed:
-                # Unmapped old context is quarantined until explicit restoration.
+            epoch = self._extraction_epoch(conn, row["owner"])
+            if job["payload"].get("permission_epoch") != epoch:
+                # In-flight extraction cannot commit across permission changes.
                 conn.execute("UPDATE jobs SET status='cancelled',lease_token=NULL,lease_until=NULL WHERE id=?", (job["job_id"],))
                 return []
             identities = []
-            for index, text in enumerate(facts[:20]):
-                if not isinstance(text, str) or not text.strip():
-                    continue
-                identity = self.cipher.index("extracted-fact", job["payload"]["message_id"], str(index))
-                data = {"text": scrub_locations(text.strip()), "enabled": True, "score": 0.3, "source": job["payload"]["message_id"], "truthfulness": "user_asserted", "subject": "user", "valid_from": None, "valid_until": None}
-                self._write_fact(conn, row["owner"], identity, Domain.USER_FACT, 1, data)
-                self._change(conn, row["owner"], identity, 1, "created", ("sync",))
-                identities.append(identity)
+            source_id = job["payload"]["message_id"]
+            source_row = conn.execute("SELECT * FROM requests WHERE id=? AND owner=?", (source_id, row["owner"])).fetchone()
+            if source_row is None or source_row["turn_id"] != job["payload"]["turn_id"]:
+                raise PermissionDenied("extraction source mismatch")
+            source = self.cipher.decrypt(Domain.SOURCE_MESSAGE, row["owner"], source_id, source_row["body"])
+            text = (source.get("metadata") or {}).get("attachment", "") if source.get("intent") == "interaction" else source["text"]
+            if os.getenv("MEMORY_COLLECTION_ENABLED", "0") == "1":
+                for item in facts[:20]:
+                    identity = self._apply_evidence(conn, row["owner"], source_id, source_row["turn_id"], text, item)
+                    if identity and identity not in identities:
+                        identities.append(identity)
             conn.execute("UPDATE jobs SET status='succeeded',lease_token=NULL,lease_until=NULL WHERE id=?", (job["job_id"],))
             return identities
 
@@ -386,6 +449,7 @@ class ReliableChatStore(FoundationStore):
             value = self.cipher.decrypt(Domain.EVENT, event["owner"], event["id"], event["body"])
             if value["action"] == "reply_completed":
                 row, body = self._turn(conn, value["entity_id"])
+                self._check_reply_delivery(conn, row, body)
                 return {"owner": body["owner"], "target": "chat", "result": body["result"], "event_id": event["id"]}
             identity = conn.execute("SELECT body FROM chat_owners WHERE owner=?", (event["owner"],)).fetchone()
             owner = self.cipher.decrypt(Domain.DERIVED, event["owner"], "owner", identity["body"])["owner"] if identity else None
@@ -507,7 +571,7 @@ class ReliableChatStore(FoundationStore):
                 if value["action"] == "reply_completed" or timestamp < since:
                     continue
                 fact_row, fact = self._fact(conn, key, value["entity_id"])
-                result.append({"factId": value["entity_id"], "userId": owner, "revision": fact_row["revision"], "eventRevision": value["revision"], "eventId": event["id"], "sequence": event["seq"], "action": value["action"], "enabled": fact["enabled"], "fact": fact["text"] if fact["enabled"] else "", "timestamp": int(value["created_at"]*1000)})
+                result.append({"factId": value["entity_id"], "userId": owner, "revision": fact_row["revision"], "revisionId": fact.get("revision_id"), "eventRevision": value["revision"], "eventId": event["id"], "sequence": event["seq"], "action": value["action"], "enabled": fact["enabled"], "fact": fact["text"] if fact["enabled"] else "", "timestamp": int(value["created_at"]*1000), "score": fact.get("weight", 0)/10, "stage": fact.get("stage", "candidate"), "truthStatus": fact.get("truth_status", "pending"), "revisionStatus": fact.get("revision_status", "active"), "modelPermission": fact.get("model_permission", "blocked"), "permissionVersion": fact.get("permission_version", 1), "temporalType": fact.get("temporal_type"), "temporalValidity": fact.get("temporal_validity") if fact["enabled"] else None})
                 if len(result) >= max(1,min(limit,500)):
                     break
             more = conn.execute("SELECT 1 FROM events WHERE owner=? AND seq>? LIMIT 1", (key,next_cursor)).fetchone() is not None

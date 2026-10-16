@@ -49,7 +49,10 @@ class PermissionGuard:
             self._store = ReliableChatStore(self.path, DomainCipher(config.key, os.getenv("FOUNDATION_KEY_ID", "primary-v1")))
         # This always rereads the current encrypted permission/recovery state.
         # Corruption, wrong keys, busy storage and unverified restores propagate.
-        return self._store.owner_context_allowed(str(owner))
+        self._store.owner_context_allowed(str(owner))
+        # Stage B: unmapped legacy profiles/scenes cannot prove formal status,
+        # truth, temporal applicability or provenance even after a restoration.
+        return False
 
 
 def require_supported_telegram_runtime(base_dir=None):

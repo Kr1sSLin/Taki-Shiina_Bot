@@ -18,6 +18,8 @@ _environment = patch.dict(os.environ, {
     "BOT_DATA_DIR": _runtime_data.name,
     "DATA_AUTO_MIGRATE": "0",
     "DATA_BACKUP_ON_MIGRATE": "0",
+    "MEMORY_COLLECTION_ENABLED": "1",
+    "MEMORY_REINFORCEMENT_ENABLED": "1",
     "DATA_ENC_KEY": base64.urlsafe_b64encode(b"7" * 32).decode(),
     "AUTH_USERNAME": "test_user",
     "AUTH_USER_ID": "test_user",

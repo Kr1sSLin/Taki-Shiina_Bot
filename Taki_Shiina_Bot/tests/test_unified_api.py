@@ -51,6 +51,8 @@ class UnifiedApiTestCase(unittest.TestCase):
             "/api/v1/auth/login",
             "/api/v1/chat/history",
             "/api/v1/memory/facts",
+            "/api/v1/memory/facts/{fact_id}",
+            "/api/v1/memory/facts/{fact_id}/permission",
             "/api/v1/settings/city",
             "/api/v1/chat",
             "/ws/chat",
@@ -121,6 +123,14 @@ class UnifiedApiTestCase(unittest.TestCase):
         unauthorized = client.get("/api/v1/chat/history")
         self.assertEqual(unauthorized.status_code, 401)
         self.assertIn("x-trace-id", unauthorized.headers)
+
+        # Exercise actual unified routes: missing auth is 401, never an
+        # unmounted 404 or a method mismatch hidden by direct-handler tests.
+        detail = client.get("/api/v1/memory/facts/synthetic-fact")
+        self.assertEqual(detail.status_code, 401)
+        permission = client.patch("/api/v1/memory/facts/synthetic-fact/permission",
+                                  json={"enabled": False, "expectedRevision": 1})
+        self.assertEqual(permission.status_code, 401)
 
 
 if __name__ == "__main__":

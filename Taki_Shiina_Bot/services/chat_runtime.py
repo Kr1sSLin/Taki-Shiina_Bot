@@ -10,6 +10,7 @@ from services.contracts import ChatCommand
 from services.domain_cipher import DomainCipher
 from services.durable_worker import CommittedJob, DurableWorker
 from services.foundation_store import PermissionDenied
+from services.memory_policy import memory_control
 from services.reliable_chat_store import ReliableChatStore
 
 
@@ -37,7 +38,7 @@ class ChatRuntime:
         return all(await asyncio.gather(*(worker.stop() for worker in self.workers)))
 
     async def accept(self, commands, *, delay=0, merge_pending=False):
-        receipts = await asyncio.to_thread(self.store.accept, commands, delay=delay, merge_pending=merge_pending)
+        receipts = await asyncio.to_thread(self.store.accept, commands, delay=delay, merge_pending=merge_pending, memory_first=True)
         self.start()
         return receipts
 
@@ -86,9 +87,10 @@ class ChatRuntime:
     async def _chat(self, job):
         category = "generation"
         try:
+            control = await asyncio.to_thread(self.store.handle_memory_control, job)
             snapshot = await asyncio.to_thread(self.store.begin_turn, job)
             budget = snapshot["deadline"] - self.store.clock()
-            result = await asyncio.wait_for(self.generator(snapshot, self.store), timeout=max(0.01, budget))
+            result = control or await asyncio.wait_for(self.generator(snapshot, self.store), timeout=max(0.01, budget))
             category = "storage"
             committed = await asyncio.to_thread(self.store.commit_reply, job, snapshot, result)
         except Exception:
@@ -100,13 +102,25 @@ class ChatRuntime:
         return CommittedJob(committed)
 
     async def _extract(self, job):
+        if os.getenv("MEMORY_COLLECTION_ENABLED", "0") != "1":
+            return CommittedJob(await asyncio.to_thread(self.store.commit_extraction, job, []))
         if not await asyncio.to_thread(self.store.extraction_context_allowed, job):
             return CommittedJob(await asyncio.to_thread(self.store.commit_extraction, job, []))
         source = await asyncio.to_thread(self.store.source_for_job, job)
         text = (source.get("metadata") or {}).get("attachment", "") if source.get("intent") == "interaction" else source["text"]
         if (source.get("metadata") or {}).get("images") and text == "[图片]":
             text = ""  # The image placeholder is not a user assertion.
-        facts = await asyncio.wait_for(self.extractor(text), timeout=60) if text.strip() else []
+        if memory_control(text):
+            return CommittedJob(await asyncio.to_thread(self.store.commit_extraction, job, []))
+        contextual = getattr(getattr(self.extractor, "__self__", None), "extract_with_context", None)
+        if text.strip() and contextual:
+            candidates = await asyncio.to_thread(self.store.extraction_candidates, job)
+            # Recheck after reading controlled input and immediately before call.
+            if not await asyncio.to_thread(self.store.extraction_context_allowed, job):
+                return CommittedJob(await asyncio.to_thread(self.store.commit_extraction, job, []))
+            facts = await asyncio.wait_for(contextual(text, candidates, source.get("received_at")), timeout=60)
+        else:
+            facts = await asyncio.wait_for(self.extractor(text), timeout=60) if text.strip() else []
         if not isinstance(facts, list):
             raise ValueError("fact extraction must return a list")
         return CommittedJob(await asyncio.to_thread(self.store.commit_extraction, job, facts))

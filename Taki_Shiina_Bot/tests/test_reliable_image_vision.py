@@ -48,6 +48,9 @@ class FakeStore:
     def history(self, *_args, **_kwargs):
         return []
 
+    def prepare_memories(self, *_args):
+        return []
+
     def assert_snapshot(self, _snapshot):
         self.checked += 1
         if self.stale:

@@ -70,9 +70,9 @@ class PermissionGuardTests(unittest.TestCase):
         self.assertTrue(guard.owner_context_allowed("owner"))
         self.disable_fact()
         self.assertFalse(guard.owner_context_allowed("owner"))
-        self.assertTrue(guard.owner_context_allowed("other-owner"))
+        self.assertFalse(guard.owner_context_allowed("other-owner"))
         self.store.set_permission("owner", "fact-1", enabled=True, expected_revision=2)
-        self.assertTrue(guard.owner_context_allowed("owner"))
+        self.assertFalse(guard.owner_context_allowed("owner"))
 
     def test_disabled_profile_scene_memo_and_fixed_name_do_not_reenter_prompt(self):
         memory, prompt, client = self.service()
@@ -124,10 +124,9 @@ class PermissionGuardTests(unittest.TestCase):
 
     def test_restore_closure_during_scene_generation_is_not_swallowed(self):
         memory, prompt, client = self.service()
-        store = self.sql_store()
 
         async def close_restore_gate(**kwargs):
-            store.mark_restored()
+            self.sql_store().mark_restored()
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="synthetic-private-scene"))])
 
         client.chat.completions.create.side_effect = close_restore_gate
@@ -147,7 +146,7 @@ class PermissionGuardTests(unittest.TestCase):
             with self.assertRaises(DataDecryptError):
                 PermissionGuard(self.temp.name).owner_context_allowed("owner")
         guard = PermissionGuard(self.temp.name)
-        self.assertTrue(guard.owner_context_allowed("owner"))
+        self.assertFalse(guard.owner_context_allowed("owner"))
         self.path.unlink()
         with self.assertRaises(DataReadError):
             guard.owner_context_allowed("owner")

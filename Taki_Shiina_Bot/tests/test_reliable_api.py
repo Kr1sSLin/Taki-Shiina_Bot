@@ -25,7 +25,7 @@ from app_state import AppState
 from auth_utils import create_access_token
 from fastapi import WebSocketDisconnect
 from services.chat_runtime import ChatRuntime
-from services.contracts import Domain
+from services.contracts import ChatCommand, Domain
 from services.domain_cipher import DomainCipher
 from services.reliable_chat_store import ReliableChatStore
 from starlette.requests import Request
@@ -114,6 +114,46 @@ class ReliableApiTests(unittest.IsolatedAsyncioTestCase):
     async def extract(self, text):
         self.extractions.append(text)
         return []
+
+    async def test_memory_permission_api_uses_authenticated_owner_and_revision(self):
+        self.store.put_fact("authenticated-owner", "private-fact", Domain.USER_FACT,
+                            {"text": "synthetic memory", "enabled": True}, expected_revision=0)
+        first = await http_api.memory_permission("private-fact", http_api.MemoryPermissionRequest(enabled=False, expectedRevision=1),
+                                                 self.request(), authorization="Bearer " + self.token)
+        self.assertEqual(self.body(first)["data"]["modelPermission"], "blocked")
+        detail = await http_api.memory_fact_detail("private-fact", self.request(), authorization="Bearer " + self.token)
+        self.assertEqual(detail.headers["cache-control"], "no-store")
+        self.assertEqual(self.body(detail)["data"]["permissionVersion"], 2)
+        stale = await http_api.memory_permission("private-fact", http_api.MemoryPermissionRequest(enabled=True, expectedRevision=1),
+                                                 self.request(), authorization="Bearer " + self.token)
+        self.assertEqual(stale.status_code, 409)
+        other = create_access_token("other-owner", "device", "synthetic-jwt-secret", 3600)
+        denied = await http_api.memory_permission("private-fact", http_api.MemoryPermissionRequest(enabled=True, expectedRevision=2),
+                                                  self.request(), authorization="Bearer " + other)
+        self.assertEqual(denied.status_code, 403)
+        denied_detail = await http_api.memory_fact_detail("private-fact", self.request(), authorization="Bearer " + other)
+        self.assertEqual(denied_detail.status_code, 403)
+
+    async def test_runtime_commits_extraction_before_reply_context_is_built(self):
+        item = {"text": "用户今天感冒", "evidence": "我今天感冒了", "subject": "user", "assertion": "explicit", "temporal_type": "current_state", "temporal_validity": {"from": None, "until": self.store.clock()+3600, "expression": "今天", "timezone": "Asia/Shanghai", "precision": "day"}}
+        for number in range(3):
+            self.store.accept([ChatCommand("authenticated-owner", f"seed-{number}", f"seed-{number}", "device", "我今天感冒了")])
+            extraction = self.store.claim(kinds={"extract"})
+            self.store.commit_extraction(extraction, [item])
+            chat = self.store.claim(kinds={"chat"})
+            self.store.commit_reply(chat, self.store.begin_turn(chat), {"reply": "合成回复"})
+        async def extract(_text):
+            await asyncio.sleep(0.02)
+            return [item]
+        async def generate(snapshot, store):
+            refs = store.prepare_memories(snapshot, "感冒")
+            self.assertEqual(refs[0]["weight"], 6)
+            return {"reply": "本轮已经可以用这条正式记忆"}
+        self.runtime.extractor, self.runtime.generator = extract, generate
+        response = await self.http_chat("promotion", text="我今天感冒了")
+        self.assertEqual(self.body(response)["code"], 0)
+        fact = self.store.select_memories("authenticated-owner", "感冒")[0]
+        self.assertEqual(fact["weight"], 6)
 
     async def capture_frame(self, owner, frame):
         self.frames.append((owner, deepcopy(frame)))

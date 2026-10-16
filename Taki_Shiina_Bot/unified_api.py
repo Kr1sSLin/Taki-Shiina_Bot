@@ -88,6 +88,8 @@ _mount_unique(
         "/api/v1/chat/history",
         "/api/v1/chat/images/{request_id}/{index}",
         "/api/v1/memory/facts",
+        "/api/v1/memory/facts/{fact_id}",
+        "/api/v1/memory/facts/{fact_id}/permission",
         "/api/v1/settings/city",
         "/api/v1/chat",
     },
