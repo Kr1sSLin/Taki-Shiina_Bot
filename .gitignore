@@ -1,6 +1,20 @@
 /.codex
 /openspec
 
+# Local secrets and migration backups (at every project depth).
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.bak
+*.bak.*
+**/.claude/settings.local.json
+/TKS_Bot_Android/keystore.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
+
 # 本地文档：保留在工作区，不纳入 Git（匹配任意层级的 docs 目录）
 [dD][oO][cC][sS]/
 

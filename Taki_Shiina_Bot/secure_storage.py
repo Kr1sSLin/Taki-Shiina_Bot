@@ -3,8 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
-import shutil
-import time
+import tempfile
 from dataclasses import dataclass
 from typing import Any
 
@@ -104,12 +103,31 @@ class SecureJsonStore:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, self.path)
 
-    def _backup_plaintext(self) -> None:
+    def _backup_encrypted(self, data: Any) -> None:
+        """Verify a recoverable encrypted backup before replacing plaintext."""
         if not self.config.backup_on_migrate:
             return
-        timestamp = time.strftime("%Y%m%d%H%M%S")
-        backup_path = f"{self.path}.bak.{timestamp}"
-        shutil.copy2(self.path, backup_path)
+        payload = self._encrypt(data)
+        # mkstemp creates a unique file with owner-only permissions on POSIX.
+        # Only ciphertext ever reaches disk; failed backups are removed.
+        fd, backup_path = tempfile.mkstemp(
+            prefix=os.path.basename(self.path) + ".bak.",
+            suffix=".enc",
+            dir=os.path.dirname(os.path.abspath(self.path)),
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as backup:
+                json.dump(payload, backup, ensure_ascii=False, indent=2)
+                backup.flush()
+                os.fsync(backup.fileno())
+            with open(backup_path, "r", encoding="utf-8") as backup:
+                restored = self._decrypt(json.load(backup))
+            # Compare serialized forms to preserve JSON normalization semantics.
+            if json.dumps(restored, ensure_ascii=False) != json.dumps(data, ensure_ascii=False):
+                raise DataDecryptError("迁移备份校验失败，原文件未替换")
+        except Exception:
+            os.unlink(backup_path)
+            raise
 
     def load(self, default: Any) -> Any:
         if not os.path.exists(self.path):
@@ -130,7 +148,7 @@ class SecureJsonStore:
 
         if self.config.auto_migrate:
             try:
-                self._backup_plaintext()
+                self._backup_encrypted(payload)
                 self._write_atomic(self._encrypt(payload))
                 self.logger.info(f"已迁移明文数据并加密: {os.path.basename(self.path)}")
             except Exception as exc:
@@ -156,7 +174,7 @@ class SecureJsonStore:
         if _is_encrypted_payload(payload):
             return self._decrypt(payload)
         if self.config.auto_migrate:
-            self._backup_plaintext()
+            self._backup_encrypted(payload)
             self._write_atomic(self._encrypt(payload))
             self.logger.info(f"已迁移明文数据并加密: {os.path.basename(self.path)}")
         return payload
