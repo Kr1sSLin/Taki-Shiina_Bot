@@ -12,6 +12,7 @@ import os
 import google.generativeai as genai
 
 from services.vision_limits import MAX_INLINE_IMAGE_BYTES
+from services.public_policy import public_text, require_public_text
 
 
 VISION_DESCRIPTION_PROMPT = (
@@ -32,7 +33,8 @@ async def describe_images(images: list[dict], caption: str) -> str:
         raise RuntimeError("vision model is not configured")
     genai.configure(api_key=api_key, transport="rest")
     model = genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
-    prompt = VISION_DESCRIPTION_PROMPT + (f"\n\n用户留言：{caption}" if caption else "")
+    prompt = public_text("image_description") + "\n" + VISION_DESCRIPTION_PROMPT + (f"\n\n用户留言：{caption}" if caption else "")
+    require_public_text(prompt)
     inline_size = len(prompt.encode("utf-8")) + sum(len(base64.b64encode(image["raw"])) for image in images) + 1_000_000
     if sum(len(image["raw"]) for image in images) > MAX_INLINE_IMAGE_BYTES or inline_size >= 20_000_000:
         raise ValueError("images exceed Gemini inline request budget")

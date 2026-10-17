@@ -1,3 +1,4 @@
+from services.public_policy import public_messages, checked_completion
 import asyncio
 import datetime
 import os
@@ -56,15 +57,15 @@ def create_chat_handler(
             1. 如果全是废话、情绪发泄或重复信息，直接回\"无\"。
             2. 必须是关于【用户】的客观事实。
             """
-            summary_res = await client.chat.completions.create(
+            summary_res = await checked_completion(client,
                 model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-                messages=[
+                messages=public_messages([
                     {"role": "system", "content": ex_prompt},
                     {
                         "role": "user",
                         "content": f"对话背景：\n{recent_context_str}\n\n用户最新发言：{user_text}",
                     },
-                ],
+                ], 'handlers/chat_handler.py'),
                 max_tokens=100,
                 temperature=0.8,
                 frequency_penalty=0.5,
@@ -162,8 +163,8 @@ def create_chat_handler(
             messages.append({"role": "user", "content": full_user_text + force_instruction})
             messages = scrub_locations(messages)
 
-            response = await client.chat.completions.create(
-                model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"), messages=messages, temperature=0.75
+            response = await checked_completion(client,
+                model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"), messages=public_messages(messages, 'handlers/chat_handler.py'), temperature=0.75
             )
             raw_reply = scrub_locations(response.choices[0].message.content)
 

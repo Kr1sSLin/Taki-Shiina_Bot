@@ -1,3 +1,4 @@
+from services.public_policy import public_messages, checked_completion
 import asyncio
 import os
 import uuid
@@ -18,6 +19,7 @@ from app_state import AppState
 from services.history_store import HistoryStore
 from services.application_service import ChatApplicationService
 from services.chat_runtime import ChatFailed, get_chat_runtime
+from services.controlled_response import ControlledJSONResponse
 from services.contracts import ChatCommand
 from services.foundation_store import PermissionDenied, StorageBusy, VersionConflict
 from services.text_generation import TextGenerator
@@ -111,6 +113,9 @@ async def _no_live_delivery(_delivery):
     raise ConnectionError("no live transport; inbox remains durable")
 
 
+_no_live_delivery.available = lambda owner: False
+
+
 def get_reliable_runtime():
     if _reliable_runtime_provider is not None:
         return _reliable_runtime_provider()
@@ -150,14 +155,14 @@ async def validate_security_config():
         joined = ", ".join(missing)
         logger.critical(f"[SECURITY] 缺少必填鉴权配置: {joined}，服务拒绝启动")
         raise RuntimeError(f"Missing required token env(s): {joined}")
-    reliable = get_reliable_runtime()
+    reliable = get_reliable_runtime() if os.getenv("FOUNDATION_ENABLED", "1") == "1" else None
     if reliable:
         reliable.start()
 
 
 @app.on_event("shutdown")
 async def stop_reliable_runtime():
-    reliable = get_reliable_runtime()
+    reliable = get_reliable_runtime() if os.getenv("FOUNDATION_ENABLED", "1") == "1" else None
     if reliable:
         await reliable.stop()
 
@@ -222,9 +227,9 @@ async def extract_user_facts(user_id: str, message: str):
         f"用户消息：{message}"
     )
     try:
-        resp = await client.chat.completions.create(
+        resp = await checked_completion(client,
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-            messages=[{"role": "user", "content": extraction_prompt}],
+            messages=public_messages([{"role": "user", "content": extraction_prompt}], 'http_api.py'),
             temperature=0.3,
         )
         raw = resp.choices[0].message.content or "[]"
@@ -335,8 +340,10 @@ async def chat_history(
     try:
         items = await _load_timeline_async()
         reliable = get_reliable_runtime()
+        pending = []
         if reliable:
-            items += await asyncio.to_thread(reliable.store.history, auth.user_id, limit=3000)
+            reliable_items, pending = await asyncio.to_thread(reliable.store.history_delivery, auth.user_id, limit=3000)
+            items += reliable_items
             items = list({str(item.get("messageId")): item for item in items}.values())
             items.sort(key=lambda item: int(item.get("timestamp", 0)))
         filtered = [
@@ -345,6 +352,10 @@ async def chat_history(
             if int(x.get("timestamp", 0)) > since and str(x.get("userId", "")) == auth.user_id
         ]
         filtered = filtered[-max(1, min(limit, 500)) :]
+        included = {item["messageId"] for item in filtered}
+        pending = [result for result in pending if result["messageId"] in included]
+        if pending:
+            return ControlledJSONResponse(response_body(0, "ok", {"items": filtered}, trace_id), store=reliable.store, owner=auth.user_id, results=pending)
         return response_body(0, "ok", {"items": filtered}, trace_id)
     except (FileLockTimeoutError, StorageBusy, PermissionDenied):
         logger.exception("history timeline lock timeout")
@@ -547,7 +558,7 @@ async def chat(
             state.last_activity[user_id] = datetime.now(timezone.utc)
             state.last_bot_response_time[user_id] = datetime.now(timezone.utc)
             data = {**result, "conversationId": payload.conversationId or f"conv_{user_id}", "debounceWindowSec": calc_debounce_window(user_id)}
-            return JSONResponse(status_code=200, content=response_body(0, "ok", data, trace_id))
+            return ControlledJSONResponse(response_body(0, "ok", data, trace_id), store=reliable.store, owner=user_id, results=[result])
     except VersionConflict:
         return JSONResponse(status_code=409, content=response_body(40901, "请求标识与已保存内容冲突", None, trace_id))
     except (StorageBusy, PermissionDenied):
@@ -599,9 +610,9 @@ async def _chat_turn(payload, trace_id, user_id, message_text):
 
         messages = service.messages(system_content, short_history, anchor_prompt, {"role": "user", "content": message_text})
 
-        response = await client.chat.completions.create(
+        response = await checked_completion(client,
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-            messages=messages,
+            messages=public_messages(messages, 'http_api.py'),
             temperature=0.75,
         )
         raw_reply = response.choices[0].message.content or ""
@@ -620,9 +631,9 @@ async def _chat_turn(payload, trace_id, user_id, message_text):
                     "content": "【去重重采样】：禁止复用最近10条回复的开头、句式和收尾，保持人设但换一种自然表达。",
                 }
             )
-            retry_response = await client.chat.completions.create(
+            retry_response = await checked_completion(client,
                 model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-                messages=dedupe_messages,
+                messages=public_messages(dedupe_messages, 'http_api.py'),
                 temperature=1.0,
             )
             retry_raw = retry_response.choices[0].message.content or cleaned_reply

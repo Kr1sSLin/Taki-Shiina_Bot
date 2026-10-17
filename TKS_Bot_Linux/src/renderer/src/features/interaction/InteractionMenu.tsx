@@ -9,10 +9,10 @@
  * - FR-INT-5：点击先做本地余额预校验（体验优化），最终以后端返回为准；
  *   本地通过但后端 40201 → 用后端 `balance` 覆盖本地缓存并提示
  * - FR-INT-6：回复复用聊天气泡组件（见 MessageBubble 的礼物标记），本组件不渲染回复
- * - FR-INT-7/13：等待期间展示 typing 态；**不做 3 秒硬性报错**；互动走 REST，
+ * - FR-INT-7/13：等待状态仅在内部跟踪；**不做 3 秒硬性报错**；互动走 REST，
  *   不受「WS 未连接禁止发送」（FR-CHAT-4）拦截
  * - FR-INT-8：客户端等待上限 ≥60s（取 `PROTOCOL.INTERACTION_TIMEOUT_MS`），
- *   超时提示「立希好像走神了」并刷新余额（不做事后本地补偿）
+ *   超时提示未能完成并刷新余额（不做事后本地补偿）
  * - FR-INT-9 / EDGE-L23：`iconUrl` → `icon`（emoji）→ 内置占位图三级回退，
  *   图片加载失败也回退，**不得渲染破图或空图标**
  * - FR-INT-10：服务端不设每日上限，客户端不做任何频次拦截
@@ -30,24 +30,9 @@ import { useAppStore } from '../../store/app-store'
 import { useChatStore } from '../../store/chat-store'
 import { useProfileStore } from '../../store/profile-store'
 import { describeError, useTranslation } from '../../i18n'
-import { IconButton, Spinner } from '../../components/primitives'
+import { IconButton } from '../../components/primitives'
 import { IconClose, IconGift, IconPlus } from '../../components/Icons'
 
-/** 等待中的文案按服务端 `chat.typing.stage` 区分（FR-CHAT-14 同源）。 */
-function typingKeyOf(stage: 'vision' | 'generating' | 'interaction' | 'interaction_merge' | undefined): string {
-  switch (stage) {
-    case 'vision':
-      return 'chat.typing.vision'
-    case 'generating':
-      return 'chat.typing.generating'
-    case 'interaction':
-      return 'chat.typing.interaction'
-    case 'interaction_merge':
-      return 'chat.typing.interaction_merge'
-    default:
-      return 'interaction.sending'
-  }
-}
 
 export interface InteractionMenuProps {
   /** 输入框当前文字：非空时作为附言一起提交（§7.1a）。 */
@@ -63,7 +48,6 @@ export function InteractionMenu({ composerText, onSent }: InteractionMenuProps):
   const balance = useProfileStore((s) => s.balance)
   const balanceLoading = useProfileStore((s) => s.interactionLoading)
   const pending = useProfileStore((s) => s.interactionPending)
-  const typing = useChatStore((s) => s.typing)
   const pushToast = useAppStore((s) => s.pushToast)
 
   const [open, setOpen] = useState(false)
@@ -307,11 +291,7 @@ export function InteractionMenu({ composerText, onSent }: InteractionMenuProps):
 
           {composerText.trim().length > 0 ? <p className="muted">{t('interaction.titleWithText')}</p> : null}
 
-          {waiting ? (
-            <p className="muted" role="status" aria-live="polite" aria-label={t('interaction.pendingAria')}>
-              <Spinner size={12} /> {t(typingKeyOf(typing.stage))}
-            </p>
-          ) : null}
+
 
           {items.length === 0 ? (
             <p className="muted">

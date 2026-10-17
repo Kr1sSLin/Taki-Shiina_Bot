@@ -1,142 +1,59 @@
-"""心情（立希当前状态）缓存与整点刷新单测。
-
-覆盖 S1/E5：
-- 首次生成后写入缓存，`expires_at` 指向下一个整点；
-- 缓存过期时**先返回旧心情**（stale-while-revalidate），后台异步重建，绝不在请求链路上等 LLM；
-- `refresh_scene` 供整点任务 / 内部接口复用，失败保留旧值。
-"""
-
-from __future__ import annotations
-
+"""PRD-04 replaces random scenes with qualified daily event context."""
 import asyncio
 import logging
-import unittest
-from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+import unittest
+from unittest.mock import AsyncMock, Mock
 
-from gamification_fixture import setup_crypto_env  # noqa: F401  (夹具已处理 sys.path)
 from services.prompt_service import PromptService
+from services.public_policy import PERSONA_VERSION, RELATIONSHIP_VERSION, public_messages, checked_completion
 
 
-class _SceneClient:
-    """每次调用返回不同的「当前状态」，用于验证是否真的重建了。"""
-
-    def __init__(self):
-        self.calls = 0
-        self.fail_next = False
-
-    async def _create(self, **_kwargs):
-        self.calls += 1
-        if self.fail_next:
-            self.fail_next = False
-            raise RuntimeError("boom")
-        text = (
-            f"【立希当前状态】：\n- 情绪底色：第 {self.calls} 次生成的情绪。\n"
-            f"- 正在做：第 {self.calls} 次生成的动作。"
-        )
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=text))]
-        )
-
-    @property
-    def chat(self):
-        return SimpleNamespace(completions=SimpleNamespace(create=self._create))
-
-
-class _FakeMemory:
-    def get_profile(self, _user_id):
-        return "新朋友"
-
-
-class SceneCacheTestCase(unittest.TestCase):
+class PromptTests(unittest.TestCase):
     def setUp(self):
-        setup_crypto_env()
-        self.logger = logging.getLogger("test-scene")
-        self.logger.addHandler(logging.NullHandler())
-        self.client = _SceneClient()
-        self.cache: dict = {}
-        self.service = PromptService(
-            client=self.client,
-            memory_service=_FakeMemory(),
-            notify_owner=lambda *_a, **_k: None,
-            scene_cache=self.cache,
-            user_memo="memo",
-            logger=self.logger,
-        )
+        self.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=AsyncMock())))
+        self.memory = SimpleNamespace(permission_guard=SimpleNamespace(owner_context_allowed=Mock(return_value=True)), get_profile=Mock(side_effect=AssertionError("legacy profile must not enter prompt")))
+        self.cache = {"u": {"scene": "虚构的已完成活动"}}
+        self.service = PromptService(self.client, self.memory, Mock(), self.cache, "unmapped memoir", logging.getLogger(__name__))
 
-    def test_initial_generation_writes_cache_with_next_hour_expiry(self):
-        scene = asyncio.run(self.service.get_random_scene("u1"))
-        self.assertIn("第 1 次生成", scene)
-        self.assertEqual(self.client.calls, 1)
+    def test_legacy_scene_endpoints_clear_cache_without_model_or_fallback_fact(self):
+        for method in (self.service.get_random_scene, self.service.refresh_scene, self.service.generate_scene):
+            self.assertEqual(asyncio.run(method("u")), "")
+        self.assertEqual(self.cache, {})
+        self.client.chat.completions.create.assert_not_called()
 
-        cache = self.cache["u1"]
-        self.assertIn("第 1 次生成", cache["scene"])
-        self.assertGreater(cache["expires_at"], datetime.now(timezone.utc))
-        self.assertLessEqual(cache["expires_at"] - datetime.now(timezone.utc), timedelta(hours=1))
+    def test_fixed_persona_has_no_legacy_relationship_templates_or_profiles(self):
+        for allowed in (True, False):
+            prompt = asyncio.run(self.service.get_system_prompt("u", allow_private_context=allowed))
+            self.assertIn(PERSONA_VERSION, prompt)
+            self.assertIn(RELATIONSHIP_VERSION, prompt)
+            self.assertIn("友达以上，恋人未满", prompt)
+            self.assertIn("不将对灯的特殊态度直接复制", prompt)
+            for forbidden in ("unmapped memoir", "虚构的已完成活动", "气泡轰炸版", "核心关系 - 笨拙的爱", "想一直粘着"):
+                self.assertNotIn(forbidden, prompt)
+        self.memory.get_profile.assert_not_called()
 
-        # 未过期：命中缓存，不再调用模型
-        again = asyncio.run(self.service.get_random_scene("u1"))
-        self.assertEqual(again, cache["scene"])
-        self.assertEqual(self.client.calls, 1)
+    def test_a07_all_task_types_have_same_fixed_relationship_and_persona(self):
+        for task in ("chat", "reply_check", "chat_rewrite", "fact_extraction", "summary", "daily_candidate", "daily_check", "image_description"):
+            envelope = public_messages([], task)[0]["content"]
+            self.assertIn("用户缺席不改变关系", envelope)
+            self.assertIn("积分系统不改变关系", envelope)
+            self.assertIn(PERSONA_VERSION, envelope)
+            self.assertIn(RELATIONSHIP_VERSION, envelope)
 
-    def test_expired_cache_returns_stale_then_background_refresh(self):
-        async def scenario():
-            await self.service.get_random_scene("u1")
-            # 把缓存手动置为过期（模拟整点已过）
-            self.cache["u1"]["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
-
-            stale = await self.service.get_random_scene("u1")   # 必须立即返回旧值
-            task = self.service._refresh_tasks.get("u1")
-            self.assertIsNotNone(task, "过期应触发后台重建")
-            await task                                          # 等后台任务完成
-            fresh = await self.service.get_random_scene("u1")
-            return stale, fresh
-
-        stale, fresh = asyncio.run(scenario())
-        self.assertIn("第 1 次生成", stale, "过期时先返回旧心情，保证请求零额外延迟")
-        self.assertIn("第 2 次生成", fresh, "后台重建后下一条消息用到新心情")
-        self.assertEqual(self.client.calls, 2)
-
-    def test_refresh_scene_updates_cache_and_survives_failure(self):
-        async def scenario():
-            first = await self.service.refresh_scene("u1")
-            self.client.fail_next = True
-            # generate_scene 内部会兜底返回默认状态，因此刷新不会抛错、也不会清空缓存
-            second = await self.service.refresh_scene("u1")
-            return first, second
-
-        first, second = asyncio.run(scenario())
-        self.assertIn("第 1 次生成", first)
-        self.assertTrue(second, "生成失败时仍应返回可用心情（兜底文案）")
-        self.assertIn("scene", self.cache["u1"])
-
-    def test_missing_or_malformed_expiry_is_treated_as_expired(self):
-        async def scenario():
-            await self.service.get_random_scene("u1")
-            self.cache["u1"].pop("expires_at")
-            await self.service.get_random_scene("u1")
-            task = self.service._refresh_tasks.get("u1")
-            self.assertIsNotNone(task, "缺少 expires_at 时应视为过期并触发重建")
-            await task
-            return self.cache["u1"]["scene"]
-
-        scene = asyncio.run(scenario())
-        self.assertIn("第 2 次生成", scene)
-
-    def test_refresh_debounce_blocks_repeat_triggers(self):
-        async def scenario():
-            await self.service.get_random_scene("u1")
-            self.cache["u1"]["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
-            await self.service.get_random_scene("u1")
-            first_task = self.service._refresh_tasks["u1"]
-            await first_task
-            # 立刻再次过期：防抖窗口内不应再排一个新的重建任务
-            self.cache["u1"]["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
-            await self.service.get_random_scene("u1")
-            return first_task, self.service._refresh_tasks.get("u1")
-
-        first_task, second_task = asyncio.run(scenario())
-        self.assertIs(first_task, second_task, "60 秒防抖窗口内不重复重建")
+    def test_a06_missing_or_modified_contract_blocks_actual_client_call(self):
+        for task in ("chat", "summary", "chat_rewrite", "fact_extraction", "daily_candidate", "daily_check"):
+            for change in ("missing", "persona", "relationship", "public_body"):
+                with self.subTest(task=task, change=change):
+                    messages = public_messages([], task)
+                    if change == "missing":
+                        messages = [{"role": "user", "content": "没有公共规则"}]
+                    else:
+                        old = {"persona": PERSONA_VERSION, "relationship": RELATIONSHIP_VERSION, "public_body": "严禁自行创作重大事件"}[change]
+                        messages[0]["content"] = messages[0]["content"].replace(old, "changed")
+                    with self.assertRaises(ValueError):
+                        asyncio.run(checked_completion(self.client, messages=messages, model="synthetic"))
+        self.client.chat.completions.create.assert_not_awaited()
 
 
 if __name__ == "__main__":

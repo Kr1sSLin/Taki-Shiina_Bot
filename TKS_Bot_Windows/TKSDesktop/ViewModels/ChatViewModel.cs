@@ -1037,26 +1037,9 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
     private void ApplyTyping(ChatTypingState state)
     {
         ArgumentNullException.ThrowIfNull(state);
-
-        if (!state.Typing)
-        {
-            IsTypingVisible = false;
-            TypingText = string.Empty;
-            return;
-        }
-
-        // FR-W-CHAT-14：Stage 决定文案；未知 / 空 stage 回退到通用「正在输入」（NFR-W-12）。
-        TypingText = I18n.T(state.Stage switch
-        {
-            "typing" => "chat.typing",
-            "vision" => "chat.typing.vision",
-            "generating" => "chat.typing.generating",
-            "interaction" => "chat.typing.interaction",
-            "interaction_merge" => "chat.typing.interaction_merge",
-            _ => "chat.typing",
-        });
-
-        IsTypingVisible = true;
+        // PRD-03: transport keeps stages for diagnostics; chat shows no phases.
+        IsTypingVisible = false;
+        TypingText = string.Empty;
     }
 
     private void ApplyProgress(ProgressSnapshot? snapshot)

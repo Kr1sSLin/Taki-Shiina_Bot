@@ -141,7 +141,8 @@ class ReliableApiTests(unittest.IsolatedAsyncioTestCase):
             extraction = self.store.claim(kinds={"extract"})
             self.store.commit_extraction(extraction, [item])
             chat = self.store.claim(kinds={"chat"})
-            self.store.commit_reply(chat, self.store.begin_turn(chat), {"reply": "合成回复"})
+            seeded = self.store.commit_reply(chat, self.store.begin_turn(chat), {"reply": "合成回复"})
+            self.store.mark_dispatched("authenticated-owner", seeded)
         async def extract(_text):
             await asyncio.sleep(0.02)
             return [item]

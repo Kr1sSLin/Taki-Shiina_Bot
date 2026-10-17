@@ -31,21 +31,6 @@ import { MessageList } from './MessageList'
 import { SearchOverlay } from './SearchOverlay'
 import { InteractionMenu } from '../interaction/InteractionMenu'
 
-/** FR-CHAT-14：typing 文案按服务端 `stage` 区分。 */
-function typingKeyOf(stage: 'vision' | 'generating' | 'interaction' | 'interaction_merge' | undefined): string {
-  switch (stage) {
-    case 'vision':
-      return 'chat.typing.vision'
-    case 'generating':
-      return 'chat.typing.generating'
-    case 'interaction':
-      return 'chat.typing.interaction'
-    case 'interaction_merge':
-      return 'chat.typing.interaction_merge'
-    default:
-      return 'chat.typing.generic'
-  }
-}
 
 /**
  * 从拖拽载荷中提取本地绝对路径（FR-IMG-7）。
@@ -91,8 +76,6 @@ export function ChatPage(): JSX.Element {
   const setScrollTarget = useChatStore((s) => s.setScrollTarget)
   const locate = useChatStore((s) => s.locate)
   const syncStatus = useChatStore((s) => s.syncStatus)
-  const typing = useChatStore((s) => s.typing)
-  const queued = useChatStore((s) => s.queued)
   const pushToast = useAppStore((s) => s.pushToast)
   const reportAttachmentError = useAttachmentErrorToast()
 
@@ -221,7 +204,6 @@ export function ChatPage(): JSX.Element {
 
   const handleTargetHandled = useCallback((): void => setScrollTarget(null), [setScrollTarget])
 
-  const firstQueued = queued.length > 0 ? queued[0] : null
 
   return (
     <div className="chat-page">
@@ -236,20 +218,7 @@ export function ChatPage(): JSX.Element {
           </div>
         ) : null}
 
-        {/* FR-CHAT-14：typing 状态条（按 stage 出不同文案） */}
-        {typing.typing ? (
-          <div className="chat-activity" role="status" aria-live="polite" aria-label={t('chat.typing.aria')}>
-            <span>{t(typingKeyOf(typing.stage))}</span>
-          </div>
-        ) : null}
-
-        {/* FR-CHAT-15 / EDGE-L17：排队提示的秒数一律用服务端下发值 */}
-        {firstQueued ? (
-          <div className="chat-activity" role="status">
-            <span>{t('chat.queued', { n: firstQueued.debounceWindowSec })}</span>
-          </div>
-        ) : null}
-
+        {/* PRD-03: backend phases remain internal. */}
         {/* FR-IMG-7：拖拽悬停提示 */}
         {dragActive ? (
           <div className="chat-activity" role="status">

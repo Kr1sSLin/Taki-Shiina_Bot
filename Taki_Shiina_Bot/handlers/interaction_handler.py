@@ -14,6 +14,7 @@
 """
 
 from __future__ import annotations
+from services.public_policy import public_messages, checked_completion
 
 import asyncio
 import logging
@@ -43,6 +44,7 @@ from services.progress_store import SOURCE_INTERACTION
 from services.application_service import ChatApplicationService
 from services.contracts import ChatCommand
 from services.chat_runtime import ChatFailed
+from services.foundation_store import PermissionDenied
 from services.privacy import redact_locations
 
 # 错误码（PRD FR-3 要求“返回明确错误码”）
@@ -53,7 +55,7 @@ CODE_ITEM_NOT_FOUND = 40202
 CODE_AI_FAILED_REFUNDED = 40204
 CODE_STORAGE_FAILED_REFUNDED = 40205
 # 最终失败兜底文案（PRD FR-9：已扣减积分自动退回 + 失败兜底文案）
-DEFAULT_FALLBACK_TEXT = "……啧，刚走神了。\n东西我收下了，等下再说。"
+DEFAULT_FALLBACK_TEXT = "这次没能完成，请稍后再试。"
 
 TIMER_PATTERN = re.compile(r"\[\[TIMER:(\d{1,2}:\d{2})\|(.*?)\]\]")
 
@@ -228,7 +230,11 @@ class InteractionHandler:
         """`attachment`（O5）：送礼时用户输入框里的附言，会随礼物一起交给模型。"""
         request_id = (request_id or "").strip() or uuid.uuid4().hex
         attachment = redact_locations((attachment or "").strip())
-        runtime = self.runtime_provider() if self.runtime_provider is not None else None
+        try:
+            runtime = self.runtime_provider() if self.runtime_provider is not None else None
+        except PermissionDenied:
+            return InteractionSendResult(ok=False, user_id=user_id, item_id=item_id, request_id=request_id,
+                                         error_code=50301, message="服务暂时不可用，请稍后重试")
         if runtime is not None:
             return await self._send_reliable(runtime, user_id, item_id, request_id, device_id, attachment)
 
@@ -572,14 +578,12 @@ class InteractionHandler:
             # No model can claim this gift until its durable payment gate opens.
             await runtime.confirm_interaction(user_id, request_id)
             if not attachment and self.pending_flush_waiter is not None and existing is None:
-                await self._push(user_id, {"type": "chat.typing", "payload": {"typing": True, "stage": "interaction_merge"}})
                 try:
                     # These sources were accepted by WS already. Never insert them a second time.
                     await self.pending_flush_waiter(user_id)
                 except Exception as error:
                     self.logger.warning("interaction merge wait failed (%s)", type(error).__name__)
             await runtime.ready(user_id, [turn_id])
-            await self._push(user_id, {"type": "chat.typing", "payload": {"typing": True, "stage": "interaction"}})
             rules = self.config_service.get_points_rules().get("deepseek_retry", {})
             timeout = min(15, max(0.01, float(rules.get("total_timeout_seconds", 15) or 15)))
             durable = await runtime.wait(user_id, turn_id, timeout=timeout)
@@ -663,9 +667,9 @@ class InteractionHandler:
             attempts += 1
             try:
                 response = await asyncio.wait_for(
-                    self.client.chat.completions.create(
+                    checked_completion(self.client,
                         model=model,
-                        messages=messages,
+                        messages=public_messages(messages, 'handlers/interaction_handler.py'),
                         temperature=0.8,
                     ),
                     timeout=min(attempt_timeout, remaining),

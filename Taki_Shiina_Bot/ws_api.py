@@ -2,6 +2,7 @@
 WebSocket API for TakiShiina Bot
 实现防抖合并、断线继续处理、在线实时推送
 """
+from services.public_policy import public_messages, public_text, checked_completion, require_public_text
 
 import asyncio
 import base64
@@ -270,9 +271,9 @@ async def _resolve_empty_reply(client, cleaned_reply: str, messages: list[dict])
         }
     )
     try:
-        resp = await client.chat.completions.create(
+        resp = await checked_completion(client,
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-            messages=retry_messages,
+            messages=public_messages(retry_messages, 'ws_api.py'),
             temperature=1.0,
         )
         retry_raw = (resp.choices[0].message.content or "").strip()
@@ -315,9 +316,9 @@ async def extract_user_facts(user_id: str, message: str):
     )
 
     try:
-        resp = await client.chat.completions.create(
+        resp = await checked_completion(client,
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-            messages=[{"role": "user", "content": extraction_prompt}],
+            messages=public_messages([{"role": "user", "content": extraction_prompt}], 'ws_api.py'),
             temperature=0.3,
         )
         raw = (resp.choices[0].message.content or "[]").strip()
@@ -397,6 +398,7 @@ def _source_images(images: list[dict]) -> list[dict]:
 
 
 def get_reliable_runtime():
+    deliver_reliable.available = lambda owner: bool(ACTIVE_CONNECTIONS.get(owner))
     generator = TextGenerator(state, history_store, prompt_service, weather_service, client, parse_timer_instruction, interaction_retry_provider=lambda: gamification.config.get_points_rules().get("deepseek_retry", {}), vision_provider=describe_images)
     runtime = get_chat_runtime(_data_dir, generator, generator.extract, deliver_reliable)
     if runtime:
@@ -657,9 +659,10 @@ async def _process_buffered_messages(user_id: str):
                 },
             )
             model = genai.GenerativeModel(GEMINI_MODEL)
-            vision_prompt = VISION_DESCRIPTION_PROMPT
+            vision_prompt = public_text("image_description") + "\n" + VISION_DESCRIPTION_PROMPT
             if merged_text:
                 vision_prompt += f"\n\n用户留言：{merged_text}"
+            require_public_text(vision_prompt)
             parts = [vision_prompt]
             for img in merged_images[:VISION_MAX_IMAGE_COUNT]:
                 parts.append(
@@ -702,9 +705,9 @@ async def _process_buffered_messages(user_id: str):
                 },
             )
         response = await asyncio.wait_for(
-            client.chat.completions.create(
+            checked_completion(client,
                 model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-                messages=messages,
+                messages=public_messages(messages, 'ws_api.py'),
                 temperature=0.75,
                 stream=True,
             ),
@@ -744,9 +747,9 @@ async def _process_buffered_messages(user_id: str):
                     "content": "【去重重采样】：禁止复用最近10条回复的开头、句式和收尾，保持人设但换一种自然表达。",
                 }
             )
-            retry_resp = await client.chat.completions.create(
+            retry_resp = await checked_completion(client,
                 model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-                messages=dedupe_messages,
+                messages=public_messages(dedupe_messages, 'ws_api.py'),
                 temperature=1.0,
             )
             retry_raw = retry_resp.choices[0].message.content or cleaned_reply
@@ -1027,7 +1030,11 @@ async def websocket_chat(websocket: WebSocket):
                         parsed_images.append({"mimeType": mime_type, "raw": raw, "dataBase64": base64.b64encode(raw).decode("ascii"), "sha256": hashlib.sha256(raw).hexdigest()})
                     if len(parsed_images) != len(raw_images):
                         continue
-                reliable = get_reliable_runtime()
+                try:
+                    reliable = get_reliable_runtime()
+                except PermissionDenied:
+                    await send_error(user_id, "SERVICE_UNAVAILABLE", "服务暂时不可用，请稍后重试", request_id)
+                    continue
                 client_message_id = payload.get("clientMessageId") or request_id
                 if reliable:
                     try:
@@ -1036,7 +1043,7 @@ async def websocket_chat(websocket: WebSocket):
                         if receipts[0]["duplicate"]:
                             previous = await asyncio.to_thread(reliable.store.turn_result, user_id, receipts[0]["turn_id"])
                             if previous["status"] == "completed":
-                                await deliver_reliable({"owner": user_id, "target": "chat", "result": previous["result"]})
+                                await reliable.replay(user_id, previous["result"])
                                 continue
                     except VersionConflict:
                         await send_error(user_id, "REQUEST_CONFLICT", "请求标识与已保存内容冲突", request_id)
@@ -1264,14 +1271,14 @@ async def send_greeting(user_id: str, scenario_type: str):
     try:
         system_prompt = await prompt_service.get_system_prompt(user_id)
         weather_info = await weather_service.get_weather_str(force=True)
-        response = await client.chat.completions.create(
+        response = await checked_completion(client,
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-            messages=[
+            messages=public_messages([
                 {
                     "role": "system",
                     "content": f"{system_prompt}\n\n{weather_info}\n\n🎯 当前任务: {final_instruction}",
                 }
-            ],
+            ], 'ws_api.py'),
             temperature=0.85,
         )
         raw_reply = response.choices[0].message.content or ""
@@ -1360,16 +1367,12 @@ async def _delayed_greeting(user_id: str, scenario_type: str, delay_seconds: int
 @app.on_event("startup")
 async def on_startup():
     install_privacy_logging()
-    reliable = get_reliable_runtime()
+    reliable = get_reliable_runtime() if os.getenv("FOUNDATION_ENABLED", "1") == "1" else None
     if reliable:
         reliable.start()
-    else:
-        asyncio.create_task(greeting_scheduler())
-        asyncio.create_task(history_separator_scheduler())
     # 积分/等级定时任务：断签扫描与提前提醒、月度补签卡发放、纪念日奖励（PRD §3.2 jobs/）
     asyncio.create_task(points_jobs.run_forever())
     # 心情整点刷新（S1）：让「立希当前状态」真正每小时变化
-    asyncio.create_task(scene_refresh_scheduler())
     logger.info("[启动] 定时问候调度器已启动")
     logger.info("[启动] 历史分隔调度器已启动")
     logger.info("[启动] 积分/等级定时任务已启动")
@@ -1378,7 +1381,7 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def stop_reliable_runtime():
-    reliable = get_reliable_runtime()
+    reliable = get_reliable_runtime() if os.getenv("FOUNDATION_ENABLED", "1") == "1" else None
     if reliable:
         await reliable.stop()
 

@@ -11,6 +11,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Header, Request
 from pydantic import BaseModel
+from services.controlled_response import ControlledJSONResponse
+from services.chat_runtime import ChatFailed
+from services.foundation_store import PermissionDenied, StorageBusy, VersionConflict
 
 from api.v1.deps import (
     CODE_INSUFFICIENT_POINTS,
@@ -74,6 +77,18 @@ async def interaction_send(
 
     code = result.error_code
     if result.ok:
+        runtime = handler.runtime_provider() if handler.runtime_provider else None
+        if runtime:
+            try:
+                existing = await runtime.request(auth.user_id, result.request_id)
+                durable = await runtime.wait(auth.user_id, existing["turn_id"])
+            except (ChatFailed, PermissionDenied, StorageBusy, VersionConflict):
+                return business_error(50302, "暂时未能完成，请使用原请求重试", None, trace_id)
+            result.reply = durable["reply"]
+            result.message_id = durable["messageId"]
+            result.timer_instruction = durable.get("timerInstruction")
+            result.merged_request_ids = [identity for identity in durable.get("requestIds", []) if identity != result.request_id]
+            return ControlledJSONResponse(ok(result.to_http_data(), trace_id), store=runtime.store, owner=auth.user_id, results=[durable])
         return ok(result.to_http_data(), trace_id)
     mapping = {
         CODE_INSUFFICIENT_POINTS: (CODE_INSUFFICIENT_POINTS, "积分不足"),

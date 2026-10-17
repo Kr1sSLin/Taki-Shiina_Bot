@@ -18,6 +18,7 @@ from services.foundation_store import VersionConflict
 from services.progress_store import PointsStore, REASON_ITEM_REFUND, REASON_ITEM_SEND
 from services.reliable_chat_store import ReliableChatStore
 from services.text_generation import TextGenerator
+from controlled_model_fixture import checker_response
 
 
 class SafePrompt:
@@ -42,6 +43,9 @@ class ReliableInteractionTests(unittest.IsolatedAsyncioTestCase):
         create = self.rig.client.completions.create
 
         async def recorded_create(**kwargs):
+            check = checker_response(kwargs)
+            if check:
+                return check
             self.messages.append(kwargs["messages"])
             return await create(**kwargs)
 
@@ -113,6 +117,7 @@ class ReliableInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.rig.client.completions.outcomes = ["文字回复。", "礼物回复。"]
         text = ChatCommand(TEST_USER, "old-text", "old-text", "device", "previous text", channel="ws")
         original = (await self.runtime.submit([text]))[0]
+        self.store.mark_dispatched(TEST_USER, original)
         gift = await self.rig.handler.send(TEST_USER, "coffee", "gift-after", attachment="new gift input")
         self.assertTrue(gift.ok)
         self.assertEqual(gift.merged_request_ids, [])

@@ -3,6 +3,7 @@ import base64
 import hashlib
 from io import BytesIO
 import pathlib
+import tempfile
 import sys
 from types import SimpleNamespace
 import unittest
@@ -12,6 +13,8 @@ from PIL import Image
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from services.text_generation import TextGenerator
+from services.domain_cipher import DomainCipher
+from controlled_model_fixture import checker_response
 
 
 def jpeg_with_exif():
@@ -41,7 +44,14 @@ class FakeService:
 
 
 class FakeStore:
+    @staticmethod
+    def clock():
+        return 1792202400.0  # Fixed synthetic UTC time for character context.
+
     def __init__(self, *, stale=False):
+        self.temp = tempfile.TemporaryDirectory(prefix="tks-vision-fence-")
+        self.path = str(pathlib.Path(self.temp.name) / "fake.sqlite3")
+        self.cipher = DomainCipher(b"i" * 32)
         self.checked = 0
         self.stale = stale
 
@@ -56,12 +66,21 @@ class FakeStore:
         if self.stale:
             raise RuntimeError("synthetic stale generation")
 
+    def record_phase(self, *_args):
+        pass
+
+    def reserve_draft(self, snapshot):
+        self.assert_snapshot(snapshot)
+
 
 class ReliableImageVisionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.calls = []
         self.received = []
         async def create(**kwargs):
+            check = checker_response(kwargs)
+            if check:
+                return check
             self.calls.append(kwargs["messages"])
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="看到了。"))], usage=None)
         self.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
@@ -77,7 +96,7 @@ class ReliableImageVisionTests(unittest.IsolatedAsyncioTestCase):
     def snapshot(*, images=None, text="看一下这张图片"):
         metadata = {"images": images} if images is not None else None
         return {"owner": "synthetic-owner", "legacy_allowed": False,
-                "sources": [{"channel": "ws", "text": text, "metadata": metadata}]}
+                "sources": [{"channel": "ws", "text": text, "metadata": metadata, "client_message_id": "image-source"}]}
 
     @staticmethod
     def encoded(raw=RAW_JPEG, **changes):
@@ -97,7 +116,7 @@ class ReliableImageVisionTests(unittest.IsolatedAsyncioTestCase):
         with Image.open(BytesIO(self.received[0][0][0]["raw"])) as image:
             self.assertEqual(image.getexif()[270], "GPS:31.2304,121.4737")
         self.assertEqual(self.received[0][1], "看一下这张图片")
-        self.assertEqual(store.checked, 2)  # vision, then text model
+        self.assertEqual(store.checked, 5)  # vision, draft, generation, checker pre/post
         prompt = str(self.calls[0])
         self.assertIn("一只猫", prompt)
         self.assertNotIn("31.2304", prompt)
@@ -109,7 +128,7 @@ class ReliableImageVisionTests(unittest.IsolatedAsyncioTestCase):
 
         store = FakeStore()
         await self.generator(vision)(self.snapshot(), store)
-        self.assertEqual(store.checked, 1)
+        self.assertEqual(store.checked, 4)
         self.assertIn("看一下这张图片", str(self.calls[0]))
         self.assertNotIn("图片内容：", str(self.calls[0]))
 
@@ -132,7 +151,7 @@ class ReliableImageVisionTests(unittest.IsolatedAsyncioTestCase):
             self.fail("over-limit turn reached vision")
 
         snapshot = self.snapshot(images=[self.encoded(), self.encoded()])
-        snapshot["sources"].append({"channel": "ws", "text": "第二条", "metadata": {"images": [self.encoded(), self.encoded()]}})
+        snapshot["sources"].append({"channel": "ws", "text": "第二条", "client_message_id": "second", "metadata": {"images": [self.encoded(), self.encoded()]}})
         with self.assertRaisesRegex(ValueError, "too many images"):
             await self.generator(vision)(snapshot, FakeStore())
         self.assertEqual(self.calls, [])

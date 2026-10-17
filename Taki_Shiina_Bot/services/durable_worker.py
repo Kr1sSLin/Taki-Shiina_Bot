@@ -6,6 +6,7 @@ idempotent: losing a process after an external effect can cause a later retry.
 Only explicitly registered kinds are claimed; importing this module starts nothing.
 """
 from __future__ import annotations
+from services.async_storage import store_call
 
 import asyncio
 from dataclasses import dataclass
@@ -110,7 +111,7 @@ class DurableWorker:
         if not self.handlers:
             return False
         async with self._run_lock:
-            job = await asyncio.to_thread(
+            job = await store_call(
                 self.store.claim, kinds=tuple(self.handlers), lease_seconds=self.lease_seconds
             )
             if job is None:
@@ -127,7 +128,7 @@ class DurableWorker:
         deadline = self.clock() + self.renew_interval
         while True:
             await self.sleep(max(0, deadline - self.clock()))
-            await asyncio.to_thread(
+            await store_call(
                 self.store.renew,
                 job["job_id"],
                 job["lease_token"],
@@ -175,7 +176,7 @@ class DurableWorker:
             if error is not None:
                 self._log_failure("handler", error)
             try:
-                await asyncio.to_thread(
+                await store_call(
                     self.store.finish,
                     job["job_id"],
                     job["lease_token"],

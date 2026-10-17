@@ -37,7 +37,7 @@ class MemoryStageBTests(unittest.TestCase):
         return self.evidence(f"用户今天想喝{drink}", f"我今天想喝{drink}", temporal_type="current_state",
                              temporal_validity={"from": 900, "until": 2000, "expression": "今天", "timezone": "Asia/Shanghai", "precision": "day"})
 
-    def express(self, evidence=None, *, text="我喜欢咖啡", use=False, complete=True):
+    def express(self, evidence=None, *, text="我喜欢咖啡", use=False, complete=True, dispatch=True):
         self.now += 1
         receipt = self.store.accept([self.command(text)])[0]
         extract = self.store.claim(kinds={"extract"})
@@ -47,7 +47,9 @@ class MemoryStageBTests(unittest.TestCase):
         if use:
             self.store.prepare_memories(snapshot, text)
         if complete:
-            self.store.commit_reply(chat, snapshot, {"reply": "知道了。"})
+            result = self.store.commit_reply(chat, snapshot, {"reply": "知道了。"})
+            if dispatch:
+                self.store.mark_dispatched("owner", result)
         return ids, receipt, chat, snapshot
 
     def formal(self):
@@ -114,7 +116,8 @@ class MemoryStageBTests(unittest.TestCase):
                 self.store.commit_reply(job, snapshot, {"reply": "草稿"})
         self.assertEqual(self.data(fact)["weight"], 6)
         self.assertEqual(self.store.turn_result("owner", receipt["turn_id"])["status"], "running")
-        self.store.commit_reply(job, snapshot, {"reply": "已保存"})
+        delivered = self.store.commit_reply(job, snapshot, {"reply": "已保存"})
+        self.store.mark_dispatched("owner", delivered)
         self.assertEqual(self.data(fact)["weight"], 7)
         with self.assertRaises(VersionConflict):
             self.store.commit_reply(job, snapshot, {"reply": "重复"})
@@ -208,16 +211,12 @@ class MemoryStageBTests(unittest.TestCase):
 
     def test_disable_after_commit_blocks_undelivered_reply(self):
         fact = self.formal()
-        self.express(use=True)
+        _, receipt, _, _ = self.express(use=True, dispatch=False)
         self.store.set_permission("owner", fact, enabled=False, expected_revision=self.store.read_fact("owner", fact)["revision"])
-        blocked = False
-        while job := self.store.claim(kinds={"deliver"}):
-            try:
-                self.store.delivery(job)
-            except PermissionDenied:
-                blocked = True
-            self.store.finish(job["job_id"], job["lease_token"], succeeded=True)
-        self.assertTrue(blocked)
+        result = self.store.turn_result("owner", receipt["turn_id"])
+        self.assertEqual(result["status"], "cancelled")
+        with self.assertRaises(PermissionDenied):
+            self.store.mark_dispatched("owner", result["result"])
 
     def test_permission_commands_ask_on_ambiguity_and_preserve_score(self):
         fact = self.formal()
@@ -228,7 +227,8 @@ class MemoryStageBTests(unittest.TestCase):
         self.assertFalse(self.data(fact)["enabled"])
         self.assertEqual(self.data(fact)["weight"], 6)
         self.assertEqual(self.store.handle_memory_control(job), result)
-        self.store.commit_reply(job, self.store.begin_turn(job), result)
+        committed = self.store.commit_reply(job, self.store.begin_turn(job), result)
+        self.store.mark_dispatched("owner", committed)
         self.store.accept([self.command("恢复使用不确定是哪件事")])
         job = self.store.claim(kinds={"chat"})
         self.assertIn("哪条", self.store.handle_memory_control(job)["reply"])

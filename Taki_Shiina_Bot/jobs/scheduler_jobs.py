@@ -1,3 +1,4 @@
+from services.public_policy import public_messages, checked_completion
 import asyncio
 import datetime
 import os
@@ -141,16 +142,16 @@ def create_active_greeting_job(
         """
 
         try:
-            response = await client.chat.completions.create(
+            response = await checked_completion(client,
                 model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-                messages=[
+                messages=public_messages([
                     {
                         "role": "system",
                         "content": await get_system_prompt(chat_id)
                         + "\n\n🎯 当前任务: "
                         + final_instruction,
                     }
-                ],
+                ], 'jobs/scheduler_jobs.py'),
                 temperature=0.85,
             )
             raw_reply = response.choices[0].message.content

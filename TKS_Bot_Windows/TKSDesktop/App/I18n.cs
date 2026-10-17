@@ -156,7 +156,7 @@ public static class I18n
         ["interaction.send"] = "送出",
         ["interaction.insufficient"] = "还差 {0} 积分",
         ["interaction.waiting"] = "正在等待立希反应…",
-        ["interaction.timeout"] = "立希好像走神了",
+        ["interaction.timeout"] = "这次未能完成，请稍后重试并确认积分",
         ["interaction.refunded"] = "积分已退回",
         ["interaction.giftBadge"] = "礼物",
         ["interaction.empty"] = "暂无可用物品",

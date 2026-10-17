@@ -275,7 +275,7 @@ export const zhCN = {
   'interaction.disabled.offline': '离线状态下不可送礼',
   'interaction.sending': '立希正在反应…',
   'interaction.success': '已送出「{name}」，消耗 {cost} 积分',
-  'interaction.timeout': '立希好像走神了，请稍后在个人页确认积分',
+  'interaction.timeout': '这次未能完成，请稍后重试并在个人页确认积分',
   'interaction.refunded': 'AI 调用失败，积分已退回',
   'interaction.empty': '暂无可用物品',
   'interaction.titleWithText': '附言会一起发给立希',

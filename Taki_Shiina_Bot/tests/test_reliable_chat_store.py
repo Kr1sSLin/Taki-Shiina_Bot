@@ -52,6 +52,7 @@ class ReliableChatStoreTests(unittest.TestCase):
     def complete(self, identity="1", *, owner="owner"):
         receipt, job, snapshot = self.begin(identity, owner=owner)
         result = self.store.commit_reply(job, snapshot, {"reply": f"synthetic reply {identity}"})
+        self.store.mark_dispatched(owner, result)
         return receipt, result
 
     def crash_reply_process(self, mode):
@@ -562,7 +563,8 @@ os._exit(78)
             snapshot = self.store.begin_turn(job)
             snapshots[snapshot["turn_id"]] = snapshot
             self.assertEqual(sum(source["intent"] == "interaction" for source in snapshot["sources"]), 1)
-            self.store.commit_reply(job, snapshot, {"reply": "synthetic gift response"})
+            reply = self.store.commit_reply(job, snapshot, {"reply": "synthetic gift response"})
+            self.store.mark_dispatched("owner", reply)
         self.assertEqual({source["request_id"] for source in snapshots[first["turn_id"]]["sources"]}, {"request-text-before", "request-gift-1"})
         self.assertEqual({source["request_id"] for source in snapshots[second["turn_id"]]["sources"]}, {"request-gift-2", "request-text-after"})
 

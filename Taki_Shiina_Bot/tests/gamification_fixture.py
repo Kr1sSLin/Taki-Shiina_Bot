@@ -64,7 +64,9 @@ class FakeWeatherService:
 
 
 class FakePromptService:
-    async def get_system_prompt(self, user_id: str):
+    permission_guard = SimpleNamespace(owner_context_allowed=lambda owner: True)
+
+    async def get_system_prompt(self, user_id: str, *, allow_private_context=True):
         return "【人设】：椎名立希"
 
 

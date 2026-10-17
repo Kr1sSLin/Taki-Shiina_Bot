@@ -148,7 +148,7 @@ class MemoryStore(FoundationStore):
                     data.update(enabled=enabled, model_permission="allowed" if enabled else "blocked", permission_version=data.get("permission_version", 1)+1)
                     self._write_fact(conn, lease["owner"], fact_id, Domain(fact["domain"]), fact["revision"]+1, data)
                     self._change(conn, lease["owner"], fact_id, fact["revision"]+1, "restored" if enabled else "disabled", ("sync",))
-                reply = "已恢复这条记忆的使用权限；原有分数、争议和时间限制仍然保留。" if restoring else "好，以后不再使用或提起这件事。"
+                reply = "好，以后可以再提这件事了。" if restoring else "好，以后不再使用或提起这件事。"
                 if action in ("删除", "删掉", "彻底删除"):
                     reply = "已停止使用这条记忆。目前还不支持彻底删除原聊天和备份，不能承诺已经删除。"
             body["memory_control_result"] = {"reply": reply}
@@ -189,7 +189,7 @@ class MemoryStore(FoundationStore):
                     continue
                 rank = relevance(query, data.get("text", ""))
                 if rank:
-                    result.append({"fact_id": row["id"], "revision": row["revision"], "revision_id": data["revision_id"], "permission_version": data["permission_version"], "domain": row["domain"], "subject": data.get("subject"), "text": data["text"], "temporal_type": data["temporal_type"], "temporal_validity": data["temporal_validity"], "rank": rank, "weight": data["weight"]})
+                    result.append({"fact_id": row["id"], "revision": row["revision"], "revision_id": data["revision_id"], "permission_version": data["permission_version"], "domain": row["domain"], "subject": data.get("subject"), "text": data["text"], "temporal_type": data["temporal_type"], "temporal_validity": data["temporal_validity"], "rank": rank, "weight": data["weight"], "source": data.get("source"), "lore_version": data.get("lore_version"), "event_id": data.get("event_id"), "event_state": data.get("event_state")})
             return sorted(result, key=lambda x: (-x["rank"], -x["weight"], x["fact_id"]))[:limit]
 
     def search(self, owner, domain, query, *, limit=100):
@@ -218,6 +218,14 @@ class MemoryStore(FoundationStore):
 
     def _reinforce(self, conn, owner, turn_id, fact_id, reason, data, revision):
         effect = {"reason": reason, "revision": revision, "revision_id": data["revision_id"], "at": self.clock()}
+        if reason == "usage":
+            effect["delta"] = min(10, data["weight"] + 1) - data["weight"]
+            previous = conn.execute("SELECT body FROM memory_ledger WHERE owner=? AND turn_id=? AND fact_id=?", (owner, turn_id, fact_id)).fetchone()
+            if previous:
+                value = self.cipher.decrypt(Domain.EVIDENCE, owner, f"{turn_id}:{fact_id}", previous["body"])
+                if value.get("compensated") and value.get("reason") == "usage":
+                    conn.execute("UPDATE memory_ledger SET body=? WHERE owner=? AND turn_id=? AND fact_id=?", (self.cipher.encrypt(Domain.EVIDENCE, owner, f"{turn_id}:{fact_id}", effect), owner, turn_id, fact_id))
+                    return True
         return conn.execute("INSERT OR IGNORE INTO memory_ledger VALUES (?,?,?,?)", (owner, turn_id, fact_id, self.cipher.encrypt(Domain.EVIDENCE, owner, f"{turn_id}:{fact_id}", effect))).rowcount == 1
 
     def _commit_memory_usage(self, conn, owner, turn_id, refs):

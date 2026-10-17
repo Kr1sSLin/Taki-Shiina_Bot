@@ -23,6 +23,7 @@ from services.contracts import ChatCommand
 from services.domain_cipher import DomainCipher
 from services.reliable_chat_store import ReliableChatStore
 from services import vision_generation
+from controlled_model_fixture import checker_response
 
 
 class PublicService:
@@ -69,6 +70,9 @@ class StandaloneHttpImageWorkerTests(unittest.IsolatedAsyncioTestCase):
                 return SimpleNamespace(text="画面显示 GPS 31.2304,121.4737 和蓝色方块")
 
         async def fake_text_model(**kwargs):
+            check = checker_response(kwargs)
+            if check:
+                return check
             self.text_calls.append(kwargs["messages"])
             content = "[]" if kwargs.get("temperature") == 0.3 else "看到了蓝色方块。"
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))], usage=None)

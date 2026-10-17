@@ -122,7 +122,7 @@ class PermissionGuardTests(unittest.TestCase):
             asyncio.run(service.system_context("owner", allow_private_context=False))
         weather.get_weather_str.assert_not_awaited()
 
-    def test_restore_closure_during_scene_generation_is_not_swallowed(self):
+    def test_retired_scene_path_never_calls_model_and_still_checks_restore_gate(self):
         memory, prompt, client = self.service()
 
         async def close_restore_gate(**kwargs):
@@ -130,6 +130,9 @@ class PermissionGuardTests(unittest.TestCase):
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="synthetic-private-scene"))])
 
         client.chat.completions.create.side_effect = close_restore_gate
+        self.assertEqual(asyncio.run(prompt.refresh_scene("owner")), "")
+        client.chat.completions.create.assert_not_awaited()
+        self.sql_store().mark_restored()
         with self.assertRaises(PermissionDenied):
             asyncio.run(prompt.refresh_scene("owner"))
 

@@ -1,6 +1,7 @@
 import asyncio
 import os
 import traceback
+from services.public_policy import public_text, require_public_text
 
 import PIL.Image
 
@@ -67,7 +68,7 @@ def create_handle_photo_handler(
             os.remove(file_path)
 
             vision_prompt = (
-                f"你是椎名立希。用户发了图，说：'{caption}'。"
+                public_text("image_reply") + "\n" + f"你是椎名立希。用户发了图，说：'{caption}'。"
                 f"语境：{recent_context}。请以立希口吻回复。"
             )
 
@@ -75,6 +76,7 @@ def create_handle_photo_handler(
                 await update.message.reply_text("看不清。")
                 return
 
+            require_public_text(vision_prompt)
             response = await asyncio.to_thread(
                 genai_client.models.generate_content,
                 model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),

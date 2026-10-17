@@ -1,5 +1,6 @@
 """Inspect actual TextGenerator model messages, with an offline model double."""
 from pathlib import Path
+import asyncio
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from services.domain_cipher import DomainCipher
 from services.foundation_store import VersionConflict
 from services.reliable_chat_store import ReliableChatStore
 from services.text_generation import TextGenerator
+from controlled_model_fixture import checker_response
 
 
 class MemoryGenerationTests(unittest.IsolatedAsyncioTestCase):
@@ -31,6 +33,9 @@ class MemoryGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.generator = TextGenerator(state, None, prompt, weather, self.client, lambda text: (text, None, None))
 
     async def respond(self, **kwargs):
+        check = checker_response(kwargs)
+        if check:
+            return check
         self.calls.append(kwargs["messages"])
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="知道了。"))], usage=None)
 
@@ -53,13 +58,12 @@ class MemoryGenerationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_disable_while_model_runs_fences_actual_generated_reply(self):
         async def disable(**kwargs):
-            self.store.set_permission("owner", "formal", enabled=False, expected_revision=1)
+            await asyncio.to_thread(self.store.set_permission, "owner", "formal", enabled=False, expected_revision=1)
             return await self.respond(**kwargs)
         self.client.chat.completions.create.side_effect = disable
         job, snapshot = self.begin()
-        result = await self.generator(snapshot, self.store)
         with self.assertRaises(VersionConflict):
-            self.store.commit_reply(job, snapshot, result)
+            await self.generator(snapshot, self.store)
         self.assertEqual(self.store.history("owner"), [])
         self.assertEqual(self.store.read_fact("owner", "formal")["data"]["weight"], 6)
 
