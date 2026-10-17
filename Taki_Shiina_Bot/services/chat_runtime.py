@@ -18,6 +18,8 @@ from services.memory_policy import memory_control
 from services.reliable_chat_store import ReliableChatStore
 from services.daily_generation import DailyGenerator
 from services.daily_store import daily_enabled
+from services.proactive_generation import ProactiveGenerator
+from services.proactive_store import proactive_enabled
 
 
 class ChatFailed(RuntimeError):
@@ -38,6 +40,8 @@ class ChatRuntime:
         self.workers = [DurableWorker(store, {"chat": self._chat, "extract": self._extract, "deliver": self._deliver}, poll_interval=poll_interval) for _ in range(2)]
         self.daily_worker = DurableWorker(store, {"daily": self._daily}, poll_interval=max(1, poll_interval))
         self._daily_schedule_task = None
+        self.proactive_worker = DurableWorker(store, {"proactive": self._proactive}, poll_interval=max(1, poll_interval))
+        self._proactive_schedule_task = None
 
     def start(self):
         for worker in self.workers:
@@ -46,12 +50,21 @@ class ChatRuntime:
             self.daily_worker.start()
             if self._daily_schedule_task is None or self._daily_schedule_task.done():
                 self._daily_schedule_task = asyncio.create_task(self._schedule_daily(), name="daily-scheduler")
+        if proactive_enabled() and getattr(self.generator, "client", None) is not None:
+            self.proactive_worker.start()
+            if self._proactive_schedule_task is None or self._proactive_schedule_task.done():
+                self._proactive_schedule_task = asyncio.create_task(self._schedule_proactive(), name="proactive-scheduler")
 
     async def stop(self):
-        if self._daily_schedule_task is not None:
-            self._daily_schedule_task.cancel()
-            await asyncio.gather(self._daily_schedule_task, return_exceptions=True)
-        return all(await asyncio.gather(*(worker.stop() for worker in [*self.workers, self.daily_worker])))
+        for task in (self._daily_schedule_task, self._proactive_schedule_task):
+            if task is None or task.done():
+                continue
+            if task.get_loop() is asyncio.get_running_loop():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            elif task.get_loop().is_running():
+                task.get_loop().call_soon_threadsafe(task.cancel)
+        return all(await asyncio.gather(*(worker.stop() for worker in [*self.workers, self.daily_worker, self.proactive_worker])))
 
     async def _schedule_daily(self):
         while True:
@@ -65,6 +78,19 @@ class ChatRuntime:
 
     async def _daily(self, job):
         return await DailyGenerator(self.generator.client)(job, self.store)
+
+    async def _schedule_proactive(self):
+        while True:
+            try:
+                if proactive_enabled():
+                    for owner in await store_call(self.store.daily_known_owners):
+                        await store_call(self.store.schedule_proactive, owner)
+            except Exception as error:
+                logging.getLogger(__name__).warning("proactive scheduling unavailable (%s)", type(error).__name__)
+            await asyncio.sleep(30)
+
+    async def _proactive(self, job):
+        return await ProactiveGenerator(self.generator.client)(job, self.store)
 
     async def accept(self, commands, *, delay=0, merge_pending=False):
         receipts = await store_call(self.store.accept, commands, delay=delay, merge_pending=merge_pending, memory_first=True)

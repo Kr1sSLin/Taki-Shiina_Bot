@@ -10,6 +10,7 @@ from services.contracts import ChatCommand, Domain, new_id
 from services.foundation_store import PermissionDenied, VersionConflict
 from services.memory_store import MemoryStore
 from services.daily_store import DailyEventMixin
+from services.proactive_store import ProactiveMixin, proactive_enabled
 from services.privacy import scrub_locations
 from services.vision_limits import MAX_INLINE_IMAGE_BYTES
 from services.owner_fence import serialized_owner
@@ -17,7 +18,7 @@ from services.public_policy import PUBLIC_POLICY_VERSION, PROMPT_VERSIONS
 from services.reply_check import reply_digest, DraftBudgetExceeded
 
 
-class ReliableChatStore(DailyEventMixin, MemoryStore):
+class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
     def __init__(self, *args, require_checks=False, **kwargs):
         # Production assembly enables this also for pre-upgrade outbox rows.
         self.require_checks = require_checks
@@ -70,6 +71,7 @@ class ReliableChatStore(DailyEventMixin, MemoryStore):
                     pending.append((command, request_key, client_key))
             if not pending:
                 return receipts
+            self._on_real_user_input(conn, owner, [command for command, _, _ in pending])
             incoming_interactions = sum(command.intent == "interaction" for command, _, _ in pending)
             if incoming_interactions > 1:
                 raise ValueError("only one interaction is allowed per logical turn")
@@ -172,12 +174,15 @@ class ReliableChatStore(DailyEventMixin, MemoryStore):
         if action in ("disabled", "restored", "updated"):
             for row in conn.execute("SELECT id FROM chat_turns WHERE owner=? AND status='completed'", (owner,)).fetchall():
                 turn, body = self._turn(conn, row["id"])
-                if body.get("dispatched_at") or body.get("revoked"):
+                if (body.get("delivery_completed_at") if body.get("proactive") else body.get("dispatched_at")) or body.get("revoked"):
                     continue
                 try:
                     self._check_reply_delivery(conn, turn, body)
                 except (VersionConflict, PermissionDenied):
-                    self._revoke_reply(conn, turn, body, "dependencies_changed")
+                    if body.get("proactive"):
+                        self._silence_proactive_topic(conn, turn, body)
+                    else:
+                        self._revoke_reply(conn, turn, body, "dependencies_changed")
                     self._save_turn(conn, turn, body, status="cancelled")
         return event
 
@@ -221,6 +226,17 @@ class ReliableChatStore(DailyEventMixin, MemoryStore):
             self._save_turn(conn, row, body)
 
     def _claim_allowed(self, conn, row, payload):
+        if payload.get("kind") == "deliver":
+            event = conn.execute("SELECT * FROM events WHERE id=?", (payload["event_id"],)).fetchone()
+            if event:
+                value = self.cipher.decrypt(Domain.EVENT, event["owner"], event["id"], event["body"])
+                if value["action"] == "proactive_committed":
+                    turn, body = self._turn(conn, value["entity_id"])
+                    try:
+                        self._check_reply_delivery(conn, turn, body)
+                    except (PermissionDenied, VersionConflict):
+                        self._silence_proactive_topic(conn, turn, body)
+                        return False
         if payload.get("kind") == "interaction_reconcile":
             turn, body = self._turn(conn, payload["turn_id"])
             chat = conn.execute("SELECT status FROM jobs WHERE id=?", (body["job_id"],)).fetchone()
@@ -409,8 +425,10 @@ class ReliableChatStore(DailyEventMixin, MemoryStore):
                         try:
                             self._check_reply_delivery(conn, turn, body)
                         except (VersionConflict, PermissionDenied):
-                            continue
-                        pending.append(body["result"])
+                            if not body.get("proactive"):
+                                continue
+                        else:
+                            pending.append(body["result"])
                 items.append(item)
             return items, pending
 
@@ -463,6 +481,14 @@ class ReliableChatStore(DailyEventMixin, MemoryStore):
             return {"status": row["status"], "job_status": job["status"], "deadline": row["deadline"], "result": body["result"], "failure_category": payload.get("failure_category", "generation")}
 
     def _check_reply_delivery(self, conn, row, body):
+        if body.get("proactive") and (body.get("proactive_silent") or not proactive_enabled() or not self._proactive_state(conn, row["owner"])["enabled"]):
+            raise PermissionDenied("proactive reminder was cancelled")
+        if body.get("proactive"):
+            result = body.get("result") or {}
+            review = result.get("proactive_review") or {}
+            if (review.get("approved") is not True or review.get("policy_version") != PUBLIC_POLICY_VERSION
+                    or review.get("prompt_versions") != PROMPT_VERSIONS or review.get("digest") != reply_digest(result)):
+                raise PermissionDenied("proactive review is stale")
         if body.get("revoked") or row["status"] != "completed":
             raise PermissionDenied("reply was superseded before dispatch")
         if self.require_checks:
@@ -525,8 +551,11 @@ class ReliableChatStore(DailyEventMixin, MemoryStore):
                     try:
                         self._check_reply_delivery(conn, older_row, older)
                     except (PermissionDenied, VersionConflict):
-                        self._revoke_reply(conn, older_row, older, "invalid_before_later_dispatch")
-                        self._save_turn(conn, older_row, older, status="cancelled")
+                        if older.get("proactive"):
+                            self._silence_proactive_topic(conn, older_row, older)
+                        else:
+                            self._revoke_reply(conn, older_row, older, "invalid_before_later_dispatch")
+                            self._save_turn(conn, older_row, older, status="cancelled")
                         continue
                     raise StorageBusy("an earlier reply must be dispatched first")
             if (body.get("result") or {}).get("messageId") != result["messageId"]:
@@ -715,7 +744,7 @@ class ReliableChatStore(DailyEventMixin, MemoryStore):
             if not event or event["owner"] != lease["owner"]:
                 raise PermissionDenied("event owner differs from leased delivery")
             value = self.cipher.decrypt(Domain.EVENT, event["owner"], event["id"], event["body"])
-            if value["action"] == "reply_completed":
+            if value["action"] in ("reply_completed", "proactive_committed"):
                 row, body = self._turn(conn, value["entity_id"])
                 self._check_reply_delivery(conn, row, body)
                 return {"owner": body["owner"], "target": "chat", "result": body["result"], "event_id": event["id"]}

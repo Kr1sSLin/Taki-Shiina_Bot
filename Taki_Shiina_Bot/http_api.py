@@ -283,6 +283,10 @@ class MemoryPermissionRequest(BaseModel):
     expectedRevision: int = Field(ge=1, strict=True)
 
 
+class ProactiveSettingsRequest(BaseModel):
+    enabled: StrictBool
+
+
 def response_body(code: int, message: str, data: dict | None, trace_id: str):
     return {"code": code, "message": message, "data": data, "traceId": trace_id}
 
@@ -483,6 +487,35 @@ async def memory_fact_detail(fact_id: str, request: Request, authorization: str 
     except Exception:
         logger.exception("memory detail unavailable")
         return JSONResponse(status_code=503, content=response_body(50301, "记忆暂时无法读取，请稍后重试", None, trace_id))
+
+
+@app.get("/api/v1/settings/proactive")
+async def get_proactive_settings(request: Request, authorization: str | None = Header(default=None)):
+    trace_id = request.state.trace_id
+    auth = _require_http_auth(authorization, trace_id)
+    try:
+        runtime = get_reliable_runtime()
+        if runtime is None:
+            raise PermissionDenied("reliable proactive store unavailable")
+        status = await asyncio.to_thread(runtime.store.proactive_status, auth.user_id)
+        return JSONResponse(content=response_body(0, "ok", status, trace_id), headers={"Cache-Control": "no-store"})
+    except (StorageBusy, PermissionDenied):
+        return JSONResponse(status_code=503, content=response_body(50301, "主动消息设置暂不可用", None, trace_id))
+
+
+@app.put("/api/v1/settings/proactive")
+async def put_proactive_settings(payload: ProactiveSettingsRequest, request: Request,
+                                 authorization: str | None = Header(default=None)):
+    trace_id = request.state.trace_id
+    auth = _require_http_auth(authorization, trace_id)
+    try:
+        runtime = get_reliable_runtime()
+        if runtime is None:
+            raise PermissionDenied("reliable proactive store unavailable")
+        status = await asyncio.to_thread(runtime.store.set_proactive_enabled, auth.user_id, payload.enabled)
+        return JSONResponse(content=response_body(0, "ok", status, trace_id), headers={"Cache-Control": "no-store"})
+    except (StorageBusy, PermissionDenied):
+        return JSONResponse(status_code=503, content=response_body(50301, "主动消息设置未更新，请稍后重试", None, trace_id))
 
 
 @app.get("/api/v1/settings/city")

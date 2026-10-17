@@ -381,6 +381,8 @@ async def deliver_reliable(delivery):
     if delivery["target"] == "chat":
         result = delivery["result"]
         payload = {"delta": "", "done": True, "messageId": result["messageId"], "finalContent": result["reply"], "timestamp": result["timestamp"], "requestIds": result["requestIds"], "contentType": result.get("contentType", "text"), "modelProvider": "deepseek", "eventId": result["eventId"], "deliveryId": result["deliveryId"], **result.get("interaction", {})}
+        if result.get("messageKind") == "proactive":
+            payload.update(messageKind="proactive", topicId=result["topicId"], notificationText="立希发来一条消息")
         if result.get("interaction"):
             gift = result["interaction"]
             payload.update({"messageKind": "interaction", "interactionItemId": gift.get("itemId"), "interactionItemName": gift.get("itemName"), "interactionItemIcon": gift.get("itemIcon")})
