@@ -865,10 +865,31 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
                 next_cursor = event["seq"]
                 value = self.cipher.decrypt(Domain.EVENT, key, event["id"], event["body"])
                 timestamp = int(value["created_at"]*1000)
-                if value["action"].startswith("reply_") or timestamp < since:
+                if timestamp < since:
                     continue
-                fact_row, fact = self._fact(conn, key, value["entity_id"])
-                result.append({"factId": value["entity_id"], "userId": owner, "revision": fact_row["revision"], "revisionId": fact.get("revision_id"), "eventRevision": value["revision"], "eventId": event["id"], "sequence": event["seq"], "action": value["action"], "enabled": fact["enabled"], "fact": fact["text"] if fact["enabled"] else "", "timestamp": int(value["created_at"]*1000), "score": fact.get("weight", 0)/10, "stage": fact.get("stage", "candidate"), "truthStatus": fact.get("truth_status", "pending"), "revisionStatus": fact.get("revision_status", "active"), "modelPermission": fact.get("model_permission", "blocked"), "permissionVersion": fact.get("permission_version", 1), "temporalType": fact.get("temporal_type"), "temporalValidity": fact.get("temporal_validity") if fact["enabled"] else None})
+                fact_row = conn.execute("SELECT revision,domain FROM facts WHERE id=? AND owner=?", (value["entity_id"], key)).fetchone()
+                if fact_row is None:
+                    continue
+                _, current = self._fact(conn, key, value["entity_id"])
+                historical = conn.execute(
+                    "SELECT domain,body FROM memory_revisions WHERE fact_id=? AND owner=? AND revision=?",
+                    (value["entity_id"], key, value["revision"]),
+                ).fetchone()
+                if historical is not None:
+                    fact = self.cipher.decrypt(Domain(historical["domain"]), key,
+                                               f"{value['entity_id']}:{value['revision']}", historical["body"])
+                elif fact_row["revision"] == value["revision"]:
+                    _, fact = self._fact(conn, key, value["entity_id"])
+                else:
+                    # A legacy event without its historical revision cannot be
+                    # represented as an exact update. The current head will be
+                    # emitted by its own event later in this page traversal.
+                    continue
+                # Even a historical creation event must not expose content
+                # which the current permission forbids. Permission is a live
+                # fence, while the revision and action describe this event.
+                allowed = current.get("enabled", False)
+                result.append({"factId": value["entity_id"], "userId": owner, "revision": value["revision"], "revisionId": fact.get("revision_id"), "eventRevision": value["revision"], "eventId": event["id"], "sequence": event["seq"], "action": value["action"], "enabled": allowed, "fact": fact["text"] if allowed else "", "timestamp": timestamp, "score": fact.get("weight", 0)/10, "stage": fact.get("stage", "candidate"), "truthStatus": fact.get("truth_status", "pending"), "revisionStatus": fact.get("revision_status", "active"), "modelPermission": current.get("model_permission", "blocked"), "permissionVersion": current.get("permission_version", 1), "temporalType": fact.get("temporal_type"), "temporalValidity": fact.get("temporal_validity") if allowed else None, "sourceMessageId": fact.get("source"), "firstRecordedAt": fact.get("first_recorded_at"), "retentionUntil": fact.get("retention_until")})
                 if len(result) >= max(1,min(limit,500)):
                     break
             more = conn.execute("SELECT 1 FROM events WHERE owner=? AND seq>? LIMIT 1", (key,next_cursor)).fetchone() is not None

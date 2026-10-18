@@ -83,7 +83,9 @@ public sealed class UserNotificationService : IUserNotificationService
         }
 
         // ⑤ 正文截断 160 字符（FR-W-NOTI-6）。
-        var truncated = Truncate(body, ProtocolConstants.NotificationBodyMaxChars);
+        var privateBody = category is NotificationCategory.Chat or NotificationCategory.Greeting
+            ? I18n.T("notification.chat.privateBody") : body;
+        var truncated = Truncate(privateBody, ProtocolConstants.NotificationBodyMaxChars);
 
         try
         {

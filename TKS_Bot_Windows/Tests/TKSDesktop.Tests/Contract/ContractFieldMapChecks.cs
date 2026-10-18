@@ -33,8 +33,10 @@ internal static partial class ContractChecks
             "contentType", "itemId", "itemName", "itemIcon", "costPoints",
             "interactionFailed", "messageKind", "greetingScenario", "modelProvider", "requestId", "imageCount");
         yield return Dto("ChatHistoryDataDto", typeof(ChatHistoryDataDto), "items");
-        yield return Dto("UserFactDto", typeof(UserFactDto), "factId", "userId", "fact", "timestamp");
-        yield return Dto("MemoryFactsDataDto", typeof(MemoryFactsDataDto), "items");
+        yield return Dto("UserFactDto", typeof(UserFactDto), "factId", "userId", "fact", "timestamp",
+            "eventId", "revision", "revisionId", "permissionVersion", "enabled", "stage",
+            "truthStatus", "score", "sourceMessageId", "temporalValidity");
+        yield return Dto("MemoryFactsDataDto", typeof(MemoryFactsDataDto), "items", "nextCursor", "hasMore");
         yield return Dto("CityDataDto", typeof(CityDataDto), "city");
         yield return Dto("CityUpdateRequestDto", typeof(CityUpdateRequestDto), "city");
         yield return Dto("RestChatRequestDto", typeof(RestChatRequestDto),

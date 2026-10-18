@@ -172,14 +172,20 @@ export function registerIpcHandlers(services: Services): void {
     markAllNotificationsRead()
   })
   handle(IPC.historyListFacts, async (limit) => {
+    await services.chat.pullFacts().catch(() => undefined)
     const facts = listFacts(typeof limit === 'number' ? limit : 300)
-    if (facts.length === 0) {
-      // 本地为空时补拉一次（FR-SYNC-7）
-      await services.chat.pullFacts().catch(() => undefined)
-      return listFacts(typeof limit === 'number' ? limit : 300)
-    }
     return facts
   })
+  handle(IPC.historyFactDetail, (factId) => services.memory.detail(String(factId)))
+  handle(IPC.historySetFactPermission, (factId, enabled, expectedRevision) =>
+    services.memory.setPermission(String(factId), enabled as boolean, Number(expectedRevision)))
+  handle(IPC.historyCorrectFact, (factId, content, expectedRevision) =>
+    services.memory.correctFact(String(factId), String(content), Number(expectedRevision)))
+  handle(IPC.historyPendingPermissions, () => services.memory.pending())
+  handle(IPC.settingsGetProactive, () => services.rest.request('settings/proactive'))
+  handle(IPC.settingsSetProactive, (enabled) => services.rest.request('settings/proactive', {
+    method: 'PUT', body: { enabled }
+  }))
 
   /** FR-HIS-3：记忆搜索与按日期筛选（渲染端额外做本地二次过滤）。 */
   handle('history:searchFacts', (keyword, sinceMs, untilMs) =>

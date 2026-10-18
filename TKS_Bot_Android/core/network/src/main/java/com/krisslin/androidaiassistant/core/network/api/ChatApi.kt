@@ -9,6 +9,7 @@ import retrofit2.http.GET
 import retrofit2.http.Path
 import retrofit2.http.POST
 import retrofit2.http.PUT
+import retrofit2.http.PATCH
 import retrofit2.http.Query
 
 interface ChatApi {
@@ -35,10 +36,31 @@ interface ChatApi {
     @GET("memory/facts")
     suspend fun memoryFacts(
         @Header("Authorization") authorization: String? = null,
-        @Query("since") since: Long = 0,
+        @Query("cursor") cursor: Long = 0,
         @Query("limit") limit: Int = 200,
         @Query("userId") userId: String = "default-user"
     ): JsonObject
+
+    @GET("memory/facts/{factId}")
+    suspend fun memoryFactDetail(@Path("factId") factId: String): JsonObject
+
+    @PATCH("memory/facts/{factId}/permission")
+    suspend fun setMemoryPermission(
+        @Path("factId") factId: String,
+        @Body request: MemoryPermissionHttpRequest
+    ): JsonObject
+
+    @PATCH("memory/facts/{factId}/correction")
+    suspend fun correctMemoryFact(
+        @Path("factId") factId: String,
+        @Body request: MemoryCorrectionHttpRequest
+    ): JsonObject
+
+    @GET("settings/proactive")
+    suspend fun getProactiveSettings(): JsonObject
+
+    @PUT("settings/proactive")
+    suspend fun setProactiveSettings(@Body request: ProactiveSettingsHttpRequest): JsonObject
 
     @GET("settings/city")
     suspend fun getCity(
@@ -61,4 +83,18 @@ data class ChatHttpRequest(
 data class CityHttpRequest(
     val city: String
 )
+
+data class MemoryPermissionHttpRequest(
+    val enabled: Boolean,
+    val expectedRevision: Long,
+    val operationId: String
+)
+
+data class MemoryCorrectionHttpRequest(
+    val content: String,
+    val expectedRevision: Long,
+    val operationId: String
+)
+
+data class ProactiveSettingsHttpRequest(val enabled: Boolean)
 

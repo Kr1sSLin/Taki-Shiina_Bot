@@ -90,6 +90,8 @@ _mount_unique(
         "/api/v1/memory/facts",
         "/api/v1/memory/facts/{fact_id}",
         "/api/v1/memory/facts/{fact_id}/permission",
+        "/api/v1/memory/facts/{fact_id}/correction",
+        "/api/v1/settings/proactive",
         "/api/v1/settings/city",
         "/api/v1/chat",
     },

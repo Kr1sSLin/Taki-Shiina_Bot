@@ -93,10 +93,52 @@ export interface UserFact {
   userId: string
   fact: string
   timestamp: number
+  revision?: number
+  revisionId?: string | null
+  permissionVersion?: number
+  modelPermission?: 'allowed' | 'blocked'
+  stage?: 'candidate' | 'formal'
+  truthStatus?: 'pending' | 'accepted' | 'disputed' | 'rejected'
+  revisionStatus?: 'active' | 'superseded' | 'retracted'
+  score?: number
+  sourceMessageId?: string | null
+  firstRecordedAt?: number | null
+  temporalValidity?: Record<string, unknown> | null
+  action?: string
+  eventId?: string
+  sequence?: number
 }
 
 export interface MemoryFactsResponse {
   items: UserFact[]
+}
+
+export interface MemoryDetail {
+  factId: string
+  domain: string
+  content: string
+  revision: number
+  revisionId: string
+  permissionVersion: number
+  modelPermission: 'allowed' | 'blocked'
+  stage: string
+  truthStatus: string
+  score: number
+  sources: Array<{ sourceMessageId: string; fragment: string }>
+  temporalValidity: Record<string, unknown> | null
+}
+
+export interface QueuedMemoryPermission {
+  operationId: string
+  factId: string
+  enabled: boolean
+  expectedRevision: number
+  state: 'pending' | 'conflict'
+}
+
+export interface ProactiveStatus {
+  enabled: boolean
+  [key: string]: unknown
 }
 
 export interface CityResponse {

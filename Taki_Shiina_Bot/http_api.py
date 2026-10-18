@@ -281,6 +281,13 @@ class CityRequest(BaseModel):
 class MemoryPermissionRequest(BaseModel):
     enabled: StrictBool
     expectedRevision: int = Field(ge=1, strict=True)
+    operationId: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class MemoryCorrectionRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+    expectedRevision: int = Field(ge=1, strict=True)
+    operationId: str = Field(min_length=1, max_length=128)
 
 
 class ProactiveSettingsRequest(BaseModel):
@@ -460,7 +467,8 @@ async def memory_permission(fact_id: str, payload: MemoryPermissionRequest, requ
         if runtime is None:
             raise PermissionDenied("reliable memory store unavailable")
         revision = await asyncio.to_thread(runtime.store.set_permission, auth.user_id, fact_id,
-                                          enabled=payload.enabled, expected_revision=payload.expectedRevision)
+                                          enabled=payload.enabled, expected_revision=payload.expectedRevision,
+                                          operation_id=payload.operationId)
         return response_body(0, "ok", {"factId": fact_id, "revision": revision,
                                       "modelPermission": "allowed" if payload.enabled else "blocked"}, trace_id)
     except VersionConflict:
@@ -487,6 +495,31 @@ async def memory_fact_detail(fact_id: str, request: Request, authorization: str 
     except Exception:
         logger.exception("memory detail unavailable")
         return JSONResponse(status_code=503, content=response_body(50301, "记忆暂时无法读取，请稍后重试", None, trace_id))
+
+
+@app.patch("/api/v1/memory/facts/{fact_id}/correction")
+async def memory_correction(fact_id: str, payload: MemoryCorrectionRequest, request: Request,
+                            authorization: str | None = Header(default=None)):
+    trace_id = request.state.trace_id
+    auth = _require_http_auth(authorization, trace_id)
+    try:
+        runtime = get_reliable_runtime()
+        if runtime is None:
+            raise PermissionDenied("reliable memory store unavailable")
+        revision = await asyncio.to_thread(runtime.store.correct_fact, auth.user_id, fact_id,
+                                           content=payload.content, expected_revision=payload.expectedRevision,
+                                           operation_id=payload.operationId)
+        return JSONResponse(content=response_body(0, "ok", {"factId": fact_id, "revision": revision}, trace_id),
+                            headers={"Cache-Control": "no-store"})
+    except VersionConflict:
+        return JSONResponse(status_code=409, content=response_body(40901, "记忆版本已更新，请刷新后重试", None, trace_id))
+    except PermissionDenied:
+        return JSONResponse(status_code=403, content=response_body(40301, "当前无法纠正这条记忆", None, trace_id))
+    except ValueError:
+        return JSONResponse(status_code=400, content=response_body(40001, "请输入与原记忆不同的明确内容", None, trace_id))
+    except Exception:
+        logger.exception("memory correction failed")
+        return JSONResponse(status_code=503, content=response_body(50301, "记忆未更新，请稍后重试", None, trace_id))
 
 
 @app.get("/api/v1/settings/proactive")

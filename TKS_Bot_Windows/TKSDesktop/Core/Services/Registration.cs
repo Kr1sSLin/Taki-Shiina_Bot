@@ -54,6 +54,7 @@ public static class Registration
             sp.GetRequiredService<IFileStoragePort>(),
             sp.GetRequiredService<IPaths>()));
         services.AddSingleton<ISyncService>(sp => sp.GetRequiredService<Sync.SyncService>());
+        services.AddSingleton<MemoryManagementService>();
         services.AddSingleton<IHistoryImageRestorer>(sp => sp.GetRequiredService<Sync.SyncService>());
         services.AddSingleton<IMediaService, Media.MediaService>();
         services.AddSingleton<IGamificationService, GamificationService>();

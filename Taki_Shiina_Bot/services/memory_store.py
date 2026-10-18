@@ -20,6 +20,8 @@ class MemoryStore(FoundationStore):
             conn.execute("CREATE TABLE IF NOT EXISTS memory_evidence (owner TEXT NOT NULL, source_id TEXT NOT NULL, fact_id TEXT NOT NULL, body BLOB NOT NULL, PRIMARY KEY(owner,source_id,fact_id))")
             conn.execute("CREATE TABLE IF NOT EXISTS memory_aliases (owner TEXT NOT NULL, identity TEXT NOT NULL, fact_id TEXT NOT NULL, PRIMARY KEY(owner,identity,fact_id))")
             conn.execute("CREATE TABLE IF NOT EXISTS memory_pending (owner TEXT NOT NULL, source_id TEXT NOT NULL, identity TEXT NOT NULL, body BLOB NOT NULL, PRIMARY KEY(owner,source_id,identity))")
+            conn.execute("CREATE TABLE IF NOT EXISTS memory_permission_requests (owner TEXT NOT NULL, operation_id TEXT NOT NULL, fact_id TEXT NOT NULL, enabled INTEGER NOT NULL, expected_revision INTEGER NOT NULL, result_revision INTEGER NOT NULL, PRIMARY KEY(owner,operation_id))")
+            conn.execute("CREATE TABLE IF NOT EXISTS memory_correction_requests (owner TEXT NOT NULL, operation_id TEXT NOT NULL, fact_id TEXT NOT NULL, expected_revision INTEGER NOT NULL, result_revision INTEGER NOT NULL, body BLOB NOT NULL, PRIMARY KEY(owner,operation_id))")
             conn.execute("CREATE TABLE IF NOT EXISTS lore_versions (owner TEXT NOT NULL,id TEXT NOT NULL,body BLOB NOT NULL, PRIMARY KEY(owner,id))")
             conn.execute("CREATE TABLE IF NOT EXISTS lore_heads (owner TEXT PRIMARY KEY,id TEXT NOT NULL)")
 
@@ -77,21 +79,85 @@ class MemoryStore(FoundationStore):
             token = self.cipher.index("memory-identity", owner, normalized(alias))
             conn.execute("INSERT OR IGNORE INTO memory_aliases VALUES (?,?,?)", (owner, token, fact_id))
 
-    def set_permission(self, owner, fact_id, *, enabled, expected_revision, targets=("sync",)):
+    def set_permission(self, owner, fact_id, *, enabled, expected_revision, operation_id=None, targets=("sync",)):
         if type(enabled) is not bool:
             raise ValueError("permission must be boolean")
+        if operation_id is not None and (not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 128):
+            raise ValueError("invalid permission operation ID")
         key = self.cipher.index("owner", owner)
         with self._transaction() as conn:
             self._require_ready(conn)
+            if operation_id is not None:
+                previous = conn.execute(
+                    "SELECT * FROM memory_permission_requests WHERE owner=? AND operation_id=?",
+                    (key, operation_id),
+                ).fetchone()
+                if previous is not None:
+                    if (previous["fact_id"], previous["enabled"], previous["expected_revision"]) != (fact_id, int(enabled), expected_revision):
+                        raise VersionConflict("permission operation ID reused with different content")
+                    return previous["result_revision"]
             row, data = self._fact(conn, key, fact_id)
             if row["revision"] != expected_revision:
                 raise VersionConflict("fact revision changed")
-            if data["enabled"] == enabled:
-                return expected_revision
-            data.update(enabled=enabled, model_permission="allowed" if enabled else "blocked", permission_version=data.get("permission_version", 1)+1)
-            self._write_fact(conn, key, fact_id, Domain(row["domain"]), expected_revision+1, data)
-            self._change(conn, key, fact_id, expected_revision+1, "restored" if enabled else "disabled", targets)
-            return expected_revision+1
+            revision = expected_revision
+            if data["enabled"] != enabled:
+                revision += 1
+                data.update(enabled=enabled, model_permission="allowed" if enabled else "blocked", permission_version=data.get("permission_version", 1)+1)
+                self._write_fact(conn, key, fact_id, Domain(row["domain"]), revision, data)
+                self._change(conn, key, fact_id, revision, "restored" if enabled else "disabled", targets)
+            if operation_id is not None:
+                conn.execute("INSERT INTO memory_permission_requests VALUES (?,?,?,?,?,?)",
+                             (key, operation_id, fact_id, int(enabled), expected_revision, revision))
+            return revision
+
+    def correct_fact(self, owner, fact_id, *, content, expected_revision, operation_id, targets=("sync",)):
+        """Apply an explicit management correction without changing the permission head.
+
+        The authenticated user selects one fact. The operation ID makes a lost
+        HTTP response safe to retry; the encrypted request record also detects
+        accidental reuse of that ID for a different correction.
+        """
+        if not isinstance(content, str) or not content.strip() or len(content.strip()) > 2000:
+            raise ValueError("correction content must contain 1 to 2000 characters")
+        if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 128:
+            raise ValueError("invalid correction operation ID")
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ValueError("invalid correction revision")
+        content = content.strip()
+        key = self.cipher.index("owner", owner)
+        with self._transaction() as conn:
+            self._require_ready(conn)
+            previous_request = conn.execute(
+                "SELECT * FROM memory_correction_requests WHERE owner=? AND operation_id=?",
+                (key, operation_id),
+            ).fetchone()
+            if previous_request is not None:
+                request = self.cipher.decrypt(Domain.EVIDENCE, key, f"correction:{operation_id}", previous_request["body"])
+                if (previous_request["fact_id"], previous_request["expected_revision"], request["content"]) != (fact_id, expected_revision, content):
+                    raise VersionConflict("correction operation ID reused with different content")
+                return previous_request["result_revision"]
+            row, previous = self._fact(conn, key, fact_id)
+            if row["domain"] != Domain.USER_FACT:
+                raise PermissionDenied("only user facts can be corrected")
+            if row["revision"] != expected_revision:
+                raise VersionConflict("fact revision changed")
+            if content == previous["text"]:
+                raise ValueError("correction does not change content")
+            revision = expected_revision + 1
+            source_id = f"management:{operation_id}"
+            data = dict(previous)
+            data.update(text=content, revision_id=new_id(), weight=6, stage="formal",
+                        truth_status="accepted", revision_status="active", source=source_id)
+            self._write_fact(conn, key, fact_id, Domain.USER_FACT, revision, data)
+            evidence = {"source_id": source_id, "turn_id": source_id, "fragment": content,
+                        "operation": "correct", "revision_id": data["revision_id"]}
+            conn.execute("INSERT INTO memory_evidence VALUES (?,?,?,?)",
+                         (key, source_id, fact_id, self.cipher.encrypt(Domain.EVIDENCE, key, f"{source_id}:{fact_id}", evidence)))
+            self._change(conn, key, fact_id, revision, "updated", targets)
+            request = self.cipher.encrypt(Domain.EVIDENCE, key, f"correction:{operation_id}", {"content": content})
+            conn.execute("INSERT INTO memory_correction_requests VALUES (?,?,?,?,?,?)",
+                         (key, operation_id, fact_id, expected_revision, revision, request))
+            return revision
 
     def handle_memory_control(self, job):
         """Narrow natural commands; ambiguous references ask, never batch restore.
@@ -288,8 +354,11 @@ class MemoryStore(FoundationStore):
         elif operation == "correct":
             if not isinstance(item.get("text"), str) or not item["text"].strip():
                 return None
-            data.update(text=item["text"].strip(), revision_id=new_id(), weight=6 if previous.get("stage") == "formal" else 3,
-                        stage=previous.get("stage", "candidate"), truth_status="accepted", revision_status="active", source=source_id)
+            # A uniquely targeted, explicit user correction is new direct evidence.
+            # Do not carry forward an old high score or leave a corrected candidate
+            # unusable after the user has settled its identity and content.
+            data.update(text=item["text"].strip(), revision_id=new_id(), weight=6,
+                        stage="formal", truth_status="accepted", revision_status="active", source=source_id)
             data["temporal_type"] = item.get("temporal_type", previous["temporal_type"])
             data["temporal_validity"] = item.get("temporal_validity", previous["temporal_validity"])
         elif operation == "confirm":

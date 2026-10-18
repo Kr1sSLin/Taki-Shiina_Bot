@@ -1,0 +1,8 @@
+*.zip
+*.bak
+*.db
+*.json
+*.env
+*.png
+*.apk
+taki-phone-check-*/

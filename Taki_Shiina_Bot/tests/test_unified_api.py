@@ -53,7 +53,9 @@ class UnifiedApiTestCase(unittest.TestCase):
             "/api/v1/memory/facts",
             "/api/v1/memory/facts/{fact_id}",
             "/api/v1/memory/facts/{fact_id}/permission",
+            "/api/v1/memory/facts/{fact_id}/correction",
             "/api/v1/settings/city",
+            "/api/v1/settings/proactive",
             "/api/v1/chat",
             "/ws/chat",
             "/api/v1/interaction/items",
@@ -131,6 +133,8 @@ class UnifiedApiTestCase(unittest.TestCase):
         permission = client.patch("/api/v1/memory/facts/synthetic-fact/permission",
                                   json={"enabled": False, "expectedRevision": 1})
         self.assertEqual(permission.status_code, 401)
+        self.assertEqual(client.get("/api/v1/settings/proactive").status_code, 401)
+        self.assertEqual(client.put("/api/v1/settings/proactive", json={"enabled": False}).status_code, 401)
 
 
 if __name__ == "__main__":

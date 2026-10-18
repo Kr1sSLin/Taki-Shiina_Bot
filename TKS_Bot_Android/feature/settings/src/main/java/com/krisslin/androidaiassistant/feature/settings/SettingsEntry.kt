@@ -31,6 +31,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -126,6 +127,29 @@ fun SettingsRoute(
             // 语义上是「系统通知」，后续新增通知类开关也归这一组
             SettingsGroupTitle("通知")
             SettingsGroupCard {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("主动消息", style = MaterialTheme.typography.bodyLarge)
+                        Text("关闭后停止新调度，不清零已有配额；开启也不会补发错过的消息。", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Switch(
+                        checked = state.proactiveEnabled == true,
+                        enabled = state.proactiveEnabled != null && !state.proactiveSaving,
+                        onCheckedChange = viewModel::setProactive
+                    )
+                }
+                if (state.proactiveEnabled == null || state.proactiveMessage != null) {
+                    Text(
+                        state.proactiveMessage ?: "正在读取服务端设置",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsNavRow(
                     icon = Icons.Outlined.Notifications,
                     label = "通知中心",

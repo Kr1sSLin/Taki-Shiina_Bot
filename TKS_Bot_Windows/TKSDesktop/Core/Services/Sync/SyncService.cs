@@ -185,6 +185,27 @@ public sealed class SyncService : ISyncService, IHistoryImageRestorer, IDisposab
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (_rest is IMemoryEventPort eventRest && _repository is IMemoryEventRepositoryPort eventRepository)
+            {
+                var eventCursor = await _repository.GetCursorAsync(ProtocolConstants.CursorKeyMemory, ct).ConfigureAwait(false);
+                var total = 0;
+                for (var pageNumber = 0; pageNumber < 100; pageNumber++)
+                {
+                    var pageCall = await eventRest.GetMemoryEventPageAsync(eventCursor, ProtocolConstants.SyncLimit, ct).ConfigureAwait(false);
+                    if (!pageCall.Success || pageCall.Value is null)
+                    {
+                        await ReportFailureAsync(StageFacts, pageCall.ErrorCode, pageCall.I18nKey, ct).ConfigureAwait(false);
+                        return total;
+                    }
+                    var page = pageCall.Value;
+                    total += await eventRepository.ApplyFactPageAsync(page, ct).ConfigureAwait(false);
+                    if (!page.HasMore) return total;
+                    if (page.NextCursor <= eventCursor) throw new InvalidDataException("Memory event cursor did not advance");
+                    eventCursor = page.NextCursor;
+                }
+                throw new InvalidDataException("Memory pagination exceeded 100 pages");
+            }
+
             // FR-W-SYNC-7：记忆使用**独立游标**（与 chat 游标互不影响）。
             var localMax = await _repository.MaxFactTimestampAsync(ct).ConfigureAwait(false);
             var cursor = await _repository.GetCursorAsync(ProtocolConstants.CursorKeyMemory, ct).ConfigureAwait(false);

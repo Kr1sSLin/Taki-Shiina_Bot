@@ -8,6 +8,7 @@ import com.krisslin.androidaiassistant.core.database.repository.BotNotificationR
 import com.krisslin.androidaiassistant.core.database.repository.ChatRepository
 import com.krisslin.androidaiassistant.core.network.api.ChatApi
 import com.krisslin.androidaiassistant.core.network.api.CityHttpRequest
+import com.krisslin.androidaiassistant.core.network.api.ProactiveSettingsHttpRequest
 import com.krisslin.androidaiassistant.core.ui.theme.ThemeMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -24,6 +25,9 @@ data class SettingsUiState(
     val loading: Boolean = false,
     val message: String? = null,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val proactiveEnabled: Boolean? = null,
+    val proactiveSaving: Boolean = false,
+    val proactiveMessage: String? = null,
     /** 「通知中心」入口的未读徽标数（来源：BotNotificationRepository）。 */
     val unreadNotificationCount: Int = 0
 )
@@ -43,6 +47,7 @@ class SettingsViewModel @Inject constructor(
     init {
         _uiState.update { it.copy(themeMode = themeStore.themeMode) }
         loadCity()
+        loadProactive()
         observeUnreadNotifications()
     }
 
@@ -113,6 +118,35 @@ class SettingsViewModel @Inject constructor(
                 }
                 .onFailure { e ->
                     _uiState.update { it.copy(loading = false, message = "更新失败: ${e.message}") }
+                }
+        }
+    }
+
+    fun loadProactive() {
+        viewModelScope.launch {
+            runCatching { chatApi.getProactiveSettings() }
+                .onSuccess { response ->
+                    val enabled = response.dataObject()?.get("enabled")?.asBoolean
+                    _uiState.update { it.copy(proactiveEnabled = enabled, proactiveMessage = null) }
+                }
+                .onFailure {
+                    _uiState.update { it.copy(proactiveEnabled = null, proactiveMessage = "主动消息设置暂不可读取") }
+                }
+        }
+    }
+
+    fun setProactive(enabled: Boolean) {
+        if (_uiState.value.proactiveSaving || _uiState.value.proactiveEnabled == null) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(proactiveSaving = true, proactiveMessage = "正在同步设置") }
+            runCatching { chatApi.setProactiveSettings(ProactiveSettingsHttpRequest(enabled)) }
+                .onSuccess { response ->
+                    val serverEnabled = response.dataObject()?.get("enabled")?.asBoolean
+                    _uiState.update { it.copy(proactiveEnabled = serverEnabled, proactiveSaving = false, proactiveMessage = "已同步到所有设备") }
+                }
+                .onFailure {
+                    _uiState.update { it.copy(proactiveSaving = false, proactiveMessage = "设置未生效，请重试") }
+                    loadProactive()
                 }
         }
     }

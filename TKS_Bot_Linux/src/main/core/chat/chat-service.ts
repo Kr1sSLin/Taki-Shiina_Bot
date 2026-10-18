@@ -62,7 +62,7 @@ import {
   upsertMessage,
   getCursor
 } from '../database/repositories/message-repository'
-import { bulkUpsertFacts, maxFactTimestamp, upsertFact } from '../database/repositories/notification-repository'
+import { applyFactPage, upsertFact } from '../database/repositories/notification-repository'
 
 const log = createLogger('chat')
 
@@ -82,6 +82,7 @@ export interface ChatServiceDeps {
    */
   notifyReply: (info: {
     messages: ChatMessage[]
+    originalMessageId: string
     messageKind: string | null
     greetingScenario: string | null
     interactionItemName: string | null
@@ -370,7 +371,9 @@ export class ChatService {
     const fact: UserFact | undefined = frame.payload
     if (!fact?.factId) return
     upsertFact(fact)
-    setCursor('memory_facts', fact.timestamp)
+    // A legacy WS notification is only a hint. The event cursor advances
+    // exclusively with the REST page and its SQLite transaction.
+    void this.pullFacts().catch(() => undefined)
     bus.send(IPC.evtFactsUpdated, { facts: [fact] })
   }
 
@@ -490,6 +493,7 @@ export class ChatService {
     if (messages.length > 0) {
       this.deps.notifyReply({
         messages,
+        originalMessageId: finalMessageId,
         messageKind: payload.messageKind ?? null,
         greetingScenario: payload.greetingScenario ?? null,
         interactionItemName: payload.interactionItemName ?? null,
@@ -823,24 +827,30 @@ export class ChatService {
 
   /** FR-SYNC-7：用户事实增量补拉（独立游标）。 */
   async pullFacts(): Promise<number> {
-    const since = maxFactTimestamp()
+    let cursor = getCursor('memory_events')
+    let total = 0
     try {
-      const data = await this.deps.rest.request<{ items: UserFact[] }>('memory/facts', {
-        query: { since, limit: PROTOCOL.SYNC_LIMIT }
-      })
-      const items = data?.items ?? []
-      if (items.length === 0) return 0
-      const inserted = bulkUpsertFacts(items)
-      const maxTs = items.reduce((acc, it) => Math.max(acc, Number(it.timestamp) || 0), since)
-      setCursor('memory_facts', maxTs)
-      if (inserted > 0) {
-        bus.send(IPC.evtFactsUpdated, { facts: items })
-        log.info('记忆增量同步完成', { fetched: items.length, inserted })
+      for (let page = 0; page < 100; page += 1) {
+        const data = await this.deps.rest.request<{ items: UserFact[]; nextCursor: number; hasMore: boolean }>('memory/facts', {
+          query: { cursor, limit: PROTOCOL.SYNC_LIMIT }, retries: 2
+        })
+        if (!data || !Array.isArray(data.items) || !Number.isSafeInteger(data.nextCursor) || data.nextCursor < cursor) {
+          throw new Error('Invalid memory cursor response')
+        }
+        if (data.hasMore && data.nextCursor === cursor) throw new Error('Memory cursor did not advance')
+        const changed = applyFactPage(data.items, data.nextCursor)
+        cursor = data.nextCursor
+        total += changed.length
+        if (changed.length > 0) bus.send(IPC.evtFactsUpdated, { facts: changed })
+        if (!data.hasMore) {
+          log.info('记忆事件同步完成', { changed: total, cursor })
+          return total
+        }
       }
-      return inserted
+      throw new Error('Memory page limit exceeded')
     } catch (err) {
       log.warn('记忆补拉失败', { error: String(err) })
-      return 0
+      return total
     }
   }
 

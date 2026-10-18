@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace TKSDesktop.Contracts.Dtos;
@@ -85,6 +86,36 @@ public sealed class UserFactDto
 
     [JsonPropertyName("timestamp")]
     public long Timestamp { get; set; }
+
+    [JsonPropertyName("eventId")]
+    public string? EventId { get; set; }
+
+    [JsonPropertyName("revision")]
+    public long Revision { get; set; }
+
+    [JsonPropertyName("revisionId")]
+    public string? RevisionId { get; set; }
+
+    [JsonPropertyName("permissionVersion")]
+    public long PermissionVersion { get; set; }
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
+
+    [JsonPropertyName("stage")]
+    public string Stage { get; set; } = "candidate";
+
+    [JsonPropertyName("truthStatus")]
+    public string TruthStatus { get; set; } = "pending";
+
+    [JsonPropertyName("score")]
+    public double Score { get; set; }
+
+    [JsonPropertyName("sourceMessageId")]
+    public string? SourceMessageId { get; set; }
+
+    [JsonPropertyName("temporalValidity")]
+    public JsonElement? TemporalValidity { get; set; }
 }
 
 /// <summary>`GET /memory/facts` 响应 `data`。</summary>
@@ -92,6 +123,39 @@ public sealed class MemoryFactsDataDto
 {
     [JsonPropertyName("items")]
     public List<UserFactDto> Items { get; set; } = [];
+
+    [JsonPropertyName("nextCursor")]
+    public long NextCursor { get; set; }
+
+    [JsonPropertyName("hasMore")]
+    public bool HasMore { get; set; }
+}
+
+public sealed class MemoryFactDetailDto
+{
+    [JsonPropertyName("factId")] public string FactId { get; set; } = string.Empty;
+    [JsonPropertyName("domain")] public string Domain { get; set; } = string.Empty;
+    [JsonPropertyName("userId")] public string UserId { get; set; } = string.Empty;
+    [JsonPropertyName("content")] public string Content { get; set; } = string.Empty;
+    [JsonPropertyName("revision")] public long Revision { get; set; }
+    [JsonPropertyName("revisionId")] public string? RevisionId { get; set; }
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; }
+    [JsonPropertyName("stage")] public string Stage { get; set; } = "candidate";
+    [JsonPropertyName("truthStatus")] public string TruthStatus { get; set; } = "pending";
+    [JsonPropertyName("score")] public double Score { get; set; }
+    [JsonPropertyName("temporalValidity")] public JsonElement? TemporalValidity { get; set; }
+    [JsonPropertyName("sources")] public List<MemoryFactSourceDto> Sources { get; set; } = [];
+}
+
+public sealed class MemoryFactSourceDto
+{
+    [JsonPropertyName("sourceMessageId")] public string? SourceMessageId { get; set; }
+}
+
+public sealed class ProactiveSettingsDto
+{
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; }
+    [JsonPropertyName("version")] public long Version { get; set; }
 }
 
 /// <summary>`GET` / `PUT /settings/city` 响应 `data`；未设置时服务端返回 `auto_ip`。</summary>

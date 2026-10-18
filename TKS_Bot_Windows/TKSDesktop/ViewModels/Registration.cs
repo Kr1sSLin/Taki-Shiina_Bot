@@ -36,7 +36,10 @@ public sealed record LocalNotificationItem(
     long Timestamp);
 
 /// <summary>本地用户事实（<c>user_facts</c> 的只读投影，供记忆档案展示）。</summary>
-public sealed record LocalFactItem(string FactId, string Fact, long Timestamp);
+public sealed record LocalFactItem(string FactId, string Fact, long Timestamp,
+    string UserId = "", long Revision = 0, bool Enabled = true, string Stage = "candidate",
+    string TruthStatus = "pending", double Score = 0, string? SourceMessageId = null,
+    string? TemporalValidity = null);
 
 /// <summary>
 /// 本地只读历史端口（消息首屏分页 / 历史通知 / 记忆事实）。
@@ -281,7 +284,9 @@ internal sealed class RepositoryBackedHistoryReader : ILocalHistoryReader
                 : await repository.SearchAsync(term, safeLimit, ct).ConfigureAwait(false);
 
             return rows
-                .Select(row => new LocalFactItem(row.FactId, row.Fact, row.Timestamp))
+                .Select(row => new LocalFactItem(row.FactId, row.Fact, row.Timestamp,
+                    row.UserId, row.Revision, row.Enabled, row.Stage, row.TruthStatus,
+                    row.Score, row.SourceMessageId, row.TemporalValidity))
                 .ToList();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

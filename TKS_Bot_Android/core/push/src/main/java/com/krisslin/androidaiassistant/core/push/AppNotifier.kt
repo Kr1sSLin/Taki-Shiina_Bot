@@ -20,6 +20,12 @@ import javax.inject.Singleton
 class AppNotifier @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    @Volatile private var appForeground = false
+
+    fun setAppForeground(foreground: Boolean) {
+        appForeground = foreground
+    }
+
     companion object {
         const val CHANNEL_CHAT = "chat_messages"
         const val CHANNEL_REMINDER = "chat_reminders"
@@ -85,12 +91,13 @@ class AppNotifier @Inject constructor(
         manager.createNotificationChannel(progress)
     }
 
-    private fun launchIntent(): PendingIntent {
+    private fun launchIntent(messageId: String? = null): PendingIntent {
         val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
             ?: Intent()
         intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        if (messageId != null) intent.putExtra("notification_message_id", messageId)
         return PendingIntent.getActivity(
-            context, 0, intent,
+            context, messageId?.hashCode() ?: 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
     }
@@ -136,14 +143,14 @@ class AppNotifier @Inject constructor(
         NotificationManagerCompat.from(context).notify(NOTIFICATION_ID_REMINDER, notification)
     }
 
-    fun showChatMessage(content: String) {
-        if (!canPostNotifications()) return
-        val pi = launchIntent()
+    fun showChatMessage(content: String, messageId: String? = null) {
+        val pi = launchIntent(messageId)
+        val privateBody = "立希发来一条消息"
         val notification = NotificationCompat.Builder(context, CHANNEL_CHAT)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle("立希")
-            .setContentText(content.take(50))
-            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
+            .setContentText(privateBody)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(privateBody))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
@@ -153,12 +160,12 @@ class AppNotifier @Inject constructor(
             .setAutoCancel(true)
             .setTimeoutAfter(AUTO_DISMISS_TIMEOUT_MS)
             .build()
-        NotificationManagerCompat.from(context).notify(NOTIFICATION_ID_CHAT, notification)
+        postMessageOnce(messageId, NOTIFICATION_ID_CHAT, notification)
     }
 
-    fun showGreeting(scenario: String?, content: String) {
-        if (!canPostNotifications()) return
-        val pi = launchIntent()
+    fun showGreeting(scenario: String?, content: String, messageId: String? = null) {
+        val pi = launchIntent(messageId)
+        val privateBody = "立希发来一条消息"
         val title = when (scenario) {
             "morning" -> "立希的早安"
             "night" -> "立希的深夜问候"
@@ -167,8 +174,8 @@ class AppNotifier @Inject constructor(
         val notification = NotificationCompat.Builder(context, CHANNEL_GREETING)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle(title)
-            .setContentText(content.take(50))
-            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
+            .setContentText(privateBody)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(privateBody))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
@@ -178,7 +185,31 @@ class AppNotifier @Inject constructor(
             .setAutoCancel(true)
             .setTimeoutAfter(AUTO_DISMISS_TIMEOUT_MS)
             .build()
-        NotificationManagerCompat.from(context).notify(NOTIFICATION_ID_GREETING, notification)
+        postMessageOnce(messageId, NOTIFICATION_ID_GREETING, notification)
+    }
+
+    /** One alert per persisted server message on this device, including after process restart. */
+    @Synchronized
+    private fun postMessageOnce(messageId: String?, notificationId: Int, notification: Notification) {
+        if (messageId.isNullOrBlank()) return // An alert must link to a persisted message.
+        context.openOrCreateDatabase("notification_dedup.db", Context.MODE_PRIVATE, null).use { db ->
+            db.execSQL("CREATE TABLE IF NOT EXISTS notified_messages (message_id TEXT PRIMARY KEY)")
+            db.beginTransaction()
+            try {
+                val seen = db.rawQuery("SELECT 1 FROM notified_messages WHERE message_id=?", arrayOf(messageId)).use {
+                    it.moveToFirst()
+                }
+                if (!seen) {
+                    if (!appForeground && canPostNotifications()) {
+                        NotificationManagerCompat.from(context).notify(notificationId, notification)
+                    }
+                    db.execSQL("INSERT INTO notified_messages(message_id) VALUES(?)", arrayOf(messageId))
+                }
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        }
     }
 
     /**

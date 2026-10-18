@@ -9,6 +9,7 @@ import com.krisslin.androidaiassistant.core.database.repository.ModelProvider
 import com.krisslin.androidaiassistant.core.database.repository.SyncOutcome
 import com.krisslin.androidaiassistant.core.database.repository.UserFactRepository
 import com.krisslin.androidaiassistant.core.network.api.ChatApi
+import com.krisslin.androidaiassistant.core.network.auth.AuthRepository
 import com.krisslin.androidaiassistant.core.network.ws.IncomingMessage
 
 internal data class HistorySyncResult(val success: Boolean, val inserted: Int = 0, val updated: Int = 0)
@@ -18,15 +19,11 @@ internal class ChatTimelineSynchronizer(
     private val chatApi: ChatApi,
     private val chatRepository: ChatRepository,
     private val userFactRepository: UserFactRepository,
+    private val authRepository: AuthRepository,
     private val sessionId: String,
     private val imageAttachmentManager: ChatImageAttachmentManager
 ) {
     private var historyCursorMs = 0L
-    private var factCursorMs = 0L
-
-    suspend fun initializeFactCursor() {
-        factCursorMs = userFactRepository.getLatestTimestamp()
-    }
 
     fun advanceHistoryCursor(timestamp: Long) {
         historyCursorMs = timestamp
@@ -78,35 +75,46 @@ internal class ChatTimelineSynchronizer(
     }
 
     suspend fun onMemoryFactCreated(message: IncomingMessage.MemoryFactCreated) {
-        val payload = message.payload
-        userFactRepository.upsertAll(
-            listOf(UserFactEntity(payload.factId, payload.userId, payload.fact, payload.timestamp))
-        )
-        if (payload.timestamp > factCursorMs) factCursorMs = payload.timestamp
+        // WebSocket is a wake-up hint; only the authoritative event page may move the cursor.
+        syncMemoryFacts()
     }
 
     suspend fun syncMemoryFacts() {
         runCatching {
-            chatApi.memoryFacts(since = factCursorMs, limit = 200)
-        }.onSuccess { response ->
-            val items = response.getAsJsonObject("data")?.getAsJsonArray("items") ?: JsonArray()
-            val facts = buildList {
-                for (element in items) {
-                    val item = element.asObjectOrNull() ?: continue
-                    add(
-                        UserFactEntity(
+            val userId = authRepository.getUserId() ?: return@runCatching
+            var cursor = userFactRepository.cursor(userId)
+            repeat(100) {
+                val response = chatApi.memoryFacts(cursor = cursor, limit = 200, userId = userId)
+                val data = response.getAsJsonObject("data") ?: error("Missing fact page")
+                val items = data.getAsJsonArray("items") ?: JsonArray()
+                val nextCursor = data.get("nextCursor")?.asLong ?: error("Missing fact cursor")
+                val events = buildList {
+                    for (element in items) {
+                        val item = element.asObjectOrNull() ?: continue
+                        val eventId = item.stringOrNull("eventId") ?: continue
+                        add(eventId to UserFactEntity(
                             factId = item.stringOrNull("factId") ?: continue,
                             userId = item.stringOrNull("userId") ?: continue,
-                            fact = item.stringOrNull("fact") ?: continue,
-                            timestamp = item.longOrNull("timestamp") ?: continue
-                        )
-                    )
+                            fact = item.stringOrNull("fact").orEmpty(),
+                            timestamp = item.longOrNull("timestamp") ?: 0L,
+                            revision = item.longOrNull("revision") ?: 0L,
+                            revisionId = item.stringOrNull("revisionId"),
+                            permissionVersion = item.longOrNull("permissionVersion") ?: 0L,
+                            enabled = item.get("enabled")?.asBoolean ?: false,
+                            stage = item.stringOrNull("stage") ?: "candidate",
+                            truthStatus = item.stringOrNull("truthStatus") ?: "pending",
+                            score = item.get("score")?.asDouble ?: 0.0,
+                            sourceMessageId = item.stringOrNull("sourceMessageId"),
+                            temporalValidity = item.get("temporalValidity")?.toString()
+                        ))
+                    }
                 }
+                userFactRepository.applyPage(userId, events, nextCursor)
+                if (data.get("hasMore")?.asBoolean != true) return@runCatching
+                if (nextCursor <= cursor) error("Fact cursor did not advance")
+                cursor = nextCursor
             }
-            if (facts.isNotEmpty()) {
-                userFactRepository.upsertAll(facts)
-                factCursorMs = maxOf(factCursorMs, facts.maxOf { it.timestamp })
-            }
+            error("Fact pagination exceeded 100 pages")
         }.onFailure { error ->
             Log.w("ChatTimelineSync", "memory facts sync failed: ${error.message}", error)
         }

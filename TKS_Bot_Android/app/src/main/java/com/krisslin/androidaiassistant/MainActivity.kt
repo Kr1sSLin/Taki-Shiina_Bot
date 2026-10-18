@@ -53,18 +53,24 @@ import javax.inject.Inject
 class MainActivity : FragmentActivity() {
 
     private var serviceIntent: Intent? = null
+    private var notificationMessageId by mutableStateOf<String?>(null)
 
     @Inject
     lateinit var appNotifier: AppNotifier
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        notificationMessageId = intent?.getStringExtra("notification_message_id")
 
         // App 回到前台即清除消息类通知（聊天/问候/错误/提醒），
         // 已读消息不再残留通知栏
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
+                appNotifier.setAppForeground(true)
                 appNotifier.dismissAll()
+            }
+            override fun onStop(owner: LifecycleOwner) {
+                appNotifier.setAppForeground(false)
             }
         })
 
@@ -91,6 +97,7 @@ class MainActivity : FragmentActivity() {
                 Surface {
                     AppRoot(
                         isDarkMode = effectiveDark,
+                        targetMessageId = notificationMessageId,
                         onToggleTheme = {
                             val nextMode = if (effectiveDark) ThemeMode.LIGHT else ThemeMode.DARK
                             themeStore.updateThemeMode(nextMode)
@@ -99,6 +106,12 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        notificationMessageId = intent.getStringExtra("notification_message_id")
     }
 
     override fun onDestroy() {
@@ -129,6 +142,7 @@ class MainActivity : FragmentActivity() {
 @Composable
 private fun AppRoot(
     isDarkMode: Boolean,
+    targetMessageId: String? = null,
     onToggleTheme: () -> Unit
 ) {
     val mainViewModel: MainViewModel = hiltViewModel()
@@ -141,6 +155,9 @@ private fun AppRoot(
     LaunchedEffect(tokenState) {
         if (tokenState is TokenState.Unauthenticated) mainPage = MainPage.CHAT
     }
+    LaunchedEffect(targetMessageId) {
+        if (targetMessageId != null) mainPage = MainPage.CHAT
+    }
 
     when (tokenState) {
         // 未登录/会话失效：展示登录页（登录成功后 tokenState 变化，自动切回聊天页）
@@ -148,6 +165,7 @@ private fun AppRoot(
         is TokenState.Authenticated -> when (mainPage) {
             MainPage.CHAT -> pageStateHolder.SaveableStateProvider(MainPage.CHAT) {
                 ChatRoute(
+                    targetMessageId = targetMessageId,
                     isDarkMode = isDarkMode,
                     onToggleTheme = onToggleTheme,
                     onNavigateToSettings = { mainPage = MainPage.SETTINGS },
@@ -223,7 +241,7 @@ private fun NotificationGuideDialog() {
         onDismissRequest = { },
         title = { Text("开启通知权限") },
         text = {
-            Text("为确保您能及时收到消息，请在接下来的设置页面中开启以下权限：\n\n1. 悬浮通知（横幅通知）\n2. 锁屏通知\n\n开启后即可在任何场景下收到消息提醒。")
+            Text("你可以在系统设置中允许消息通知。关闭通知权限也不会删除聊天消息；下次打开应用仍可同步收件箱。后台提醒是否送达取决于设备和系统设置。")
         },
         confirmButton = {
             TextButton(onClick = {

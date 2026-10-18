@@ -19,6 +19,7 @@ import com.krisslin.androidaiassistant.core.network.api.ChatApi
 import com.krisslin.androidaiassistant.core.network.api.GamificationApi
 import com.krisslin.androidaiassistant.core.network.api.InteractionSendRequest
 import com.krisslin.androidaiassistant.core.network.api.InteractionSendData
+import com.krisslin.androidaiassistant.core.network.api.MemoryPermissionSync
 import com.krisslin.androidaiassistant.core.network.auth.AuthRepository
 import com.krisslin.androidaiassistant.core.network.auth.TokenState
 import com.krisslin.androidaiassistant.core.network.ws.BotWebSocketClient
@@ -57,6 +58,7 @@ class ChatViewModel @Inject constructor(
     private val botNotificationRepository: BotNotificationRepository,
     private val userProgressRepository: UserProgressRepository,
     private val authRepository: AuthRepository,
+    private val memoryPermissionSync: MemoryPermissionSync,
     private val botWebSocketClient: BotWebSocketClient,
     private val reminderScheduler: ReminderScheduler,
     private val gson: Gson
@@ -92,6 +94,7 @@ class ChatViewModel @Inject constructor(
         chatApi = chatApi,
         chatRepository = chatRepository,
         userFactRepository = userFactRepository,
+        authRepository = authRepository,
         sessionId = sessionId,
         imageAttachmentManager = imageAttachmentManager
     )
@@ -120,7 +123,6 @@ class ChatViewModel @Inject constructor(
 
     init {
         loadHistoryFromDb()
-        initializeFactSyncCursor()
         observeAuthState()
         observeWebSocketEvents()
         observeLocalProgressCache()
@@ -213,10 +215,6 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private fun initializeFactSyncCursor() {
-        viewModelScope.launch { timelineSynchronizer.initializeFactCursor() }
-    }
-
     /**
      * 观察认证状态变化
      */
@@ -249,6 +247,10 @@ class ChatViewModel @Inject constructor(
                             manualReconnectPendingFullSync = false
                         }
                         syncMemoryFactsFromServer()
+                        viewModelScope.launch {
+                            memoryPermissionSync.flush()
+                            timelineSynchronizer.syncMemoryFacts()
+                        }
                     }
                     is WebSocketEvent.Disconnected -> {
                         _uiState.update { it.copy(connectionStatus = ConnectionStatus.DISCONNECTED) }

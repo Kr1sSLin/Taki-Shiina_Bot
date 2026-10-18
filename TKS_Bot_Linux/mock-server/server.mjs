@@ -56,6 +56,9 @@ const state = {
   ledgerSeq: 1,
   history: [],
   facts: [],
+  correctionRequests: new Map(),
+  factSeq: 0,
+  proactiveEnabled: true,
   /** userId → [{requestId, content}] 防抖缓冲 */
   messageBuffer: new Map(),
   /** userId → Set<WebSocket> */
@@ -345,7 +348,11 @@ async function runReplyFlow({ requestIds, mergedText, itemName, withTimer = fals
 
   // 记忆提炼（异步）
   setTimeout(() => {
-    const fact = { factId: randomUUID(), userId: USER_ID, fact: `用户提到：${(mergedText ?? '').slice(0, 24)}`, timestamp: nowMs() }
+    const fact = { factId: randomUUID(), userId: USER_ID, fact: `用户提到：${(mergedText ?? '').slice(0, 24)}`,
+      timestamp: nowMs(), revision: 1, revisionId: randomUUID(), permissionVersion: 1,
+      domain: 'user_fact', modelPermission: 'allowed', stage: 'candidate', truthStatus: 'accepted', score: 0.3,
+      action: 'created', eventId: randomUUID(), sequence: ++state.factSeq,
+      originalFact: `用户提到：${(mergedText ?? '').slice(0, 24)}` }
     state.facts.unshift(fact)
     broadcast({ type: 'memory.fact.created', payload: fact })
   }, 200)
@@ -431,10 +438,69 @@ const server = createServer(async (req, res) => {
   }
 
   if (path === '/api/v1/memory/facts' && method === 'GET') {
-    const since = Number(url.searchParams.get('since') ?? 0)
+    const cursor = Number(url.searchParams.get('cursor') ?? 0)
     const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') ?? 200), 500))
-    const items = state.facts.filter((x) => x.timestamp > since).slice(-limit)
-    return json(res, 200, envelope({ items }))
+    const items = state.facts.filter((x) => x.sequence > cursor).sort((a, b) => a.sequence - b.sequence).slice(0, limit)
+    const nextCursor = items.at(-1)?.sequence ?? cursor
+    return json(res, 200, envelope({ items, nextCursor, hasMore: state.facts.some((x) => x.sequence > nextCursor) }))
+  }
+  const factMatch = /^\/api\/v1\/memory\/facts\/([^/]+)$/.exec(path)
+  if (factMatch && method === 'GET') {
+    const fact = state.facts.find((x) => x.factId === decodeURIComponent(factMatch[1]))
+    return fact ? json(res, 200, envelope({ ...fact, content: fact.originalFact, sources: [] })) : json(res, 403, envelope(null, undefined, 40301, 'fact unavailable'))
+  }
+  const permissionMatch = /^\/api\/v1\/memory\/facts\/([^/]+)\/permission$/.exec(path)
+  if (permissionMatch && method === 'PATCH') {
+    const body = await readBody(req)
+    const fact = state.facts.find((x) => x.factId === decodeURIComponent(permissionMatch[1]))
+    if (!fact) return json(res, 403, envelope(null, undefined, 40301, 'fact unavailable'))
+    if (body.expectedRevision !== fact.revision) return json(res, 409, envelope(null, undefined, 40901, 'revision changed'))
+    fact.revision += 1
+    fact.permissionVersion += 1
+    fact.modelPermission = body.enabled ? 'allowed' : 'blocked'
+    fact.fact = body.enabled ? fact.originalFact : ''
+    fact.action = body.enabled ? 'restored' : 'disabled'
+    fact.eventId = randomUUID()
+    fact.sequence = ++state.factSeq
+    return json(res, 200, envelope({ factId: fact.factId, revision: fact.revision, modelPermission: fact.modelPermission }))
+  }
+  const correctionMatch = /^\/api\/v1\/memory\/facts\/([^/]+)\/correction$/.exec(path)
+  if (correctionMatch && method === 'PATCH') {
+    const body = await readBody(req)
+    const fact = state.facts.find((x) => x.factId === decodeURIComponent(correctionMatch[1]))
+    if (!fact || fact.domain !== 'user_fact') return json(res, 403, envelope(null, undefined, 40301, 'fact unavailable'))
+    const key = `${auth.userId}:${body.operationId}`
+    const prior = state.correctionRequests.get(key)
+    if (prior) {
+      if (prior.factId !== fact.factId || prior.expectedRevision !== body.expectedRevision || prior.content !== body.content?.trim())
+        return json(res, 409, envelope(null, undefined, 40901, 'operation changed'))
+      return json(res, 200, envelope({ factId: fact.factId, revision: prior.revision }))
+    }
+    if (body.expectedRevision !== fact.revision) return json(res, 409, envelope(null, undefined, 40901, 'revision changed'))
+    const content = body.content?.trim()
+    if (!content || content.length > 2000 || content === fact.originalFact || !body.operationId)
+      return json(res, 400, envelope(null, undefined, 40001, 'invalid correction'))
+    fact.revision += 1
+    fact.revisionId = randomUUID()
+    fact.originalFact = content
+    fact.fact = fact.modelPermission === 'allowed' ? content : ''
+    fact.score = 0.6
+    fact.stage = 'formal'
+    fact.truthStatus = 'accepted'
+    fact.action = 'updated'
+    fact.eventId = randomUUID()
+    fact.sequence = ++state.factSeq
+    state.correctionRequests.set(key, { factId: fact.factId, expectedRevision: body.expectedRevision,
+      content, revision: fact.revision })
+    return json(res, 200, envelope({ factId: fact.factId, revision: fact.revision }))
+  }
+  if (path === '/api/v1/settings/proactive' && method === 'GET') {
+    return json(res, 200, envelope({ enabled: state.proactiveEnabled, globally_enabled: true, daily_used: 0, weekly_used: 0 }))
+  }
+  if (path === '/api/v1/settings/proactive' && method === 'PUT') {
+    const body = await readBody(req)
+    state.proactiveEnabled = body.enabled === true
+    return json(res, 200, envelope({ enabled: state.proactiveEnabled, daily_used: 0, weekly_used: 0 }))
   }
 
   /* ------------------------------ 城市设置 ----------------------------- */

@@ -87,6 +87,7 @@ async function main() {
         ...process.env,
         TKS_SELFTEST_API: api,
         TKS_SELFTEST_WS: ws,
+        TKS_SELFTEST_USE_MOCK: useMock ? '1' : '0',
         LIBGL_ALWAYS_SOFTWARE: '1'
       },
       stdio: 'inherit'

@@ -123,16 +123,16 @@ class WebSocketService : Service() {
     private fun handleMessage(raw: String) {
         when (val msg = messageParser.parse(raw)) {
             is IncomingMessage.Reply -> {
-                appNotifier.showChatMessage(msg.payload.content)
+                appNotifier.showChatMessage(msg.payload.content, msg.payload.messageId)
             }
             is IncomingMessage.ReplyStream -> {
                 if (msg.payload.done) {
                     val content = msg.payload.finalContent ?: ""
                     if (content.isNotBlank()) {
                         if (msg.payload.messageKind == "greeting") {
-                            appNotifier.showGreeting(msg.payload.greetingScenario, content)
+                            appNotifier.showGreeting(msg.payload.greetingScenario, content, msg.payload.messageId)
                         } else {
-                            appNotifier.showChatMessage(content)
+                            appNotifier.showChatMessage(content, msg.payload.messageId)
                         }
                     }
                 }

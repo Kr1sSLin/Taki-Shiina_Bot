@@ -17,6 +17,12 @@ public enum MessageWriteOutcome
     Unchanged,
 }
 
+/// <summary>Transactional memory event projection.</summary>
+public interface IMemoryEventRepositoryPort
+{
+    Task<int> ApplyFactPageAsync(TKSDesktop.Contracts.Dtos.MemoryFactsDataDto page, CancellationToken cancellationToken = default);
+}
+
 /// <summary>
 /// 可持久化的一条聊天消息（PRD §9.1 的列，一一对应）。
 ///

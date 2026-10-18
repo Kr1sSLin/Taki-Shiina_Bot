@@ -149,6 +149,36 @@ async function run(): Promise<number> {
   const fk = db.pragma('foreign_keys', { simple: true }) as number
   check('§9.2：外键约束已开启（附件级联删除依赖它）', fk === 1, fk)
 
+  // PRD-06 U-A01: replay and out-of-order revisions must never re-enable a blocked fact.
+  const factRepo = await import('./core/database/repositories/notification-repository')
+  const { getCursor } = await import('./core/database/repositories/message-repository')
+  const baseFact = {
+    factId: 'selftest-memory-fact', userId: 'selftest-owner', timestamp: 1000,
+    fact: '合成事实', stage: 'candidate' as const, truthStatus: 'pending' as const,
+    revisionStatus: 'active' as const, score: 0, revisionId: 'revision-1'
+  }
+  factRepo.applyFactPage([{ ...baseFact, revision: 1, permissionVersion: 1,
+    modelPermission: 'allowed', eventId: 'selftest-memory-created', sequence: 10 }], 10)
+  factRepo.applyFactPage([{ ...baseFact, fact: '', revision: 2, permissionVersion: 2,
+    modelPermission: 'blocked', eventId: 'selftest-memory-disabled', sequence: 11 }], 11)
+  factRepo.applyFactPage([{ ...baseFact, revision: 1, permissionVersion: 1,
+    modelPermission: 'allowed', eventId: 'selftest-memory-stale', sequence: 12 }], 12)
+  factRepo.applyFactPage([{ ...baseFact, fact: '', revision: 2, permissionVersion: 2,
+    modelPermission: 'blocked', eventId: 'selftest-memory-disabled', sequence: 11 }], 12)
+  const blocked = factRepo.listFacts().find((item) => item.factId === baseFact.factId)
+  check('PRD-06 U-A01：乱序与重放不恢复已禁用事实，游标推进',
+    blocked?.modelPermission === 'blocked' && blocked.revision === 2 && getCursor('memory_events') === 12,
+    blocked)
+  try {
+    factRepo.applyFactPage([{ ...baseFact, revision: 3, eventId: '', sequence: 13 }], 13)
+    check('PRD-06 U-A01：坏事件不得推进游标', false)
+  } catch {
+    check('PRD-06 U-A01：坏事件不得推进游标', getCursor('memory_events') === 12)
+  }
+  // The synthetic page above uses sequence 10-12. Reset its cursor before
+  // the mock server integration flow, whose independent sequence starts at 1.
+  db.prepare("UPDATE sync_cursors SET value=0 WHERE key='memory_events'").run()
+
   /* ------------------------- FR-DB-1 / 去重 / 拆分 --------------------- */
   section('§9.2 FR-DB-1 与 §6.3 多气泡拆分（真实落库）')
 
@@ -964,6 +994,33 @@ async function run(): Promise<number> {
 
   const factsInserted = await services.chat.pullFacts()
   check('FR-SYNC-7：用户事实独立游标补拉可用', typeof factsInserted === 'number', factsInserted)
+  if (process.env.TKS_SELFTEST_USE_MOCK === '1') {
+    const ownedFact = factRepo.listFacts().find((item) =>
+      item.userId === services.auth.status().userId && item.factId !== baseFact.factId)
+    check('PRD-06 U02：模拟服务产生可纠正的用户事实', !!ownedFact)
+    if (ownedFact) {
+      const before = await services.memory.detail(ownedFact.factId)
+      const correctedContent = '用户明确纠正后的合成事实'
+      await services.memory.correctFact(ownedFact.factId, correctedContent, before.revision)
+      const after = await services.memory.detail(ownedFact.factId)
+      check('PRD-06 U02：纠错保留 factId 并产生 0.6 正式新修订',
+        after.factId === before.factId && after.revision === before.revision + 1 &&
+          after.content === correctedContent && after.score === 0.6 && after.stage === 'formal')
+      let staleRejected = false
+      try {
+        await services.memory.correctFact(ownedFact.factId, '过期请求', before.revision)
+      } catch {
+        staleRejected = true
+      }
+      check('PRD-06 U02：旧修订纠错被拒绝', staleRejected)
+      await services.chat.pullFacts()
+      const projected = factRepo.listFacts().find((item) => item.factId === ownedFact.factId)
+      check('PRD-06 U02：新修订进入本地事实投影',
+        projected?.revision === after.revision &&
+          projected.fact === (projected.modelPermission === 'allowed' ? correctedContent : ''),
+        { projected, after })
+    }
+  }
 
   // NFR-12：注入未知帧后连接仍存活
   await fetch(apiBaseUrl.replace(/\/api\/v1\/?$/, '') + '/__test__/trigger', {

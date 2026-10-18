@@ -97,6 +97,68 @@ class MemoryStageBTests(unittest.TestCase):
         self.express(self.temporary(), text="我今天想喝咖啡", use=True)
         self.assertEqual(self.data(ids[0])["weight"], 7)
 
+    def test_permission_operation_replay_does_not_restore_or_repeat_change(self):
+        fact_id = self.formal()
+        original = self.store.read_fact("owner", fact_id)["revision"]
+        disabled = self.store.set_permission("owner", fact_id, enabled=False,
+                                             expected_revision=original, operation_id="offline-disable-1")
+        self.assertEqual(disabled, original + 1)
+        head = self.store.change_head()
+        self.assertEqual(self.store.set_permission("owner", fact_id, enabled=False,
+                                                  expected_revision=original, operation_id="offline-disable-1"), disabled)
+        self.assertEqual(self.store.change_head(), head)
+        with self.assertRaises(VersionConflict):
+            self.store.set_permission("owner", fact_id, enabled=True,
+                                      expected_revision=original, operation_id="offline-disable-1")
+        with self.assertRaises(VersionConflict):
+            self.store.set_permission("owner", fact_id, enabled=True,
+                                      expected_revision=original, operation_id="offline-restore-2")
+        self.assertFalse(self.data(fact_id)["enabled"])
+
+    def test_management_correction_is_atomic_idempotent_and_preserves_block(self):
+        fact = self.formal()
+        old = self.store.read_fact("owner", fact)
+        blocked = self.store.set_permission("owner", fact, enabled=False, expected_revision=old["revision"])
+        head = self.store.change_head()
+        with patch.object(self.store, "_change", side_effect=OSError("synthetic write failure")):
+            with self.assertRaises(OSError):
+                self.store.correct_fact("owner", fact, content="用户喜欢茶", expected_revision=blocked,
+                                        operation_id="correct-1")
+        self.assertEqual(self.store.change_head(), head)
+        self.assertEqual(self.store.read_fact("owner", fact)["revision"], blocked)
+        revision = self.store.correct_fact("owner", fact, content="用户喜欢茶", expected_revision=blocked,
+                                           operation_id="correct-1")
+        self.assertEqual(revision, blocked + 1)
+        corrected = self.store.read_fact("owner", fact)["data"]
+        self.assertEqual((corrected["text"], corrected["weight"], corrected["stage"]),
+                         ("用户喜欢茶", 6, "formal"))
+        self.assertEqual((corrected["enabled"], corrected["model_permission"]), (False, "blocked"))
+        self.assertEqual(corrected["permission_version"], old["data"]["permission_version"] + 1)
+        self.assertNotEqual(corrected["revision_id"], old["data"]["revision_id"])
+        self.assertEqual(self.store.change_head(), head + 1)
+        self.assertEqual(self.store.correct_fact("owner", fact, content="用户喜欢茶", expected_revision=blocked,
+                                                operation_id="correct-1"), revision)
+        self.assertEqual(self.store.change_head(), head + 1)
+        self.assertEqual(self.store.fact_detail("owner", fact)["sources"][-1]["operation"], "correct")
+        with self.assertRaises(VersionConflict):
+            self.store.correct_fact("owner", fact, content="用户喜欢水", expected_revision=blocked,
+                                    operation_id="correct-1")
+        with self.assertRaises(VersionConflict):
+            self.store.correct_fact("owner", fact, content="用户喜欢水", expected_revision=blocked,
+                                    operation_id="correct-2")
+        with self.assertRaises(PermissionDenied):
+            self.store.read_fact("owner", fact, for_model=True)
+
+    def test_management_correction_invalidates_selected_draft(self):
+        fact = self.formal()
+        _, _, job, snapshot = self.express(use=True, complete=False)
+        self.assertEqual(len(snapshot["memory_refs"]), 1)
+        current = self.store.read_fact("owner", fact)
+        self.store.correct_fact("owner", fact, content="用户喜欢茶",
+                                expected_revision=current["revision"], operation_id="correct-while-generating")
+        with self.assertRaises(VersionConflict):
+            self.store.commit_reply(job, snapshot, {"reply": "基于旧事实的草稿"})
+
     def test_a04_candidate_and_raw_chat_history_are_not_reply_context(self):
         for _ in range(3):
             ids, *_ = self.express(self.temporary(), text="我今天想喝咖啡")
@@ -254,7 +316,7 @@ class MemoryStageBTests(unittest.TestCase):
         with self.assertRaises(VersionConflict):
             self.store.publish_lore("owner", "v1")
 
-    def test_corrections_reset_formal_to_six_and_candidate_to_three(self):
+    def test_explicit_unique_corrections_reset_to_six(self):
         fact = self.formal()
         for _ in range(4):
             self.express(use=True)
@@ -273,8 +335,8 @@ class MemoryStageBTests(unittest.TestCase):
         candidate = self.store.read_fact("owner", ids[0])
         statement = "之前说错了，我今天想喝牛奶"
         self.express({**self.temporary("牛奶"), "evidence": statement, "operation": "correct", "fact_id": ids[0], "expected_revision": candidate["revision"]}, text=statement)
-        self.assertEqual(self.data(ids[0])["weight"], 3)
-        self.assertEqual(self.data(ids[0])["stage"], "candidate")
+        self.assertEqual(self.data(ids[0])["weight"], 6)
+        self.assertEqual(self.data(ids[0])["stage"], "formal")
 
     def test_blocked_correction_inherits_permission_without_model_reading_body(self):
         fact = self.formal()
@@ -288,6 +350,16 @@ class MemoryStageBTests(unittest.TestCase):
         self.assertEqual(self.data(fact)["model_permission"], "blocked")
         self.assertEqual(self.data(fact)["weight"], 6)
         self.assertEqual(self.store.select_memories("owner", "茶"), [])
+
+    def test_unclear_correction_target_requests_clarification_without_rewrite(self):
+        fact = self.formal()
+        previous = self.store.read_fact("owner", fact)
+        statement = "那件事不是周六，是周日"
+        uncertain = self.evidence("那件事在周日", statement, operation="correct", target_text="那件事")
+        ids, _, _, snapshot = self.express(uncertain, text=statement)
+        self.assertEqual(ids, [])
+        self.assertTrue(snapshot["memory_clarification"])
+        self.assertEqual(self.store.read_fact("owner", fact), previous)
 
     def test_dispute_then_explicit_confirmation_preserves_score_stage_permission(self):
         fact = self.formal()

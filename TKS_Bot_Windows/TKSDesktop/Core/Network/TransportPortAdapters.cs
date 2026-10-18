@@ -7,7 +7,7 @@ using TKSDesktop.Core.Services.Ports;
 namespace TKSDesktop.Core.Network;
 
 /// <summary>将 REST 客户端接入同步服务窄端口。</summary>
-public sealed class RestPortAdapter : IRestPort, IHistoryImagePort
+public sealed class RestPortAdapter : IRestPort, IHistoryImagePort, IMemoryEventPort
 {
     private readonly RestClient _rest;
 
@@ -55,6 +55,21 @@ public sealed class RestPortAdapter : IRestPort, IHistoryImagePort
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         return ToPortCall(result, static data => (IReadOnlyList<UserFactDto>)data.Items);
+    }
+
+    public async Task<PortCall<MemoryFactsDataDto>> GetMemoryEventPageAsync(
+        long cursor, int limit, CancellationToken cancellationToken = default)
+    {
+        var result = await _rest.GetAsync<MemoryFactsDataDto>(
+            "/memory/facts",
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["cursor"] = cursor.ToString(CultureInfo.InvariantCulture),
+                ["limit"] = limit.ToString(CultureInfo.InvariantCulture),
+            },
+            ProtocolConstants.RestTimeoutMs,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return ToPortCall(result, static data => data);
     }
 
     private static PortCall<TOut> ToPortCall<TIn, TOut>(ApiResult<TIn> result, Func<TIn, TOut> map)

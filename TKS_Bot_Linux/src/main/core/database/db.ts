@@ -305,6 +305,31 @@ const MIGRATIONS: Migration[] = [
         END;
       `)
     }
+  },
+  {
+    version: 6,
+    name: 'memory-event-sync-and-permission-queue',
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE user_facts ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE user_facts ADD COLUMN revision_id TEXT;
+        ALTER TABLE user_facts ADD COLUMN permission_version INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE user_facts ADD COLUMN model_permission TEXT NOT NULL DEFAULT 'blocked';
+        ALTER TABLE user_facts ADD COLUMN stage TEXT NOT NULL DEFAULT 'candidate';
+        ALTER TABLE user_facts ADD COLUMN truth_status TEXT NOT NULL DEFAULT 'pending';
+        ALTER TABLE user_facts ADD COLUMN revision_status TEXT NOT NULL DEFAULT 'active';
+        ALTER TABLE user_facts ADD COLUMN score REAL NOT NULL DEFAULT 0;
+        ALTER TABLE user_facts ADD COLUMN source_message_id TEXT;
+        ALTER TABLE user_facts ADD COLUMN first_recorded_at REAL;
+        ALTER TABLE user_facts ADD COLUMN temporal_validity TEXT;
+        CREATE TABLE memory_seen_events (event_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
+        CREATE TABLE memory_permission_queue (
+          operation_id TEXT PRIMARY KEY, owner TEXT NOT NULL, fact_id TEXT NOT NULL,
+          enabled INTEGER NOT NULL, expected_revision INTEGER NOT NULL,
+          state TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL
+        );
+      `)
+    }
   }
 ]
 

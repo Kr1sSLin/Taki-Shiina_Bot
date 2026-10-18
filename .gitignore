@@ -1,6 +1,15 @@
 /.codex
 /openspec
 
+# Repository-local Git metadata, hooks and CI configuration.
+/.git/
+/.githook/
+/.githooks/
+/.github/
+
+# Local PRD-06 validation record.
+/PRD06_本地候选验证与上线操作单.md
+
 # Local secrets and migration backups (at every project depth).
 .env
 .env.*

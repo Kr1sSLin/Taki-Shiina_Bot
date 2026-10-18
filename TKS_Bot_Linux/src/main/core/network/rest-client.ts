@@ -55,7 +55,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   query?: Record<string, string | number | boolean | null | undefined>
   body?: unknown
   /** 默认 `PROTOCOL.REST_TIMEOUT_MS`；互动接口传 `PROTOCOL.INTERACTION_TIMEOUT_MS`。 */

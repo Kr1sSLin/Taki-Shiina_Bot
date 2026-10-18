@@ -567,6 +567,7 @@ public partial class MainWindow : Window
     {
         var viewModel = _provider.GetRequiredService<SettingsViewModel>();
         _ = viewModel.RefreshStorageAsync();
+        _ = viewModel.RefreshProactiveAsync();
 
         ShowEmbedded(
             () => new SettingsView { DataContext = viewModel },

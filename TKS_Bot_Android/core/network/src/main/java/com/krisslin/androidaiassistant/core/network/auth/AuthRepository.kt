@@ -3,6 +3,8 @@ package com.krisslin.androidaiassistant.core.network.auth
 import com.krisslin.androidaiassistant.core.network.api.AuthApi
 import com.krisslin.androidaiassistant.core.network.api.LoginRequest
 import com.krisslin.androidaiassistant.core.network.api.RefreshTokenRequest
+import android.util.Base64
+import org.json.JSONObject
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -65,6 +67,13 @@ class AuthRepository @Inject constructor(
      * 获取当前 accessToken
      */
     fun getAccessToken(): String? = tokenManager.getAccessToken()
+
+    /** The signed token's subject is used only to scope the local cache. */
+    fun getUserId(): String? = runCatching {
+        val payload = tokenManager.getAccessToken()?.split('.')?.getOrNull(1) ?: return null
+        val decoded = String(Base64.decode(payload, Base64.URL_SAFE or Base64.NO_WRAP), Charsets.UTF_8)
+        JSONObject(decoded).optString("sub").takeIf { it.isNotBlank() }
+    }.getOrNull()
 
     /**
      * 判断是否已登录

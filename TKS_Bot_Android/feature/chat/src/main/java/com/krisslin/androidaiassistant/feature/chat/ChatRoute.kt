@@ -114,6 +114,7 @@ import kotlin.math.roundToInt
 @Composable
 fun ChatRoute(
     viewModel: ChatViewModel = hiltViewModel(),
+    targetMessageId: String? = null,
     isDarkMode: Boolean = false,
     onToggleTheme: () -> Unit = {},
     onNavigateToLogin: () -> Unit = {},
@@ -124,6 +125,12 @@ fun ChatRoute(
     val state by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
+    LaunchedEffect(targetMessageId, state.messages) {
+        if (targetMessageId != null) {
+            val index = state.messages.indexOfFirst { it.id == targetMessageId || it.id == "${targetMessageId}_0" }
+            if (index >= 0) listState.animateScrollToItem(index)
+        }
+    }
     var showImagePreview by remember { mutableStateOf<String?>(null) }
     var messageMenuTargetId by remember { mutableStateOf<String?>(null) }
     var showAttachMenu by remember { mutableStateOf(false) }

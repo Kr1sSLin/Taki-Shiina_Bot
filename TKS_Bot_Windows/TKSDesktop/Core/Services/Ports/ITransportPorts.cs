@@ -90,6 +90,12 @@ public interface IRestPort
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>Event cursor contract for memory; production REST adapter implements it.</summary>
+public interface IMemoryEventPort
+{
+    Task<PortCall<MemoryFactsDataDto>> GetMemoryEventPageAsync(long cursor, int limit, CancellationToken cancellationToken = default);
+}
+
 /// <summary>Authenticated original image bytes from a reliable chat source.</summary>
 public sealed record HistoryImageBytes(string MimeType, byte[] Bytes);
 

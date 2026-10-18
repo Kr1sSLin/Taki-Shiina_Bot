@@ -134,6 +134,25 @@ class ReliableApiTests(unittest.IsolatedAsyncioTestCase):
         denied_detail = await http_api.memory_fact_detail("private-fact", self.request(), authorization="Bearer " + other)
         self.assertEqual(denied_detail.status_code, 403)
 
+    async def test_management_correction_api_scopes_owner_and_conflicts(self):
+        self.store.put_fact("authenticated-owner", "correctable", Domain.USER_FACT,
+                            {"text": "用户喜欢咖啡", "enabled": True}, expected_revision=0)
+        payload = http_api.MemoryCorrectionRequest(content="用户喜欢茶", expectedRevision=1, operationId="ui-correction-1")
+        other = create_access_token("other-owner", "device", "synthetic-jwt-secret", 3600)
+        denied = await http_api.memory_correction("correctable", payload, self.request(), authorization="Bearer " + other)
+        self.assertEqual(denied.status_code, 403)
+        first = await http_api.memory_correction("correctable", payload, self.request(), authorization="Bearer " + self.token)
+        self.assertEqual(self.body(first)["data"]["revision"], 2)
+        self.assertEqual(first.headers["cache-control"], "no-store")
+        replay = await http_api.memory_correction("correctable", payload, self.request(), authorization="Bearer " + self.token)
+        self.assertEqual(self.body(replay)["data"]["revision"], 2)
+        stale = await http_api.memory_correction("correctable", http_api.MemoryCorrectionRequest(
+            content="用户喜欢水", expectedRevision=1, operationId="ui-correction-2"),
+            self.request(), authorization="Bearer " + self.token)
+        self.assertEqual(stale.status_code, 409)
+        detail = await http_api.memory_fact_detail("correctable", self.request(), authorization="Bearer " + self.token)
+        self.assertEqual(self.body(detail)["data"]["content"], "用户喜欢茶")
+
     async def test_runtime_commits_extraction_before_reply_context_is_built(self):
         item = {"text": "用户今天感冒", "evidence": "我今天感冒了", "subject": "user", "assertion": "explicit", "temporal_type": "current_state", "temporal_validity": {"from": None, "until": self.store.clock()+3600, "expression": "今天", "timezone": "Asia/Shanghai", "precision": "day"}}
         for number in range(3):
@@ -443,7 +462,8 @@ class ReliableApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((collected[-1]["action"], collected[-1]["enabled"], collected[-1]["fact"]), ("disabled", False, ""))
         disabled_replays = [item for item in collected if item["factId"] == "http-page-0000"]
         self.assertEqual([item["eventRevision"] for item in disabled_replays], [1, 2])
-        self.assertEqual([item["revision"] for item in disabled_replays], [2, 2])
+        self.assertEqual([item["revision"] for item in disabled_replays], [1, 2])
+        self.assertEqual([item["action"] for item in disabled_replays], ["created", "disabled"])
         self.assertTrue(all(not item["enabled"] and item["fact"] == "" for item in disabled_replays))
         http_api._load_memory_timeline_async.assert_not_awaited()
         response = await http_api.memory_facts(self.request(), cursor=cursor, authorization="Bearer " + self.token)

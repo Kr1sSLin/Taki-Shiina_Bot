@@ -1177,7 +1177,8 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
             await _dispatcher.InvokeAsync(() =>
             {
                 // FR-W-NOTI-4：带上 messageId，点击后可定位到该条消息。
-                _notifications.Notify(category, title, first.Content, first.MessageId);
+                _notifications.Notify(category, title, first.Content,
+                    string.IsNullOrWhiteSpace(payload.MessageId) ? first.MessageId : payload.MessageId);
             }).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

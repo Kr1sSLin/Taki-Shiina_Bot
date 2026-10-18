@@ -143,8 +143,16 @@ class ReliableInteractionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reply_commit_write_failure_cannot_publish_success(self):
         self.rig.client.completions.outcomes = ["合成回复。"] * 3
-        with patch.object(self.store, "commit_reply", side_effect=OSError("synthetic disk failure")):
+        # The assertion is about a reached SQL commit failure. The shared 1.5 s
+        # model deadline can expire first under full-suite load and report a
+        # generation timeout before the patched commit is ever attempted.
+        rules = self.rig.gamification.config.get_points_rules()
+        self.rig.gamification.config.update_sections({"points_rules": {
+            **rules, "deepseek_retry": {**rules["deepseek_retry"], "total_timeout_seconds": 5}
+        }})
+        with patch.object(self.store, "commit_reply", side_effect=OSError("synthetic disk failure")) as commit:
             result = await self.rig.handler.send(TEST_USER, "coffee", "gift-commit", attachment="synthetic")
+        self.assertGreater(commit.call_count, 0)
         self.assertFalse(result.ok)
         self.assertTrue(result.refunded)
         self.assertEqual(result.error_code, CODE_STORAGE_FAILED_REFUNDED)

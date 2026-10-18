@@ -149,6 +149,23 @@ object DatabaseModule {
         }
     }
 
+    val MIGRATION_5_6 = object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE user_facts ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE user_facts ADD COLUMN revision_id TEXT")
+            db.execSQL("ALTER TABLE user_facts ADD COLUMN permission_version INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE user_facts ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+            db.execSQL("ALTER TABLE user_facts ADD COLUMN stage TEXT NOT NULL DEFAULT 'candidate'")
+            db.execSQL("ALTER TABLE user_facts ADD COLUMN truth_status TEXT NOT NULL DEFAULT 'pending'")
+            db.execSQL("ALTER TABLE user_facts ADD COLUMN score REAL NOT NULL DEFAULT 0.0")
+            db.execSQL("ALTER TABLE user_facts ADD COLUMN source_message_id TEXT")
+            db.execSQL("ALTER TABLE user_facts ADD COLUMN temporal_validity TEXT")
+            db.execSQL("CREATE TABLE IF NOT EXISTS memory_sync_cursor (user_id TEXT NOT NULL PRIMARY KEY, cursor INTEGER NOT NULL)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS memory_seen_events (event_id TEXT NOT NULL PRIMARY KEY, user_id TEXT NOT NULL)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS memory_permission_queue (operation_id TEXT NOT NULL PRIMARY KEY, user_id TEXT NOT NULL, fact_id TEXT NOT NULL, enabled INTEGER NOT NULL, expected_revision INTEGER NOT NULL, state TEXT NOT NULL)")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase {
@@ -157,6 +174,7 @@ object DatabaseModule {
             .addMigrations(MIGRATION_2_3)
             .addMigrations(MIGRATION_3_4)
             .addMigrations(MIGRATION_4_5)
+            .addMigrations(MIGRATION_5_6)
             .build()
     }
 
