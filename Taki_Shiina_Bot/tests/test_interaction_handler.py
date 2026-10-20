@@ -137,7 +137,9 @@ class InteractionHandlerTestCase(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.error_code, 40204)
         self.assertTrue(result.refunded)
-        self.assertEqual(result.balance, 21)  # 20 - 5扣分 + 1每日首次 + 5退回
+        self.assertEqual(result.balance, 20)  # 失败不是有效对话，只退回原扣款。
+        self.assertNotIn(REASON_DAILY_FIRST_CHAT, self.ledger_reasons())
+        self.assertEqual(self.rig.gamification.progress_store.snapshot()["daily_activity_log"], {})
         self.assertEqual(result.attempts, 3)
 
         reasons = self.ledger_reasons()
@@ -172,9 +174,11 @@ class InteractionHandlerTestCase(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.error_code, 40205)
         self.assertTrue(result.refunded)
-        self.assertEqual(self.rig.points.get_balance(TEST_USER), 21)
+        self.assertEqual(self.rig.points.get_balance(TEST_USER), 20)
+        self.assertNotIn(REASON_DAILY_FIRST_CHAT, self.ledger_reasons())
         self.assertFalse(any(event.get("payload", {}).get("done") is True for _user, event in self.rig.events))
         self.assertEqual(self.rig.events_of("bot.error")[-1]["payload"]["errorCode"], "STORAGE_FAILED_REFUNDED")
+        self.assertGreater(self.rig.events_of("bot.error")[-1]["payload"]["timestamp"], 0)
 
         replay = run(self.rig.handler.send(TEST_USER, "coffee", request_id="storage-fail"))
         self.assertTrue(replay.duplicate)
@@ -191,7 +195,8 @@ class InteractionHandlerTestCase(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.error_code, 40205)
         self.assertTrue(result.refunded)
-        self.assertEqual(self.rig.points.get_balance(TEST_USER), 21)
+        self.assertEqual(self.rig.points.get_balance(TEST_USER), 20)
+        self.assertNotIn(REASON_DAILY_FIRST_CHAT, self.ledger_reasons())
         self.assertEqual(self.rig.state.user_chat_history, original if original else {TEST_USER: []})
         self.assertFalse(any(event.get("payload", {}).get("done") is True for _user, event in self.rig.events))
 

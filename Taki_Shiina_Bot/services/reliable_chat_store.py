@@ -338,7 +338,11 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
             deadline = row["deadline"]
             if any(source.get("intent") == "interaction" for source in sources):
                 if "generation_deadline" not in body:
-                    body["generation_deadline"] = min(deadline, self.clock() + 15)
+                    # Accepted requests keep their budget across config changes,
+                    # retries and restarts. Pre-snapshot requests retain 15 s.
+                    interaction = next(source for source in sources if source.get("intent") == "interaction")
+                    rules = (interaction.get("metadata") or {}).get("retry_rules") or {}
+                    body["generation_deadline"] = min(deadline, self.clock() + float(rules.get("total_timeout_seconds", 15)))
                 deadline = min(deadline, body["generation_deadline"])
                 conn.execute("UPDATE chat_turns SET deadline=? WHERE id=?", (deadline, row["id"]))
             epoch, _ = self._permission_snapshot(conn, row["owner"])
@@ -684,6 +688,9 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
             body["result"] = result
             body.setdefault("phases", []).append({"phase": "committed", "at": self.clock(), "generation": row["generation"]})
             self._save_turn(conn, row, body, status="completed")
+            for identity in body.get("payments", {}):
+                dedupe = self.cipher.index("job", row["owner"], "interaction_reconcile", identity)
+                conn.execute("UPDATE jobs SET available=? WHERE dedupe=? AND status='pending'", (self.clock(), dedupe))
             conn.execute("UPDATE jobs SET status='succeeded',lease_token=NULL,lease_until=NULL WHERE id=?", (job["job_id"],))
             return result
 
@@ -842,7 +849,9 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
             row, body = self._turn(conn, source["turn_id"])
             state = body.get("payments", {}).get(source["id"])
             if row["status"] == "completed":
-                return None
+                # Reuse the durable payment recovery job to finish idempotent
+                # rewards even when the original waiter disconnected or died.
+                return {**command, "turn_id": row["id"], "completed": True}
             chat = conn.execute("SELECT status FROM jobs WHERE id=?", (body["job_id"],)).fetchone()
             if state == "confirmed" and row["status"] != "cancelled" and row["deadline"] > self.clock() and chat and chat["status"] not in ("failed", "cancelled"):
                 raise VersionConflict("confirmed interaction is still generating")

@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -105,8 +106,8 @@ DEFAULT_PROMPT_TEMPLATES: dict[str, str] = {
     ),
     "noodles": (
         "【互动事件】Kris 刚刚给你送来一份{item_icon}{item_name}（消耗 {cost_points} 积分）。\n"
-        "你要知道：深夜的泡面你其实很欢迎，但嘴上一定会先吐槽「又是这种东西」。\n"
-        "反应方向：吐槽口味/热量 → 顺势问他要不要一起吃。\n"
+        "这是聊天中的虚拟礼物，不表示现实送餐、见面或已经吃过。不要假定当前是深夜或正在吃饭。\n"
+        "反应方向：随口吐槽口味或热量，再简短领情；可以问他喜欢什么口味，不约现实中一起吃。\n"
         "输出要求：1～3 行短句，总长 40 字以内；严禁动作叙事或星号描写。"
     ),
     "gamepad": (
@@ -153,10 +154,10 @@ DEFAULT_POINTS_RULES: dict[str, Any] = {
     "warning_gap_days": [3, 4],
     "interaction_daily_limit": None,
     "deepseek_retry": {
-        # 需求方确认：失败自动重试最多 5 次；总耗时兜底 15 秒（超过即退款，见 PRD 九节）
+        # 2026-10-20 确认：完整生成/检查/重写共享 60 秒；超时仍退款。
         "max_retries": 5,
-        "total_timeout_seconds": 15,
-        "attempt_timeout_seconds": 5,
+        "total_timeout_seconds": 60,
+        "attempt_timeout_seconds": 20,
     },
 }
 
@@ -192,6 +193,15 @@ def _as_int(value: Any, field: str, minimum: int | None = None) -> int:
         raise ConfigValidationError(f"{field} 必须是整数")
     if minimum is not None and parsed < minimum:
         raise ConfigValidationError(f"{field} 不能小于 {minimum}")
+    return parsed
+
+
+def _positive_seconds(value: Any, field: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        raise ConfigValidationError(f"{field} 必须是正数秒数") from None
+    _require(math.isfinite(parsed) and parsed > 0, f"{field} 必须是有限正数秒数")
     return parsed
 
 
@@ -314,10 +324,9 @@ def validate_points_rules(rules: Any) -> dict[str, Any]:
         "warning_gap_days": sorted({_as_int(item, "warning_gap_days[]", 1) for item in warning_raw}),
         "interaction_daily_limit": daily_limit,
         "deepseek_retry": {
-            # 需求方确认：失败自动重试最多 5 次，总耗时兜底 15 秒
             "max_retries": _as_int(retry_raw.get("max_retries", 5), "deepseek_retry.max_retries", 0),
-            "total_timeout_seconds": float(retry_raw.get("total_timeout_seconds", 15) or 15),
-            "attempt_timeout_seconds": float(retry_raw.get("attempt_timeout_seconds", 5) or 5),
+            "total_timeout_seconds": _positive_seconds(retry_raw.get("total_timeout_seconds", 60), "deepseek_retry.total_timeout_seconds"),
+            "attempt_timeout_seconds": _positive_seconds(retry_raw.get("attempt_timeout_seconds", 20), "deepseek_retry.attempt_timeout_seconds"),
         },
     }
 

@@ -1,5 +1,7 @@
 """Real synthetic SQL plus the existing points ledger; no external model or push."""
 import asyncio
+from datetime import date
+import json
 import pathlib
 import sqlite3
 import sys
@@ -15,7 +17,7 @@ from services.chat_runtime import ChatFailed
 from services.contracts import ChatCommand, Domain
 from services.domain_cipher import DomainCipher
 from services.foundation_store import VersionConflict
-from services.progress_store import PointsStore, REASON_ITEM_REFUND, REASON_ITEM_SEND
+from services.progress_store import PointsStore, REASON_ITEM_REFUND, REASON_ITEM_SEND, REASON_DAILY_FIRST_CHAT, REASON_STREAK_3_DAY
 from services.reliable_chat_store import ReliableChatStore
 from services.text_generation import TextGenerator
 from controlled_model_fixture import checker_response
@@ -158,6 +160,8 @@ class ReliableInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error_code, CODE_STORAGE_FAILED_REFUNDED)
         self.assertEqual(self.store.history(TEST_USER), [])
         self.assertEqual(self.ledger_count(REASON_ITEM_REFUND), 1)
+        self.assertEqual(self.ledger_count(REASON_DAILY_FIRST_CHAT), 0)
+        self.assertEqual(self.rig.points.get_balance(TEST_USER), 20)
         self.assertFalse(any(value.get("target") == "chat" for value in self.deliveries))
 
     async def test_timeout_racing_committed_reply_returns_result_without_refund(self):
@@ -242,14 +246,16 @@ class ReliableInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.rig.client.completions.create = delayed_create
         waiting = asyncio.create_task(self.rig.handler.send(TEST_USER, "coffee", "gift-disconnect", attachment="synthetic"))
         try:
-            await asyncio.wait_for(started.wait(), 1)
+            # This is a worker-scheduling guard, not a one-second product SLA.
+            # Full-suite Windows disk/thread scheduling can exceed one second.
+            await asyncio.wait_for(started.wait(), 5)
             waiting.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await waiting
             self.assertEqual(self.ledger_count(REASON_ITEM_REFUND), 0)
             release.set()
             turn = self.store.request(TEST_USER, "gift-disconnect")["turn_id"]
-            durable = await self.runtime.wait(TEST_USER, turn, timeout=1)
+            durable = await self.runtime.wait(TEST_USER, turn, timeout=5)
             replay = await self.rig.handler.send(TEST_USER, "coffee", "gift-disconnect", attachment="synthetic")
             self.assertEqual(replay.message_id, durable["messageId"])
             self.assertTrue(replay.duplicate)
@@ -267,10 +273,12 @@ class ReliableInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.ledger_count(REASON_ITEM_SEND), 1)
         self.assertEqual(self.ledger_count(REASON_ITEM_REFUND), 0)
 
-    def accepted_gift(self, request_id):
+    def accepted_gift(self, request_id, retry_rules=None):
         item = self.rig.gamification.config.get_item("coffee")
         metadata = {"item": {key: item.get(key) for key in ("id", "name", "icon", "cost_points")},
                     "attachment": "", "prompt_template": self.rig.gamification.config.render_prompt(item), "business_date": "2026-10-16"}
+        if retry_rules is not None:
+            metadata["retry_rules"] = retry_rules
         receipt = self.store.accept([ChatCommand(TEST_USER, request_id, "interaction_user_" + request_id, "device", "☕ 咖啡",
                                                  channel="ws", intent="interaction", metadata=metadata)])[0]
         return receipt
@@ -325,11 +333,13 @@ class ReliableInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, "crash-confirmed")
         self.store.confirm_interaction(TEST_USER, "crash-confirmed")
         self.runtime.start()
-        result = await self.runtime.wait(TEST_USER, receipt["turn_id"], timeout=1)
+        # Bound recovery without conflating SQL worker scheduling with an SLA.
+        result = await self.runtime.wait(TEST_USER, receipt["turn_id"], timeout=5)
+        await self.wait_for_reconciliation_completion(receipt["turn_id"])
         self.assertIsNotNone(result["messageId"])
         self.assertEqual(self.ledger_count(REASON_ITEM_SEND), 1)
         self.assertEqual(self.ledger_count(REASON_ITEM_REFUND), 0)
-        self.assertEqual(self.rig.points.get_balance(TEST_USER), 15)
+        self.assertEqual(self.rig.points.get_balance(TEST_USER), 16)
 
     async def test_reconciliation_retry_after_refund_before_cancel_does_not_add_money_again(self):
         receipt = self.accepted_gift("crash-refund")
@@ -455,6 +465,92 @@ class ReliableInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.rig.points.get_balance(TEST_USER), 20)
         self.assertEqual(self.ledger_count(REASON_ITEM_SEND), 1)
         self.assertEqual(self.ledger_count(REASON_ITEM_REFUND), 1)
+
+    async def test_configured_sixty_second_budget_survives_restart_and_config_change(self):
+        now = [1000.0]
+        self.store.clock = lambda: now[0]
+        receipt = self.accepted_gift("configured-budget", {"total_timeout_seconds": 60, "attempt_timeout_seconds": 20, "max_retries": 5})
+        self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, "configured-budget")
+        self.store.confirm_interaction(TEST_USER, "configured-budget")
+        job = self.store.claim(kinds=("chat",))
+        snapshot = self.store.begin_turn(job)
+        self.assertEqual(snapshot["deadline"], 1060)
+        self.store.finish(job["job_id"], job["lease_token"], succeeded=False, retry_delay=0)
+        self.reopen_runtime()
+        self.store.clock = lambda: now[0]
+        now[0] += 20
+        rules = self.rig.gamification.config.get_points_rules()
+        self.rig.gamification.config.update_sections({"points_rules": {**rules, "deepseek_retry": {"total_timeout_seconds": 90}}})
+        retried = self.store.claim(kinds=("chat",))
+        self.assertEqual(self.store.begin_turn(retried)["deadline"], 1060)
+        self.assertEqual(self.store.request(TEST_USER, "configured-budget")["source"]["metadata"]["retry_rules"]["total_timeout_seconds"], 60)
+
+    async def test_failure_does_not_award_third_day_streak_or_prevent_later_success(self):
+        for day in (date(2026, 10, 18), date(2026, 10, 19)):
+            self.rig.points.record_user_activity(TEST_USER, today=day)
+        before = self.rig.points.get_balance(TEST_USER)
+        self.rig.client.completions.outcomes = [RuntimeError("synthetic failure")] * 3
+        with patch("handlers.interaction_handler.get_business_today_str", return_value="2026-10-20"):
+            failed = await self.rig.handler.send(TEST_USER, "coffee", "failed-third-day", attachment="synthetic")
+            self.assertFalse(failed.ok)
+            self.assertTrue(failed.refunded)
+            self.assertEqual(self.rig.points.get_balance(TEST_USER), before)
+            self.assertEqual(self.ledger_count(REASON_STREAK_3_DAY), 0)
+            self.assertFalse(any(row["activity_date"] == "2026-10-20" for row in self.rig.gamification.progress_store.snapshot()["daily_activity_log"].values()))
+            error = self.rig.events_of("bot.error")[-1]["payload"]
+            self.assertGreater(error["timestamp"], 0)
+            self.rig.client.completions.outcomes = ["收下了。"]
+            success = await self.rig.handler.send(TEST_USER, "coffee", "successful-third-day", attachment="synthetic")
+            self.assertTrue(success.ok)
+            self.assertEqual(success.balance, before - 5 + 4)
+            self.assertEqual(self.ledger_count(REASON_STREAK_3_DAY), 1)
+            await self.rig.handler.send(TEST_USER, "coffee", "successful-third-day", attachment="synthetic")
+            self.assertEqual(self.rig.points.get_balance(TEST_USER), before - 5 + 4)
+
+    async def test_rewards_recover_after_committed_reply_without_original_waiter(self):
+        receipt = self.accepted_gift("reward-recovery")
+        self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, "reward-recovery")
+        self.store.confirm_interaction(TEST_USER, "reward-recovery")
+        job = self.store.claim(kinds=("chat",))
+        snapshot = self.store.begin_turn(job)
+        self.store.commit_reply(job, snapshot, {"reply": "已收下。"})
+        self.assertEqual(self.rig.points.get_balance(TEST_USER), 15)
+        self.reopen_runtime()
+        self.runtime.start()
+        await self.wait_for_reconciliation_completion(receipt["turn_id"])
+        self.assertEqual(self.rig.points.get_balance(TEST_USER), 16)
+        self.assertEqual(self.ledger_count(REASON_DAILY_FIRST_CHAT), 1)
+
+    async def test_five_item_matrix_keeps_checks_and_rechecks_noodles_rewrite(self):
+        with self.rig.gamification.points_store.transaction() as data:
+            PointsStore.ensure_account(data, TEST_USER)["balance"] = 100
+        rules = self.rig.gamification.config.get_points_rules()
+        self.rig.gamification.config.update_sections({"points_rules": {**rules, "deepseek_retry": {"total_timeout_seconds": 10}}})
+        original = self.rig.client.completions.create
+        checked = []
+
+        async def model(**kwargs):
+            response = checker_response(kwargs)
+            if response:
+                self.assertEqual(kwargs["response_format"], {"type": "json_object"})
+                value = json.loads(kwargs["messages"][-1]["content"])
+                event = value["context"]["interaction_events"][0]
+                self.assertIn(event["source_id"], [source["source_id"] for source in value["context"]["current_input"]])
+                item_id = event["item"]["id"]
+                if item_id == "noodles" and "noodles" not in checked:
+                    response.choices[0].message.content = json.dumps({"approved": False, "checks": {"time": False}, "violations": ["time"]})
+                checked.append(item_id)
+                return response
+            return await original(**kwargs)
+
+        self.rig.client.completions.create = model
+        for item in self.rig.gamification.config.get_active_items():
+            self.rig.client.completions.outcomes = ["刚才一起吃过了。", "谢了，你喜欢什么口味？"] if item["id"] == "noodles" else ["谢了，收下了。"]
+            result = await self.rig.handler.send(TEST_USER, item["id"], "matrix-" + item["id"], attachment="synthetic")
+            self.assertTrue(result.ok, item["id"])
+        self.assertEqual(checked.count("noodles"), 2)
+        self.assertEqual(len(checked), 6)
+        self.assertEqual(self.ledger_count(REASON_ITEM_REFUND), 0)
 
 
 if __name__ == "__main__":

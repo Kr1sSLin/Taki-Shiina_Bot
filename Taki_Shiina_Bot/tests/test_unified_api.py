@@ -30,6 +30,24 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 
 class UnifiedApiTestCase(unittest.TestCase):
+    def test_invalid_city_is_400_and_cannot_overwrite_existing_value(self):
+        from fastapi.testclient import TestClient
+        from services.weather_service import WeatherService
+        with tempfile.TemporaryDirectory() as directory:
+            weather = WeatherService(directory, "", "", "")
+            weather.set_city("北京")
+            with patch.object(unified_api.http_api, "weather_service", weather), patch.object(unified_api.http_api, "_require_http_auth"):
+                client = TestClient(unified_api.app)
+                for city in ("39。9042116，4。074", "39.9042,116.4074", "91,181"):
+                    with self.subTest(city=city):
+                        response = client.put("/api/v1/settings/city", json={"city": city})
+                        self.assertEqual(response.status_code, 400)
+                        self.assertEqual(response.json()["code"], 40002)
+                        self.assertEqual(weather.get_current_city(), "北京")
+                response = client.put("/api/v1/settings/city", json={"city": "上海"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(weather.get_current_city(), "上海")
+
     def test_key_routes_appear_exactly_once(self):
         paths = Counter()
         route_keys = Counter()

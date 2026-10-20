@@ -53,6 +53,7 @@ major_events（不得新创重大事件；只在给定官方来源版本范围�
 used_memory_ids 为回复真正使用的正式记忆fact_id数组（不包含仅检索到而未使用的项），
 claims 为所有事实断言数组，每项含 text（回复原句逐字片段）、source_ids（实际支持断言的来源ID数组）。
 寒暄/问句可无断言。用户经历只能来自 current_input 或 formal_memories；官方与原创日常不得互相充当依据。
+interaction_events 是本轮已接受的虚拟礼物，source_id 对应 current_input：简短收下、领情可由该来源支持；不代表现实送餐、见面或已共同吃饭。普通问句与口味偏好不构成已发生的共同经历。
 原创日常只能引用 character_daily 的 event 当前修订：检查 status、outcome、occurred_at、scheduled_at、character_date。
 计划不能说完成；未买不能说买了或挂包上了；旧进行状态只说明记录时在做，不能自动说此刻仍在做。
 涉及今天/昨天按 character_time 的东京日期。用户缺席不能引发冷落惩罚，积分不能改变固定关系。
@@ -62,6 +63,7 @@ claims 为所有事实断言数组，每项含 text（回复原句逐字片段�
                 model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
                 messages=public_messages([{"role": "system", "content": rules}, {"role": "user", "content": json.dumps({"context": context, "result": result}, ensure_ascii=False)}], "reply_check"),
                 temperature=0,
+                response_format={"type": "json_object"},
             ))
         except (VersionConflict, PermissionDenied):
             raise
@@ -79,7 +81,8 @@ claims 为所有事实断言数组，每项含 text（回复原句逐字片段�
         if not isinstance(verdict.get("violations"), list):
             raise ReplyRejected("checker omitted violations")
         if not verdict["approved"]:
-            return {"approved": False, "violations": ["semantic_check"]}
+            failed = [key for key in CHECKS if key in verdict["violations"] or (isinstance(verdict.get("checks"), dict) and verdict["checks"].get(key) is False)]
+            return {"approved": False, "violations": failed or ["semantic_check"]}
         if not isinstance(verdict.get("checks"), dict) or any(verdict["checks"].get(key) is not True for key in CHECKS) or verdict["violations"]:
             raise ReplyRejected("checker did not approve every dimension")
         refs = {ref["fact_id"] for section in ("formal_memories", "official_lore", "character_daily") for ref in context[section]}

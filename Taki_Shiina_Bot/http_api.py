@@ -589,6 +589,11 @@ async def set_city(
     try:
         weather_service.set_city(city)
         return response_body(0, "ok", {"city": city}, trace_id)
+    except ValueError as error:
+        return JSONResponse(
+            status_code=400,
+            content=response_body(40002, str(error), None, trace_id),
+        )
     except Exception:
         logger.exception("set city failed")
         return JSONResponse(

@@ -26,7 +26,9 @@ def demonstrate():
             chat = store.claim(kinds={"chat"})
             context = store.begin_turn(chat)
             store.prepare_memories(context, "感冒")
-            store.commit_reply(chat, context, {"reply": "合成测试回复"})
+            result = store.commit_reply(chat, context, {"reply": "合成测试回复"})
+            # Finish delivery so the next input starts an independent turn.
+            store.mark_dispatched("synthetic-owner", result)
             weights.append(store.read_fact("synthetic-owner", fact_id)["data"]["score"])
         current = store.read_fact("synthetic-owner", fact_id)
         revision = store.set_permission("synthetic-owner", fact_id, enabled=False, expected_revision=current["revision"])
@@ -44,7 +46,8 @@ def demonstrate():
             chat = store.claim(kinds={"chat"})
             context = store.begin_turn(chat)
             store.prepare_memories(context, "咖啡")
-            store.commit_reply(chat, context, {"reply": "合成测试回复"})
+            result = store.commit_reply(chat, context, {"reply": "合成测试回复"})
+            store.mark_dispatched("synthetic-owner", result)
             stable_scores.append(store.read_fact("synthetic-owner", stable_id)["data"]["score"])
         return {"temporary_scores": weights, "stable_scores": stable_scores, "blocked_is_excluded": blocked, "restored_score": store.read_fact("synthetic-owner", fact_id)["data"]["score"], "lore_publication": publication, "production_data_accessed": False}
 

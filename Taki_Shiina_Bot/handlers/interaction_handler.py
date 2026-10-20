@@ -7,7 +7,7 @@
 2. 扣分成功后按物品匹配 Prompt 模板（FR-6），在**当前用户 session 上下文**中
    拼接历史后调用 DeepSeek（FR-7）
 3. 回复通过既有 WebSocket 通道下发（FR-8），展示方式与普通聊天消息完全一致
-4. DeepSeek 调用失败自动重试，超过重试次数或总耗时兜底（15 秒，需求方确认）后
+4. DeepSeek 调用失败自动重试，超过重试次数或配置总预算（默认 60 秒）后
    自动退回积分并记 ``ITEM_REFUND`` 流水，客户端收到兜底文案（FR-9 / EDGE-2）
 5. 幂等（FR-13）：``requestId`` 作为幂等键，重复请求不会重复扣分
 6. EDGE-9：Prompt 模板在**请求发起时**快照，后台更新不影响进行中的请求
@@ -23,6 +23,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any, Callable
 
 from text_utils import (
@@ -310,18 +311,7 @@ class InteractionHandler:
             balance=balance,
         )
 
-        # ---- 2) 计入每日有效对话（需求方确认：互动同样算陪伴） ----
-        try:
-            activity = self.points_service.record_user_activity(user_id, source=SOURCE_INTERACTION)
-            for entry in activity.rewards:
-                await self._push(user_id, points_changed_event(entry))
-            result.rewards = [dict(entry) for entry in activity.rewards]
-            result.balance = activity.balance
-            if activity.level is not None and activity.level.level_changed:
-                result.level_event = level_changed_event(activity.level)
-                await self._push(user_id, result.level_event)
-        except Exception as exc:  # 计分失败不能影响互动本身
-            self.logger.exception(f"[互动] 记录有效对话失败: {exc}")
+        activity_date = get_business_today_str()
 
         # 新用户首次互动时补发当月补签卡（需求方确认规则）
         try:
@@ -464,6 +454,11 @@ class InteractionHandler:
             )
             return result
 
+        try:
+            await self._record_success_activity(user_id, activity_date, result)
+        except Exception as error:
+            self.logger.warning("interaction activity failed (%s)", type(error).__name__)
+
         if timer_at and timer_text:
             result.timer_instruction = {"target": timer_at, "text": timer_text}
 
@@ -522,7 +517,8 @@ class InteractionHandler:
                                              message="物品不存在或已下架", balance=self.points_service.get_balance(user_id))
             metadata = {"item": {key: item.get(key) for key in ("id", "name", "icon", "cost_points")},
                         "attachment": attachment, "prompt_template": self.config_service.render_prompt(item),
-                        "business_date": get_business_today_str()}
+                        "business_date": get_business_today_str(),
+                        "retry_rules": self.config_service.get_points_rules()["deepseek_retry"]}
         if charge and charge.get("related_item_id") != item_id:
             return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_INVALID_PARAM,
                                          message="请求标识已用于其他物品", balance=self.points_service.get_balance(user_id))
@@ -560,17 +556,6 @@ class InteractionHandler:
             if deduction.created:
                 await self._push(user_id, points_changed_event(deduction.entry, balance=result.balance))
                 try:
-                    activity = self.points_service.record_user_activity(user_id, source=SOURCE_INTERACTION)
-                    result.rewards = [dict(entry) for entry in activity.rewards]
-                    result.balance = activity.balance
-                    for entry in activity.rewards:
-                        await self._push(user_id, points_changed_event(entry))
-                    if activity.level is not None and activity.level.level_changed:
-                        result.level_event = level_changed_event(activity.level)
-                        await self._push(user_id, result.level_event)
-                except Exception as error:
-                    self.logger.warning("interaction activity failed (%s)", type(error).__name__)
-                try:
                     if self.makeup_card_service.ensure_initial_grant(user_id):
                         await self._push(user_id, makeup_card_changed_event(self.makeup_card_service.get_summary(user_id), "MONTHLY_GRANT"))
                 except Exception as error:
@@ -584,9 +569,9 @@ class InteractionHandler:
                 except Exception as error:
                     self.logger.warning("interaction merge wait failed (%s)", type(error).__name__)
             await runtime.ready(user_id, [turn_id])
-            rules = self.config_service.get_points_rules().get("deepseek_retry", {})
-            timeout = min(15, max(0.01, float(rules.get("total_timeout_seconds", 15) or 15)))
-            durable = await runtime.wait(user_id, turn_id, timeout=timeout)
+            # The persisted turn deadline owns the generation budget. Queueing
+            # and extraction must not make this waiter cancel it prematurely.
+            durable = await runtime.wait(user_id, turn_id, timeout=125)
         except asyncio.CancelledError:
             # Disconnecting a waiter does not revoke a paid, accepted operation.
             raise
@@ -619,7 +604,29 @@ class InteractionHandler:
         result.timer_instruction = durable.get("timerInstruction")
         result.attempts = durable.get("attempts", 1)
         result.merged_request_ids = [identity for identity in durable.get("requestIds", []) if identity != request_id]
+        try:
+            await self._record_success_activity(user_id, metadata.get("business_date"), result)
+        except Exception as error:
+            # The durable reconciliation job retries rewards after a crash or
+            # ledger failure. A committed reply must never be refunded here.
+            self.logger.warning("interaction activity deferred (%s)", type(error).__name__)
         return result
+
+    async def _record_success_activity(self, user_id, business_date=None, result=None):
+        activity = self.points_service.record_user_activity(
+            user_id, source=SOURCE_INTERACTION,
+            today=date.fromisoformat(business_date) if business_date else None,
+        )
+        for entry in activity.rewards:
+            await self._push(user_id, points_changed_event(entry))
+        event = None
+        if activity.level is not None and activity.level.level_changed:
+            event = level_changed_event(activity.level)
+            await self._push(user_id, event)
+        if result is not None:
+            result.rewards = [dict(entry) for entry in activity.rewards]
+            result.balance = activity.balance
+            result.level_event = event
 
     async def reconcile_reliable(self, source):
         """Compensate an unconfirmed durable intent after a crash, exactly once.
@@ -629,6 +636,9 @@ class InteractionHandler:
         """
         if source.get("intent") != "interaction":
             raise ValueError("reconciliation requires an interaction source")
+        if source.get("completed"):
+            await self._record_success_activity(source["owner"], source["metadata"].get("business_date"))
+            return
         runtime = self.runtime_provider() if self.runtime_provider else None
         if runtime is None:
             raise RuntimeError("reconciliation runtime is unavailable")
@@ -649,11 +659,11 @@ class InteractionHandler:
 
     # ==================== 内部：DeepSeek ====================
     async def _call_deepseek(self, messages: list[dict]) -> tuple[str, int]:
-        """按需求方确认的重试策略调用 DeepSeek：最多重试 5 次，总耗时兜底 15 秒。"""
+        """按配置调用 DeepSeek：默认最多重试 5 次，总预算 60 秒。"""
         retry_rules = self.config_service.get_points_rules().get("deepseek_retry", {})
         max_retries = int(retry_rules.get("max_retries", 5) or 0)
-        total_timeout = float(retry_rules.get("total_timeout_seconds", 15) or 15)
-        attempt_timeout = float(retry_rules.get("attempt_timeout_seconds", 5) or 5)
+        total_timeout = float(retry_rules.get("total_timeout_seconds", 60))
+        attempt_timeout = float(retry_rules.get("attempt_timeout_seconds", 20))
 
         model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
         started = time.monotonic()
@@ -890,6 +900,8 @@ class InteractionHandler:
         await self._push(user_id, event)
 
     async def _push(self, user_id: str, event: dict[str, Any]) -> None:
+        if event.get("type") == "bot.error":
+            event.setdefault("payload", {}).setdefault("timestamp", int(time.time() * 1000))
         try:
             await self.broadcast_json(user_id, event)
         except Exception as exc:
