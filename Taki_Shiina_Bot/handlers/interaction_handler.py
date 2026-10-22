@@ -40,7 +40,8 @@ from services.debounce_merge import (
 )
 from time_utils import build_time_block, get_business_today_str
 from services.points_events import level_changed_event, makeup_card_changed_event, points_changed_event
-from services.points_service import InsufficientPointsError
+from services.points_service import InsufficientPointsError, InteractionLimitError, LedgerReconciliationError
+from services.interaction_config_service import ConfigUnavailableError
 from services.progress_store import SOURCE_INTERACTION
 from services.application_service import ChatApplicationService
 from services.contracts import ChatCommand
@@ -53,6 +54,8 @@ CODE_OK = 0
 CODE_INVALID_PARAM = 40200
 CODE_INSUFFICIENT_POINTS = 40201
 CODE_ITEM_NOT_FOUND = 40202
+CODE_DAILY_LIMIT = 40203
+CODE_CONFIG_UNAVAILABLE = 50303
 CODE_AI_FAILED_REFUNDED = 40204
 CODE_STORAGE_FAILED_REFUNDED = 40205
 # 最终失败兜底文案（PRD FR-9：已扣减积分自动退回 + 失败兜底文案）
@@ -99,6 +102,7 @@ class InteractionSendResult:
     rewards: list[dict[str, Any]] = field(default_factory=list)
     # B 方案：本次回复合并掉的聊天消息 requestId（客户端据此把那些气泡标记为已发送）
     merged_request_ids: list[str] = field(default_factory=list)
+    operation: dict[str, Any] | None = None
 
     def to_http_data(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -113,6 +117,8 @@ class InteractionSendResult:
         if self.merged_request_ids:
             data["mergedRequestIds"] = list(self.merged_request_ids)
             data["mergedCount"] = len(self.merged_request_ids)
+        if self.operation:
+            data.update(self.operation)
         if self.item:
             data["item"] = {
                 "id": self.item.get("id"),
@@ -130,6 +136,10 @@ class InteractionSendResult:
         if not self.ok:
             data["errorCode"] = self._error_code_text()
             data["messageText"] = self.message
+            if not self.operation:
+                action = "refresh_then_retry" if self.error_code in (CODE_INSUFFICIENT_POINTS, CODE_DAILY_LIMIT, CODE_CONFIG_UNAVAILABLE) else "retry_same_request" if self.error_code == 50301 else "resend_new_request" if self.error_code in (CODE_AI_FAILED_REFUNDED, CODE_STORAGE_FAILED_REFUNDED) else "edit_input"
+                data.update(retryable=action in ("refresh_then_retry", "retry_same_request"), recoveryAction=action,
+                            requestIds=[self.request_id, *self.merged_request_ids])
         return data
 
     def _error_code_text(self) -> str:
@@ -139,6 +149,9 @@ class InteractionSendResult:
             CODE_AI_FAILED_REFUNDED: "AI_FAILED_REFUNDED",
             CODE_STORAGE_FAILED_REFUNDED: "STORAGE_FAILED_REFUNDED",
             CODE_INVALID_PARAM: "INVALID_PARAM",
+            CODE_DAILY_LIMIT: "INTERACTION_DAILY_LIMIT",
+            CODE_CONFIG_UNAVAILABLE: "INTERACTION_UNAVAILABLE",
+            50301: "SERVICE_UNAVAILABLE",
         }.get(self.error_code, "UNKNOWN")
 
 
@@ -196,7 +209,8 @@ class InteractionHandler:
 
     # ==================== 菜单（FR-1 / FR-5） ====================
     def list_items(self, user_id: str) -> dict[str, Any]:
-        items = self.config_service.get_active_items()
+        config = self.config_service.get_config()
+        items = sorted((item for item in config["interaction_items"] if item["is_active"]), key=lambda item: (item["sort_order"], item["id"]))
         balance = self.points_service.get_balance(user_id)
         return {
             "balance": balance,
@@ -212,7 +226,9 @@ class InteractionHandler:
                 }
                 for item in items
             ],
-            "dailyLimit": self.config_service.get_points_rules().get("interaction_daily_limit"),
+            "dailyLimit": config["points_rules"]["interaction_daily_limit"],
+            "configRevision": config["revision"],
+            "degraded": self.config_service.degraded,
         }
 
     # ==================== 发送（6.3 状态机） ====================
@@ -244,7 +260,17 @@ class InteractionHandler:
             replay = InteractionSendResult(**{**cached.__dict__, "duplicate": True})
             return replay
 
-        item = self.config_service.get_item(item_id)
+        previous_charge = self.points_service.find_ledger_entry(user_id, f"item_send:{user_id}:{request_id}")
+        if previous_charge:
+            refunded = self.points_service.find_ledger_entry(user_id, f"item_refund:{user_id}:{request_id}") is not None
+            return InteractionSendResult(not refunded, user_id, item_id, request_id, duplicate=True, refunded=refunded,
+                                         error_code=CODE_AI_FAILED_REFUNDED if refunded else CODE_OK,
+                                         balance=self.points_service.get_balance(user_id))
+        try:
+            config, item = self.config_service.interaction_snapshot(item_id)
+        except ConfigUnavailableError:
+            return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_CONFIG_UNAVAILABLE,
+                                         message="送礼配置暂不可用，请稍后重试", balance=self.points_service.get_balance(user_id))
         if not item or not item.get("is_active"):
             return InteractionSendResult(
                 ok=False,
@@ -267,6 +293,7 @@ class InteractionHandler:
                 cost_points=cost,
                 idempotency_key=request_id,
                 business_date=business_date,
+                config_snapshot=config,
             )
         except InsufficientPointsError:
             balance = self.points_service.get_balance(user_id)
@@ -281,6 +308,9 @@ class InteractionHandler:
                 item=item,
                 balance=balance,
             )
+        except (InteractionLimitError, LedgerReconciliationError) as error:
+            return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_DAILY_LIMIT if isinstance(error, InteractionLimitError) else CODE_CONFIG_UNAVAILABLE,
+                                         message=str(error), balance=self.points_service.get_balance(user_id))
 
         balance = self.points_service.get_balance(user_id)
         if not deduction.created:
@@ -345,6 +375,7 @@ class InteractionHandler:
 
         # 摘到的文字当作附言使用（进 user 回合与模型历史）；客户端发来的 text 优先级更高
         merged_text = merge_buffered_texts(merged_items) if merged_items else ""
+        result.merged_request_ids = merged_request_ids
         prompt_attachment = attachment or merged_text
 
         # ---- 3b) 组装 Prompt（EDGE-9：此处快照模板） ----
@@ -352,7 +383,7 @@ class InteractionHandler:
 
         try:
             messages, polluted_tails = await self._build_messages(
-                user_id, item, attachment=prompt_attachment
+                user_id, item, attachment=prompt_attachment, config=config
             )
         except Exception as exc:
             self.logger.exception(f"[互动] 组装上下文失败: {exc}")
@@ -361,7 +392,7 @@ class InteractionHandler:
         # ---- 4) 调用 DeepSeek（失败重试 + 总耗时兜底） ----
         started_ms = int(time.time() * 1000)
         try:
-            raw_reply, attempts = await self._call_deepseek(messages)
+            raw_reply, attempts = await self._call_deepseek(messages, config["points_rules"]["deepseek_retry"])
         except InteractionAIError as exc:
             elapsed_ms = int(time.time() * 1000) - started_ms
             self._ai_failure_count += 1
@@ -370,7 +401,7 @@ class InteractionHandler:
                 f"attempts={exc.attempts}, elapsedMs={elapsed_ms}, 累计失败={self._ai_failure_count}"
             )
             refunded = await self._handle_ai_failure(
-                user_id, item, request_id, cost, str(exc), exc.attempts, elapsed_ms
+                user_id, item, request_id, cost, str(exc), exc.attempts, elapsed_ms, request_ids=[request_id, *merged_request_ids]
             )
             result.ok = False
             result.error_code = CODE_AI_FAILED_REFUNDED
@@ -510,15 +541,32 @@ class InteractionHandler:
             if source.get("intent") != "interaction" or item.get("id") != item_id or metadata.get("attachment", "") != attachment:
                 return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_INVALID_PARAM,
                                              message="请求标识已用于其他输入", balance=self.points_service.get_balance(user_id))
+            if existing["operation"]["status"] == "failed":
+                runtime.start()
+                operation = existing["operation"]
+                return InteractionSendResult(False, user_id, item_id, request_id, item=item, duplicate=True,
+                                             error_code=operation["failureCode"], message="此前操作已失败，请重新发送",
+                                             refunded=operation["refundStatus"] == "refunded", operation=operation,
+                                             balance=self.points_service.get_balance(user_id))
         else:
-            item = self.config_service.get_item(item_id)
+            if charge:
+                return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_CONFIG_UNAVAILABLE,
+                                             message="原扣款缺少请求意图，需核账后恢复", duplicate=True,
+                                             balance=self.points_service.get_balance(user_id))
+            try:
+                config, item = self.config_service.interaction_snapshot(item_id)
+            except ConfigUnavailableError:
+                return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_CONFIG_UNAVAILABLE,
+                                             message="送礼配置暂不可用，请稍后重试", balance=self.points_service.get_balance(user_id))
             if not item or (not item.get("is_active") and charge is None):
                 return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_ITEM_NOT_FOUND,
                                              message="物品不存在或已下架", balance=self.points_service.get_balance(user_id))
             metadata = {"item": {key: item.get(key) for key in ("id", "name", "icon", "cost_points")},
-                        "attachment": attachment, "prompt_template": self.config_service.render_prompt(item),
+                        "attachment": attachment, "prompt_template": self.config_service.render_prompt(item, config=config),
                         "business_date": get_business_today_str(),
-                        "retry_rules": self.config_service.get_points_rules()["deepseek_retry"]}
+                        "retry_rules": config["points_rules"]["deepseek_retry"],
+                        "config_revision": config["revision"], "daily_limit": config["points_rules"]["interaction_daily_limit"],
+                        "merge_after_payment": not attachment}
         if charge and charge.get("related_item_id") != item_id:
             return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_INVALID_PARAM,
                                          message="请求标识已用于其他物品", balance=self.points_service.get_balance(user_id))
@@ -538,18 +586,23 @@ class InteractionHandler:
                     text += f" · {attachment}"
                 command = ChatCommand(user_id, request_id, f"interaction_user_{request_id}", device_id or "interaction",
                                       text, channel="ws", intent="interaction", metadata=metadata)
-                receipts = await runtime.accept([command], delay=20 if not attachment else 0, merge_pending=not attachment)
+                receipts = await runtime.accept([command], delay=20 if not attachment else 0)
                 turn_id = receipts[0]["turn_id"]
             try:
                 deduction = await runtime.charge_interaction(
                     user_id, request_id,
                     lambda: self.points_service.deduct_for_item(user_id, item_id, cost, request_id,
-                                                               metadata.get("business_date") or get_business_today_str()),
+                                                               metadata.get("business_date") or get_business_today_str(),
+                                                               config_snapshot={"revision": metadata.get("config_revision", 1),
+                                                                                "points_rules": {"interaction_daily_limit": metadata.get("daily_limit")}}),
                 )
-            except InsufficientPointsError:
+            except (InsufficientPointsError, InteractionLimitError, LedgerReconciliationError) as rejection:
+                turn_id = (await runtime.request(user_id, request_id))["turn_id"]
                 await runtime.cancel(user_id, turn_id)
-                return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_INSUFFICIENT_POINTS,
-                                             message=f"积分不足，需要 {cost} 积分", item=item, balance=self.points_service.get_balance(user_id))
+                code = CODE_INSUFFICIENT_POINTS if isinstance(rejection, InsufficientPointsError) else CODE_DAILY_LIMIT if isinstance(rejection, InteractionLimitError) else CODE_CONFIG_UNAVAILABLE
+                operation = await runtime.record_interaction_failure(user_id, request_id, "rejected", "none", code)
+                return InteractionSendResult(False, user_id, item_id, request_id, error_code=code,
+                                             message=str(rejection), item=item, operation=operation, balance=self.points_service.get_balance(user_id))
             result.duplicate = not deduction.created
             result.charged = cost if deduction.created else 0
             result.balance = self.points_service.get_balance(user_id)
@@ -561,7 +614,7 @@ class InteractionHandler:
                 except Exception as error:
                     self.logger.warning("interaction makeup grant failed (%s)", type(error).__name__)
             # No model can claim this gift until its durable payment gate opens.
-            await runtime.confirm_interaction(user_id, request_id)
+            turn_id = await runtime.confirm_interaction(user_id, request_id)
             if not attachment and self.pending_flush_waiter is not None and existing is None:
                 try:
                     # These sources were accepted by WS already. Never insert them a second time.
@@ -577,10 +630,9 @@ class InteractionHandler:
             raise
         except Exception as error:
             self.logger.warning("interaction operation failed (%s)", type(error).__name__)
-            if turn_id is None:
-                # An accept error can occur after commit. Resolve uncertainty before refunding.
-                recovered = await runtime.request(user_id, request_id)
-                turn_id = recovered["turn_id"] if recovered else None
+            # 确认挂接可能已提交后才报错，始终重新读取原请求映射。
+            recovered = await runtime.request(user_id, request_id)
+            turn_id = recovered["turn_id"] if recovered else None
             durable = await runtime.cancel(user_id, turn_id) if turn_id else None
             if durable is None:
                 charge = self.points_service.find_ledger_entry(user_id, f"item_send:{user_id}:{request_id}")
@@ -592,10 +644,14 @@ class InteractionHandler:
                 result.message = "互动失败，积分已退回" if result.refunded else ("消息保存失败，未扣积分" if charge is None else "互动失败，请联系管理员核对积分")
                 result.balance = self.points_service.get_balance(user_id)
                 result.fallback_text = DEFAULT_FALLBACK_TEXT if result.refunded else None
+                if recovered:
+                    result.operation = await runtime.record_interaction_failure(user_id, request_id, "storage" if storage_failure else "generation",
+                                                                                "refunded" if result.refunded else "pending" if charge else "none", result.error_code)
+                    result.merged_request_ids = [identity for identity in result.operation["requestIds"] if identity != request_id]
                 await self._push(user_id, {"type": "chat.typing", "payload": {"typing": False}})
                 await self._push(user_id, {"type": "bot.error", "requestId": request_id,
                                             "payload": {"errorCode": result._error_code_text(), "message": result.message,
-                                                        "requestIds": [request_id]}})
+                                                        **(result.operation or {"requestIds": [request_id]})}})
                 return result
         # The SQL result and required outbox are already committed. No fallible
         # mirror writes or direct reply pushes may turn this into a refund.
@@ -656,11 +712,15 @@ class InteractionHandler:
             elif refund.get("related_item_id") != item["id"] or int(refund.get("change_amount", 0)) != -amount:
                 raise ValueError("reconciliation refund identity is inconsistent")
         await runtime.cancel(owner, source["turn_id"])
+        operation = await runtime.record_interaction_failure(owner, request_id, "generation", "refunded" if charge else "none")
+        await self._push(owner, {"type": "bot.error", "requestId": request_id,
+                                 "payload": {"errorCode": "AI_FAILED_REFUNDED" if charge else "INTERACTION_REJECTED",
+                                             "message": "操作未完成，请重新发送", **operation}})
 
     # ==================== 内部：DeepSeek ====================
-    async def _call_deepseek(self, messages: list[dict]) -> tuple[str, int]:
+    async def _call_deepseek(self, messages: list[dict], retry_rules=None) -> tuple[str, int]:
         """按配置调用 DeepSeek：默认最多重试 5 次，总预算 60 秒。"""
-        retry_rules = self.config_service.get_points_rules().get("deepseek_retry", {})
+        retry_rules = retry_rules if retry_rules is not None else self.config_service.get_points_rules().get("deepseek_retry", {})
         max_retries = int(retry_rules.get("max_retries", 5) or 0)
         total_timeout = float(retry_rules.get("total_timeout_seconds", 60))
         attempt_timeout = float(retry_rules.get("attempt_timeout_seconds", 20))
@@ -709,6 +769,7 @@ class InteractionHandler:
         reason: str,
         attempts: int,
         elapsed_ms: int,
+        request_ids=None,
     ) -> bool:
         """FR-9：幂等退回积分；仅在失败记录持久化后下发兜底完成帧。"""
         refunded = await self._refund_charge(user_id, item, request_id, cost)
@@ -741,7 +802,7 @@ class InteractionHandler:
                     "payload": {
                         "errorCode": "STORAGE_FAILED_REFUNDED",
                         "message": "消息保存失败，请稍后重试",
-                        "requestIds": [request_id],
+                        "requestIds": request_ids or [request_id],
                     },
                 },
             )
@@ -757,7 +818,7 @@ class InteractionHandler:
                         "messageId": failure_message_id,
                         "finalContent": DEFAULT_FALLBACK_TEXT,
                         "timestamp": now_ms,
-                        "requestIds": [request_id],
+                        "requestIds": request_ids or [request_id],
                         "messageKind": "interaction_failed",
                         "interactionItemId": item["id"],
                         "interactionFailed": True,
@@ -826,6 +887,7 @@ class InteractionHandler:
         user_id: str,
         item: dict[str, Any],
         attachment: str = "",
+        config=None,
     ):
         """组装发送给 DeepSeek 的 messages（PRD FR-7）。
 
@@ -842,7 +904,7 @@ class InteractionHandler:
         )
 
         # EDGE-9：模板在请求发起时快照，后台更新只对之后的请求生效
-        interaction_prompt = self.config_service.render_prompt(item)
+        interaction_prompt = self.config_service.render_prompt(item, config=config)
 
         # 附言优先；没有附言时才回退到防抖缓冲（两者不叠加，避免同一句话出现两次）
         attachment = (attachment or "").strip()

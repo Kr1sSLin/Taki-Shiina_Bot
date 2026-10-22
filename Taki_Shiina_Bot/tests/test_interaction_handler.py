@@ -156,6 +156,7 @@ class InteractionHandlerTestCase(unittest.TestCase):
 
     def test_refund_is_idempotent(self):
         self.set_balance(20)
+        self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, "same-key")
         refund = self.rig.points.refund_item(TEST_USER, "coffee", 5, "same-key")
         again = self.rig.points.refund_item(TEST_USER, "coffee", 5, "same-key")
         self.assertTrue(refund.created)

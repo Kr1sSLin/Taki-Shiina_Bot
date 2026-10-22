@@ -11,7 +11,7 @@
 存储为**明文 JSON**（``config/gamification_config.json``）：内容不含用户隐私数据，
 明文可让运营直接改文件，同时提供 ``/api/v1/admin/*`` 接口读写（需求方确认方案）。
 
-热加载：按文件 mtime 判断是否需要重新读取，运营改完文件即时生效。
+热加载：完整校验后发布修订，最近有效版本独立持久化。
 一致性（EDGE-9）：互动请求在**发起时**快照模板，后台更新只影响之后新发起的请求。
 """
 
@@ -22,7 +22,12 @@ import math
 import os
 import threading
 import time
+import copy
+import tempfile
+from contextlib import contextmanager
+from string import Formatter
 from typing import Any
+from services.file_lock import acquire_file_lock, release_file_lock
 
 DEFAULT_CONFIG_FILENAME = "gamification_config.json"
 
@@ -92,7 +97,7 @@ DEFAULT_INTERACTION_ITEMS: list[dict[str, Any]] = [
 ]
 
 # Prompt 模板：以椎名立希“酷但笨拙”的人设撰写，渲染后拼进同一 session 的 system prompt。
-# 可用占位符：{item_name} {item_icon} {cost_points} {user_id}
+# 可用占位符：{item_name} {item_icon} {cost_points} {item_id}
 DEFAULT_PROMPT_TEMPLATES: dict[str, str] = {
     "coffee": (
         "【互动事件】Kris 刚刚送了你一杯{item_icon}{item_name}（消耗 {cost_points} 积分）。\n"
@@ -168,9 +173,18 @@ class ConfigValidationError(ValueError):
     pass
 
 
+class ConfigUnavailableError(RuntimeError):
+    pass
+
+
+class ConfigRevisionConflict(ConfigValidationError):
+    pass
+
+
 def default_config() -> dict[str, Any]:
     return {
         "version": 1,
+        "revision": 1,
         "updated_at": int(time.time() * 1000),
         "interaction_items": json.loads(json.dumps(DEFAULT_INTERACTION_ITEMS, ensure_ascii=False)),
         "prompt_templates": dict(DEFAULT_PROMPT_TEMPLATES),
@@ -216,6 +230,7 @@ def validate_interaction_items(items: Any) -> list[dict[str, Any]]:
         _require(bool(item_id), f"interaction_items[{index}].id 不能为空")
         _require(bool(name), f"interaction_items[{index}].name 不能为空")
         _require(item_id not in seen_ids, f"interaction_items 存在重复 id: {item_id}")
+        _require(type(item.get("cost_points")) is int, "cost_points 必须是整数")
         seen_ids.add(item_id)
         normalized.append(
             {
@@ -240,6 +255,13 @@ def validate_prompt_templates(templates: Any) -> dict[str, str]:
         _require(bool(template_id), "prompt_templates 存在空 key")
         text = str(value or "").strip()
         _require(bool(text), f"prompt_templates.{template_id} 不能为空")
+        try:
+            for _, field, spec, conversion in Formatter().parse(text):
+                if field is not None:
+                    _require(field in {"item_name", "item_icon", "cost_points", "item_id"}, "模板包含未知占位符")
+            text.format(item_name="物品", item_icon="", cost_points=5, item_id="item")
+        except (ValueError, KeyError, IndexError, AttributeError, TypeError):
+            raise ConfigValidationError("模板格式错误") from None
         normalized[template_id] = text
     return normalized
 
@@ -308,7 +330,7 @@ def validate_points_rules(rules: Any) -> dict[str, Any]:
 
     daily_limit = rules.get("interaction_daily_limit", None)
     if daily_limit is not None:
-        daily_limit = _as_int(daily_limit, "interaction_daily_limit", 1)
+        _require(type(daily_limit) is int and daily_limit > 0, "interaction_daily_limit 必须是正整数或 null")
 
     return {
         "daily_first_chat_points": _as_int(rules.get("daily_first_chat_points", 1), "daily_first_chat_points", 0),
@@ -341,8 +363,10 @@ _SECTION_VALIDATORS = {
 
 def validate_config(config: Any) -> dict[str, Any]:
     _require(isinstance(config, dict), "配置必须是对象")
+    _require(type(config.get("version", 1)) is int and config.get("version", 1) == 1, "不支持的配置版本")
+    _require(type(config.get("revision", 1)) is int and config.get("revision", 1) > 0, "revision 必须是正整数")
     base = default_config()
-    result: dict[str, Any] = {"version": 1}
+    result: dict[str, Any] = {"version": 1, "revision": _as_int(config.get("revision", 1), "revision", 1)}
     for section in CONFIG_SECTIONS:
         if section in config:
             result[section] = _SECTION_VALIDATORS[section](config[section])
@@ -362,118 +386,149 @@ def validate_config(config: Any) -> dict[str, Any]:
 # ===================== 服务 =====================
 
 class InteractionConfigService:
-    """配置读取/写入服务（线程安全 + mtime 热加载）。"""
-
-    def __init__(self, config_dir: str, logger, filename: str = DEFAULT_CONFIG_FILENAME):
+    def __init__(self, config_dir: str, logger, filename: str = DEFAULT_CONFIG_FILENAME, *, initialize=False):
         self.config_dir = config_dir
         self.path = os.path.join(config_dir, filename)
+        self.last_good_path = self.path + ".last-good"
         self.logger = logger
         self._lock = threading.RLock()
-        self._cached: dict[str, Any] | None = None
-        self._cached_mtime: float | None = None
-        self.ensure_file()
+        self._cached = None
+        self.degraded = False
+        os.makedirs(config_dir, exist_ok=True)
+        if initialize:
+            with self._publication_lock():
+                if not os.path.exists(self.path) and not os.path.exists(self.last_good_path):
+                    self._publish(default_config())
 
-    # ---------- 文件 ----------
-    def _write_atomic(self, config: dict[str, Any]) -> None:
-        os.makedirs(self.config_dir, exist_ok=True)
-        tmp_path = f"{self.path}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(config, handle, ensure_ascii=False, indent=2)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, self.path)
-
-    def ensure_file(self) -> None:
+    @contextmanager
+    def _publication_lock(self):
         with self._lock:
-            if os.path.exists(self.path):
-                return
-            self._write_atomic(default_config())
-            self.logger.info(f"[配置] 已生成默认配置文件: {self.path}")
-
-    def _mtime(self) -> float | None:
-        try:
-            return os.path.getmtime(self.path)
-        except OSError:
-            return None
-
-    # ---------- 读取 ----------
-    def get_config(self) -> dict[str, Any]:
-        with self._lock:
-            mtime = self._mtime()
-            if self._cached is not None and mtime == self._cached_mtime:
-                return self._cached
+            fd = os.open(self.path + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
             try:
-                with open(self.path, "r", encoding="utf-8") as handle:
-                    raw = json.load(handle)
-                config = validate_config(raw)
-            except FileNotFoundError:
-                config = default_config()
-                self._write_atomic(config)
-            except Exception as exc:
-                self.logger.error(f"[配置] 读取失败，回退内置默认值: {exc}")
-                config = default_config()
-            self._cached = config
-            self._cached_mtime = self._mtime()
-            return config
+                acquire_file_lock(fd, exclusive=True)
+                yield
+            finally:
+                release_file_lock(fd)
+                os.close(fd)
 
-    def get_active_items(self) -> list[dict[str, Any]]:
+    def _write_atomic(self, config, path=None):
+        target = path or self.path
+        fd, tmp = tempfile.mkstemp(prefix=".gamification-", dir=self.config_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(config, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, target)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+    @staticmethod
+    def _contents(config):
+        return {key: config[key] for key in ("version", *CONFIG_SECTIONS)}
+
+    def _read(self, path):
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
+        _require(isinstance(raw, dict) and all(key in raw for key in CONFIG_SECTIONS), "配置段缺失")
+        config = validate_config(raw)
+        config["updated_at"] = raw.get("updated_at", config["updated_at"])
+        return config
+
+    def _publish(self, config):
+        # 审计版本不可覆盖；两份持久副本均写成才向管理调用方报告成功。
+        archive = self.path + f".revision-{config['revision']}"
+        if not os.path.exists(archive):
+            self._write_atomic(config, archive)
+        self._write_atomic(config, self.last_good_path)
+        self._write_atomic(config)
+        self._cached = config
+        self.degraded = False
+
+    def _next_revision(self, current):
+        prefix = os.path.basename(self.path) + ".revision-"
+        revisions = [int(name[len(prefix):]) for name in os.listdir(self.config_dir)
+                     if name.startswith(prefix) and name[len(prefix):].isdigit()]
+        return max([current, *revisions]) + 1
+
+    def _load_locked(self):
+        try:
+            good = self._read(self.last_good_path)
+        except (OSError, ValueError, TypeError):
+            good = self._cached
+        try:
+            current = self._read(self.path)
+            if good is not None:
+                if self._contents(current) != self._contents(good):
+                    current["revision"] = self._next_revision(good["revision"])
+                    self._publish(current)
+                else:
+                    current = good
+            else:
+                self._publish(current)
+            self._cached = current
+            self.degraded = False
+            return current
+        except (OSError, ValueError, TypeError) as error:
+            self.degraded = True
+            self.logger.warning("[配置] 当前配置不可用（%s）", type(error).__name__)
+            if good is None:
+                raise ConfigUnavailableError("礼物配置不可用") from None
+            self._cached = good
+            return good
+
+    def get_config(self):
+        with self._publication_lock():
+            return copy.deepcopy(self._load_locked())
+
+    def get_active_items(self):
         items = [item for item in self.get_config()["interaction_items"] if item["is_active"]]
         return sorted(items, key=lambda entry: (entry["sort_order"], entry["id"]))
 
-    def get_item(self, item_id: str) -> dict[str, Any] | None:
-        for item in self.get_config()["interaction_items"]:
-            if item["id"] == item_id:
-                return item
-        return None
+    def get_item(self, item_id):
+        return next((item for item in self.get_config()["interaction_items"] if item["id"] == item_id), None)
 
-    def get_level_table(self) -> list[dict[str, Any]]:
-        return list(self.get_config()["level_config"])
+    def _non_payment_config(self):
+        try:
+            return self.get_config()
+        except ConfigUnavailableError:
+            # 只供签到、等级等非支付入口；新扣款必须读取严格快照。
+            return default_config()
 
-    def get_points_rules(self) -> dict[str, Any]:
-        return self.get_config()["points_rules"]
+    def get_level_table(self):
+        return self._non_payment_config()["level_config"]
 
-    def get_prompt_template(self, template_id: str) -> str | None:
+    def get_points_rules(self):
+        return self._non_payment_config()["points_rules"]
+
+    def get_prompt_template(self, template_id):
         return self.get_config()["prompt_templates"].get(template_id)
 
-    def render_prompt(self, item: dict[str, Any]) -> str:
-        """按物品渲染 Prompt 模板（EDGE-9：调用方在请求发起时快照本结果）。"""
-        template_id = item.get("prompt_template_id") or item.get("id")
-        template = self.get_prompt_template(template_id)
-        if not template:
-            template = "【互动事件】Kris 送了你{item_name}，用你一贯的语气回应他，1～3 行短句。"
-        try:
-            return template.format(
-                item_name=item.get("name", ""),
-                item_icon=item.get("icon", ""),
-                cost_points=item.get("cost_points", 0),
-                item_id=item.get("id", ""),
-            )
-        except (KeyError, IndexError, ValueError):
-            # 模板里出现未知占位符时按原文使用，避免占位符直接漏给模型
-            return template
+    def render_prompt(self, item, *, config=None):
+        config = config if config is not None else self.get_config()
+        template = config["prompt_templates"][item.get("prompt_template_id") or item["id"]]
+        return template.format(item_name=item.get("name", ""), item_icon=item.get("icon", ""),
+                               cost_points=item["cost_points"], item_id=item["id"])
 
-    # ---------- 写入（管理接口） ----------
-    def update_sections(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """局部更新配置：只覆盖 payload 中出现的 section。"""
-        with self._lock:
-            unknown = [key for key in payload.keys() if key not in CONFIG_SECTIONS]
+    def interaction_snapshot(self, item_id):
+        config = self.get_config()
+        item = next((item for item in config["interaction_items"] if item["id"] == item_id), None)
+        return config, item
+
+    def update_sections(self, payload, *, expected_revision=None):
+        with self._publication_lock():
+            unknown = set(payload) - set(CONFIG_SECTIONS)
             if unknown:
-                raise ConfigValidationError(f"未知配置段: {', '.join(unknown)}")
-            merged = dict(self.get_config())
-            for section, value in payload.items():
-                merged[section] = value
-            config = validate_config(merged)
-            self._write_atomic(config)
-            self._cached = config
-            self._cached_mtime = self._mtime()
-            self.logger.info(f"[配置] 已更新配置段: {', '.join(payload.keys()) or '(空)'}")
-            return config
+                raise ConfigValidationError("未知配置段")
+            current = self._load_locked()
+            if expected_revision is not None and expected_revision != current["revision"]:
+                raise ConfigRevisionConflict("配置版本已改变，请刷新后重试")
+            config = validate_config({**current, **payload})
+            config["revision"] = self._next_revision(current["revision"])
+            self._publish(config)
+            return copy.deepcopy(config)
 
-    def reset_to_default(self) -> dict[str, Any]:
-        with self._lock:
-            config = default_config()
-            self._write_atomic(config)
-            self._cached = config
-            self._cached_mtime = self._mtime()
-            self.logger.info("[配置] 已恢复内置默认配置")
-            return config
+    def reset_to_default(self, *, expected_revision=None):
+        return self.update_sections({key: default_config()[key] for key in CONFIG_SECTIONS},
+                                    expected_revision=expected_revision)

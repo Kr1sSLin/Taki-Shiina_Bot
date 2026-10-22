@@ -21,6 +21,8 @@ import {
 } from '@shared/ipc'
 import { PROTOCOL } from '@shared/levels'
 import type {
+  BotErrorPayload,
+  WsBotErrorFrame,
   InteractionItemsData,
   LevelChangedPayload,
   LevelConfigData,
@@ -66,6 +68,7 @@ export interface GamificationDeps {
   notify: NotificationService
   /** 把被防抖摘走的用户消息批量标记为已送达（EDGE-L22）。 */
   applyMergedRequestIds: (ids: string[]) => void
+  applyInteractionFailure?: (frame: WsBotErrorFrame) => void
   /** 当前 WS 是否已连接（决定是否启用轮询兜底）。 */
   isWsConnected: () => boolean
   /** 跳转到补签日历（FR-LV-5a）。 */
@@ -252,12 +255,21 @@ export class GamificationService {
     } catch (err) {
       const code = err instanceof TksApiError ? err.code : null
 
+      const failure = err instanceof TksApiError ? err.data as Partial<BotErrorPayload> | null : null
+      if (failure?.recoveryAction === 'resend_new_request' && Array.isArray(failure.requestIds)) {
+        this.deps.applyInteractionFailure?.({ type: 'bot.error', requestId, payload: {
+          errorCode: failure.errorCode ?? String(code), message: (err as Error).message,
+          requestIds: failure.requestIds, timestamp: failure.timestamp ?? Date.now(),
+          recoveryAction: failure.recoveryAction, refundStatus: failure.refundStatus, retryable: failure.retryable
+        } })
+      }
+
       // 业务失败（HTTP 200 + code != 0）：仍要处理余额与退款语义
-      if (code === 40201 || code === 40202 || code === 40204) {
+      if (code !== null && [40201, 40202, 40203, 40204, 40205, 50303].includes(code)) {
         const detail = (err as TksApiError).message
         log.warn('互动业务失败', { itemId, requestId, code, detail })
         // 40204：积分已由服务端退回 → 刷新余额；客户端**不做**本地补偿（EDGE-L18）
-        if (code === 40204) {
+        if (code === 40204 || code === 40205) {
           void this.balance().catch(() => undefined)
         }
         return { data: null, code, mergedRequestIds: [] }

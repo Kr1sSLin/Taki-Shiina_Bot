@@ -4,14 +4,88 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+import json
+import logging
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, patch
 
-from services.interaction_config_service import ConfigValidationError, default_config, validate_points_rules
+from services.interaction_config_service import ConfigValidationError, ConfigRevisionConflict, ConfigUnavailableError, InteractionConfigService, default_config, validate_points_rules
+from gamification_fixture import make_rig, TEST_USER
 from services.weather_service import WeatherService
 from services.text_generation import TextGenerator
 
 
 class StagingSettingsTests(unittest.TestCase):
+    def test_config_recovery_restart_manual_revision_and_snapshot_isolation(self):
+        tmp, rig = make_rig()
+        with tmp:
+            service = rig.gamification.config
+            original = service.get_config()
+            changed = service.update_sections({"interaction_items": [{**item, "cost_points": 17} for item in original["interaction_items"]]}, expected_revision=original["revision"])
+            detached = service.get_config()
+            detached["interaction_items"][0]["cost_points"] = 99
+            Path(service.path).write_text("{损坏", encoding="utf-8")
+            for candidate in (service, InteractionConfigService(service.config_dir, logging.getLogger("test"))):
+                self.assertEqual(candidate.get_item("coffee")["cost_points"], 17)
+                self.assertTrue(candidate.degraded)
+            manual = {**changed, "interaction_items": [{**item, "cost_points": 19} for item in changed["interaction_items"]]}
+            Path(service.path).write_text(json.dumps(manual), encoding="utf-8")
+            current = service.get_config()
+            self.assertGreater(current["revision"], changed["revision"])
+            self.assertEqual(current["interaction_items"][0]["cost_points"], 19)
+            with self.assertRaises(ConfigRevisionConflict):
+                service.update_sections({"points_rules": original["points_rules"]}, expected_revision=changed["revision"])
+
+    def test_config_rejects_templates_and_parallel_stale_writes(self):
+        tmp, rig = make_rig()
+        with tmp:
+            service = rig.gamification.config
+            original = service.get_config()
+            for template in ("{unknown}", "{item_name", "{item_name.__class__}", "{cost_points:wrong}", "{}", "{cost_points:{item_name}}"):
+                with self.subTest(template=template), self.assertRaises(ConfigValidationError):
+                    service.update_sections({"prompt_templates": {**original["prompt_templates"], "coffee": template}})
+            other = InteractionConfigService(service.config_dir, logging.getLogger("test"))
+            def update(candidate):
+                try:
+                    return candidate.update_sections({"points_rules": original["points_rules"]}, expected_revision=original["revision"])
+                except ConfigRevisionConflict:
+                    return None
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(update, (service, other)))
+            self.assertEqual(sum(result is not None for result in results), 1)
+            self.assertEqual(service.get_config()["revision"], original["revision"] + 1)
+
+    def test_unrecoverable_config_stops_new_gifts_but_keeps_refunds(self):
+        tmp, rig = make_rig()
+        with tmp:
+            rig.points.adjust_balance(TEST_USER, 20)
+            rig.points.deduct_for_item(TEST_USER, "coffee", 5, "old-paid")
+            service = rig.gamification.config
+            for path in (service.path, service.last_good_path):
+                Path(path).write_text("{损坏", encoding="utf-8")
+            restarted = InteractionConfigService(service.config_dir, logging.getLogger("test"))
+            rig.points.config_service = restarted
+            with self.assertRaises(ConfigUnavailableError):
+                restarted.get_config()
+            with self.assertRaises(ConfigUnavailableError):
+                rig.points.deduct_for_item(TEST_USER, "coffee", 5, "new")
+            self.assertTrue(rig.points.refund_item(TEST_USER, "coffee", 5, "old-paid").created)
+            self.assertEqual(rig.points.get_balance(TEST_USER), 20)
+            self.assertEqual(restarted.get_points_rules()["daily_first_chat_points"], 1)
+
+    def test_config_dual_write_failure_is_not_reported_as_publication_success(self):
+        tmp, rig = make_rig()
+        with tmp:
+            service = rig.gamification.config
+            original = service.get_config()
+            write = service._write_atomic
+            def fail_current(config, path=None):
+                if path is None:
+                    raise OSError("合成当前配置同步失败")
+                write(config, path)
+            with patch.object(service, "_write_atomic", side_effect=fail_current), self.assertRaises(OSError):
+                service.update_sections({"points_rules": {**original["points_rules"], "interaction_daily_limit": 2}})
+
     def test_default_budget_and_invalid_configuration(self):
         rules = default_config()["points_rules"]
         self.assertEqual(rules["deepseek_retry"]["total_timeout_seconds"], 60)

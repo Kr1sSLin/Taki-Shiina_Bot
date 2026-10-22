@@ -75,6 +75,8 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
             incoming_interactions = sum(command.intent == "interaction" for command, _, _ in pending)
             if incoming_interactions > 1:
                 raise ValueError("only one interaction is allowed per logical turn")
+            if incoming_interactions and len(pending) != 1:
+                raise ValueError("unpaid interaction must have an isolated intent")
             max_images = max(1, int(os.getenv("VISION_MAX_IMAGE_COUNT", "3")))
             incoming_images = sum(len((command.metadata or {}).get("images") or []) for command, _, _ in pending)
             if incoming_images > max_images:
@@ -90,6 +92,8 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
             candidates = conn.execute("SELECT * FROM chat_turns WHERE owner=? AND status IN ('pending','running','completed') AND deadline>? ORDER BY created DESC,rowid DESC", (owner, now))
             for candidate in candidates:
                 row, candidate_body = self._turn(conn, candidate["id"])
+                if incoming_interactions or any(state != "confirmed" for state in candidate_body.get("payments", {}).values()):
+                    continue
                 if candidate_body.get("dispatched_at") or candidate_body.get("revoked"):
                     continue
                 # Existing paid operations retain their independent identity.
@@ -226,6 +230,10 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
             self._save_turn(conn, row, body)
 
     def _claim_allowed(self, conn, row, payload):
+        if payload.get("kind") == "extract":
+            _, body = self._turn(conn, payload["turn_id"])
+            if body.get("payments", {}).get(payload["message_id"], "confirmed") != "confirmed":
+                return False
         if payload.get("kind") == "deliver":
             event = conn.execute("SELECT * FROM events WHERE id=?", (payload["event_id"],)).fetchone()
             if event:
@@ -252,6 +260,8 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
         earlier = conn.execute("SELECT id FROM chat_turns WHERE owner=? AND status IN ('pending','running') AND rowid<(SELECT rowid FROM chat_turns WHERE id=?) ORDER BY rowid", (row["owner"], turn["id"]))
         for previous in earlier:
             older, old_body = self._turn(conn, previous["id"])
+            if any(state != "confirmed" for state in old_body.get("payments", {}).values()):
+                continue
             older_job = conn.execute("SELECT status FROM jobs WHERE id=?", (old_body["job_id"],)).fetchone()
             if older_job and older_job["status"] not in ("failed", "cancelled") and older["deadline"] > self.clock() and not old_body.get("dispatched_at") and not old_body.get("revoked"):
                 return False
@@ -782,7 +792,57 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
             row = conn.execute("SELECT * FROM requests WHERE owner=? AND request_key=?", (key, request_key)).fetchone()
             if row is None:
                 return None
-            return {"turn_id": row["turn_id"], "source": self.cipher.decrypt(Domain.SOURCE_MESSAGE, key, row["id"], row["body"])}
+            turn, body = self._turn(conn, row["turn_id"])
+            if turn["owner"] != key:
+                raise PermissionDenied("request turn owner mismatch")
+            return {"turn_id": row["turn_id"], "source": self.cipher.decrypt(Domain.SOURCE_MESSAGE, key, row["id"], row["body"]),
+                    "operation": self._operation(conn, turn, body)}
+
+    def _operation(self, conn, row, body):
+        job = conn.execute("SELECT * FROM jobs WHERE id=?", (body["job_id"],)).fetchone()
+        failed = row["status"] in ("cancelled", "failed") or job["status"] in ("cancelled", "failed") or row["deadline"] <= self.clock()
+        status = "completed" if row["status"] == "completed" else "failed" if failed else "processing"
+        sources = []
+        for identity in body["sources"]:
+            source = conn.execute("SELECT body FROM requests WHERE id=?", (identity,)).fetchone()
+            value = self.cipher.decrypt(Domain.SOURCE_MESSAGE, row["owner"], identity, source["body"])
+            metadata = value.get("metadata") or {}
+            sources.append({"requestId": value["request_id"], "clientMessageId": value["client_message_id"],
+                            "messageId": value["request_id"] if value.get("intent") == "interaction" else value["client_message_id"], "role": "user", "userId": value["owner"],
+                            "content": value["text"], "timestamp": int(value["received_at"] * 1000),
+                            "imageCount": len(metadata.get("images") or []),
+                            "contentType": "interaction" if value.get("intent") == "interaction" else "mixed" if metadata.get("images") else "text"})
+        failure = body.get("failure") or {}
+        payload = self.cipher.decrypt(Domain.JOB, row["owner"], job["id"], job["body"])
+        return {"status": status, "requestIds": [source["requestId"] for source in sources], "sources": sources,
+                "failureCategory": failure.get("failureCategory", payload.get("failure_category", "generation")) if status == "failed" else None,
+                "failureCode": failure.get("errorCode", 40204) if status == "failed" else None,
+                "refundStatus": failure.get("refundStatus", "pending" if body.get("payments") else "none") if status == "failed" else "none",
+                "retryable": status == "processing", "recoveryAction": "resend_new_request" if status == "failed" else "poll_status" if status == "processing" else "none"}
+
+    def record_interaction_failure(self, owner, request_id, category, refund_status, error_code=40204):
+        with self._transaction() as conn:
+            self._require_ready(conn)
+            _, _, row, body = self._interaction(conn, owner, request_id)
+            if row["status"] == "completed":
+                raise VersionConflict("committed interaction cannot fail")
+            previous = body.get("failure") or {}
+            body["failure"] = {"failureCategory": previous.get("failureCategory", category), "refundStatus": refund_status,
+                               "errorCode": previous.get("errorCode", error_code)}
+            self._save_turn(conn, row, body)
+            return self._operation(conn, row, body)
+
+    def failed_operations(self, owner):
+        key = self.cipher.index("owner", owner)
+        with self._transaction(write=False) as conn:
+            self._require_ready(conn)
+            results = []
+            for row in conn.execute("SELECT * FROM chat_turns WHERE owner=? AND status<>'completed' ORDER BY created", (key,)):
+                _, body = self._turn(conn, row["id"])
+                operation = self._operation(conn, row, body)
+                if operation["status"] == "failed" and operation["requestIds"]:
+                    results.append(operation)
+            return results
 
     def cancel(self, owner, turn_id):
         key = self.cipher.index("owner", owner)
@@ -796,6 +856,9 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
             body["payments"] = {identity: "cancelled" for identity in body.get("payments", {})}
             self._save_turn(conn, row, body, status="cancelled", generation=row["generation"] + 1)
             conn.execute("UPDATE jobs SET status='cancelled',lease_token=NULL,lease_until=NULL WHERE id=?", (body["job_id"],))
+            for source_id in body["sources"]:
+                dedupe = self.cipher.index("job", key, "extract", source_id)
+                conn.execute("UPDATE jobs SET status='cancelled' WHERE dedupe=? AND status IN ('pending','retry_wait')", (dedupe,))
             return None
 
     def _interaction(self, conn, owner, request_id):
@@ -807,20 +870,72 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
         if command.get("intent") != "interaction":
             raise PermissionDenied("request is not an interaction")
         row, body = self._turn(conn, source["turn_id"])
+        if row["owner"] != key:
+            raise PermissionDenied("interaction turn owner mismatch")
+        # 升级前已接收但未支付的混合轮次，也必须先拆出礼物才能扣款或补偿。
+        if row["status"] == "pending" and len(body["sources"]) > 1 and body.get("payments", {}).get(source["id"]) in ("pending", "paid"):
+            turn_id = new_id()
+            job_id = self._enqueue(conn, key, "chat", turn_id, {"kind": "chat", "turn_id": turn_id, "dependencies": []})
+            isolated = {"owner": owner, "sources": [source["id"]], "payments": {source["id"]: body["payments"].pop(source["id"])},
+                        "job_id": job_id, "result": None, "merge_pending": False, "memory_first": body.get("memory_first", False),
+                        "image_count": 0, "image_bytes": 0, "phases": [{"phase": "accepted", "at": row["created"], "generation": 1}]}
+            conn.execute("INSERT INTO chat_turns VALUES (?,?,'pending',1,?,?,?)", (turn_id, key, row["created"], row["deadline"], self.cipher.encrypt(Domain.DERIVED, key, turn_id, isolated)))
+            body["sources"].remove(source["id"])
+            self._save_turn(conn, row, body, generation=row["generation"] + 1)
+            conn.execute("UPDATE requests SET turn_id=? WHERE id=?", (turn_id, source["id"]))
+            self._move_interaction_jobs(conn, key, source["id"], turn_id)
+            source = conn.execute("SELECT * FROM requests WHERE id=?", (source["id"],)).fetchone()
+            row, body = self._turn(conn, turn_id)
         return source, command, row, body
+
+    def _move_interaction_jobs(self, conn, owner_key, source_id, turn_id):
+        for kind in ("extract", "interaction_reconcile"):
+            dedupe = self.cipher.index("job", owner_key, kind, source_id)
+            job = conn.execute("SELECT * FROM jobs WHERE dedupe=?", (dedupe,)).fetchone()
+            payload = self.cipher.decrypt(Domain.JOB, owner_key, job["id"], job["body"])
+            payload["turn_id"] = turn_id
+            conn.execute("UPDATE jobs SET body=? WHERE id=?", (self.cipher.encrypt(Domain.JOB, owner_key, job["id"], payload), job["id"]))
 
     def _confirm_payment(self, conn, source, row, body):
         state = body.get("payments", {}).get(source["id"])
-        if row["status"] in ("cancelled", "completed") or state not in ("pending", "confirmed"):
+        if row["status"] in ("cancelled", "completed") or row["deadline"] <= self.clock() or state not in ("pending", "paid", "confirmed"):
             raise VersionConflict("interaction payment is no longer pending")
-        body["payments"][source["id"]] = "confirmed"
+        body["payments"][source["id"]] = "paid"
         self._save_turn(conn, row, body)
 
     def confirm_interaction(self, owner, request_id):
         with self._transaction() as conn:
             self._require_ready(conn)
-            source, _, row, body = self._interaction(conn, owner, request_id)
+            source, command, row, body = self._interaction(conn, owner, request_id)
+            state = body.get("payments", {}).get(source["id"])
+            if state == "confirmed":
+                return row["id"]
             self._confirm_payment(conn, source, row, body)
+            target = None
+            if (command.get("metadata") or {}).get("merge_after_payment"):
+                candidates = conn.execute("SELECT id FROM chat_turns WHERE owner=? AND status='pending' AND id<>? AND deadline>? ORDER BY created DESC,rowid DESC", (row["owner"], row["id"], self.clock())).fetchall()
+                for candidate in candidates:
+                    other, value = self._turn(conn, candidate["id"])
+                    job = conn.execute("SELECT status FROM jobs WHERE id=?", (value["job_id"],)).fetchone()
+                    if value.get("merge_pending") and not value.get("payments") and not value.get("dispatched_at") and job and job["status"] == "pending":
+                        target = other, value
+                        break
+            if target is not None:
+                other, value = target
+                value["sources"].append(source["id"])
+                value.setdefault("payments", {})[source["id"]] = "confirmed"
+                self._save_turn(conn, other, value, generation=other["generation"] + 1)
+                conn.execute("UPDATE chat_turns SET deadline=MIN(deadline,?) WHERE id=?", (row["deadline"], other["id"]))
+                conn.execute("UPDATE requests SET turn_id=? WHERE id=?", (other["id"], source["id"]))
+                # 移动原任务而不重新入队，保留提取与补偿的幂等身份。
+                self._move_interaction_jobs(conn, row["owner"], source["id"], other["id"])
+                body["sources"], body["payments"] = [], {}
+                self._save_turn(conn, row, body, status="cancelled", generation=row["generation"] + 1)
+                conn.execute("UPDATE jobs SET status='cancelled' WHERE id=?", (body["job_id"],))
+                return other["id"]
+            body["payments"][source["id"]] = "confirmed"
+            self._save_turn(conn, row, body)
+            return row["id"]
 
     def charge_interaction(self, owner, request_id, charge):
         # This is a short local storage operation, never a model/network call.
@@ -829,9 +944,14 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
         # which is deterministically compensated after restart.
         with self._transaction() as conn:
             self._require_ready(conn)
+            self._interaction(conn, owner, request_id)
+        with self._transaction() as conn:
+            self._require_ready(conn)
             source, _, row, body = self._interaction(conn, owner, request_id)
-            if body.get("payments", {}).get(source["id"]) not in ("pending", "confirmed") or row["status"] in ("cancelled", "completed"):
+            if body.get("payments", {}).get(source["id"]) not in ("pending", "paid", "confirmed") or row["status"] in ("cancelled", "completed") or row["deadline"] <= self.clock():
                 raise VersionConflict("interaction payment has already been reconciled")
+            if body["payments"][source["id"]] == "confirmed":
+                return charge()
             result = charge()
             self._confirm_payment(conn, source, row, body)
             return result
@@ -846,7 +966,7 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
             if not source:
                 raise PermissionDenied("interaction source unavailable")
             command = self.cipher.decrypt(Domain.SOURCE_MESSAGE, lease["owner"], source["id"], source["body"])
-            row, body = self._turn(conn, source["turn_id"])
+            source, command, row, body = self._interaction(conn, command["owner"], command["request_id"])
             state = body.get("payments", {}).get(source["id"])
             if row["status"] == "completed":
                 # Reuse the durable payment recovery job to finish idempotent

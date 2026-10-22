@@ -70,6 +70,7 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
     private readonly IAuthService? _auth;
     private readonly IAttachmentPort? _attachments;
     private readonly IHistoryImageRestorer? _imageRestorer;
+    private readonly IMediaService? _media;
     private readonly TimeProvider _timeProvider;
 
     private readonly StreamingAccumulator _streaming;
@@ -110,7 +111,8 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         IAuthService? authService = null,
         IAttachmentPort? attachmentPort = null,
         IRestPort? rest = null,
-        IHistoryImageRestorer? imageRestorer = null)
+        IHistoryImageRestorer? imageRestorer = null,
+        IMediaService? media = null)
     {
         ArgumentNullException.ThrowIfNull(repository);
         ArgumentNullException.ThrowIfNull(wss);
@@ -129,6 +131,7 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         _auth = authService;
         _attachments = attachmentPort;
         _imageRestorer = imageRestorer;
+        _media = media;
         _timeProvider = timeProvider ?? TimeProvider.System;
 
         _streaming = new StreamingAccumulator(_timeProvider);
@@ -298,6 +301,19 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         {
             await RaiseNoticeAsync(NoticeNotConnected).ConfigureAwait(false);
             return new SendResult(false, null, NoticeNotConnected);
+        }
+
+        if (row.ErrorCode == "RESEND_NEW_REQUEST")
+        {
+            var drafts = new List<AttachmentDraft>();
+            foreach (var path in row.AttachmentPaths)
+            {
+                if (_media is null) return new SendResult(false, null, ErrorCatalog.UnknownI18nKey);
+                var imported = await _media.AddFromFileAsync(path).ConfigureAwait(false);
+                if (!imported.Success || imported.Draft is null) return new SendResult(false, null, imported.ErrorI18nKey);
+                drafts.Add(imported.Draft);
+            }
+            return await SendAsync(Guid.NewGuid().ToString("N"), row.Content, drafts).ConfigureAwait(false);
         }
 
         await _repository
@@ -602,6 +618,12 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         await _frameGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            if (!success && response?.RecoveryAction == "resend_new_request")
+            {
+                await HandleBotErrorAsync(new(requestId, new() { ErrorCode = errorCode, Message = response.MessageText,
+                    RequestIds = response.RequestIds ?? response.MergedRequestIds, RecoveryAction = response.RecoveryAction })).ConfigureAwait(false);
+                return;
+            }
             var existing = await _repository.GetMessageAsync(requestId).ConfigureAwait(false);
             // A successful WS response can precede a lost HTTP response.
             if (success || existing?.Status != ProtocolConstants.StatusSent)
@@ -788,7 +810,7 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
             }
 
             _ = await _repository
-                .UpdateMessageStatusAsync(requestId, ProtocolConstants.StatusError, code)
+                .UpdateMessageStatusAsync(requestId, ProtocolConstants.StatusError, payload.RecoveryAction == "resend_new_request" ? "RESEND_NEW_REQUEST" : code)
                 .ConfigureAwait(false);
             await RaiseRowAsync(requestId).ConfigureAwait(false);
         }

@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 from datetime import date, timedelta
 
 from gamification_fixture import TEST_USER, d, make_rig  # noqa: F401  (夹具已处理 sys.path)
 from services.progress_store import (
+    PointsStore,
     REASON_ANNIVERSARY,
     REASON_DAILY_FIRST_CHAT,
     REASON_STREAK_3_DAY,
     SOURCE_CHAT,
 )
+from services.points_service import InteractionLimitError, LedgerReconciliationError
 
 
 class PointsLevelTestCase(unittest.TestCase):
@@ -34,6 +38,63 @@ class PointsLevelTestCase(unittest.TestCase):
 
     def reasons(self):
         return [entry["reason_code"] for entry in self.rig.ledger()]
+
+    def test_atomic_daily_limit_owner_isolation_and_original_retry(self):
+        with self.rig.gamification.points_store.transaction() as data:
+            for owner in (TEST_USER, "other"):
+                PointsStore.ensure_account(data, owner)["balance"] = 100
+        rules = self.rig.gamification.config.get_points_rules()
+        self.rig.gamification.config.update_sections({"points_rules": {**rules, "interaction_daily_limit": 2}})
+        def charge(index):
+            try:
+                return self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, f"concurrent-{index}", "2026-10-22")
+            except InteractionLimitError:
+                return None
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            approved = [result for result in pool.map(charge, range(5)) if result]
+        self.assertEqual(len(approved), 2)
+        self.assertEqual(self.rig.points.get_balance(TEST_USER), 90)
+        original = approved[0].entry["idempotency_key"].split(f"item_send:{TEST_USER}:", 1)[1]
+        self.assertFalse(self.rig.points.deduct_for_item(TEST_USER, "coffee", 99, original, "2026-10-23").created)
+        self.assertTrue(self.rig.points.deduct_for_item("other", "coffee", 5, "other", "2026-10-22").created)
+        self.assertEqual({result.entry["daily_limit"] for result in approved}, {2})
+
+    def test_cross_day_refund_limit_changes_and_failed_refund(self):
+        with self.rig.gamification.points_store.transaction() as data:
+            PointsStore.ensure_account(data, TEST_USER)["balance"] = 100
+        self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, "old", "2026-10-21")
+        rules = self.rig.gamification.config.get_points_rules()
+        self.rig.gamification.config.update_sections({"points_rules": {**rules, "interaction_daily_limit": 1}})
+        with self.assertRaises(InteractionLimitError):
+            self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, "blocked", "2026-10-21")
+        with patch.object(self.rig.gamification.points_store, "_save", side_effect=OSError("合成退款落盘失败")):
+            with self.assertRaises(OSError):
+                self.rig.points.refund_item(TEST_USER, "coffee", 5, "old", "2026-10-22")
+        with self.assertRaises(InteractionLimitError):
+            self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, "still-blocked", "2026-10-21")
+        refund = self.rig.points.refund_item(TEST_USER, "coffee", 5, "old", "2026-10-22")
+        self.assertEqual(refund.entry["business_date"], "2026-10-21")
+        self.assertGreater(refund.entry["created_at"], 0)
+        # 模拟旧版退款记在实际发生日；关联仍应释放原扣款名额。
+        with self.rig.gamification.points_store.transaction() as data:
+            PointsStore.find_by_idempotency(data, f"item_refund:{TEST_USER}:old")["business_date"] = "2026-10-22"
+        self.assertTrue(self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, "released", "2026-10-21").created)
+        self.assertTrue(self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, "today", "2026-10-22").created)
+        with self.assertRaises(LedgerReconciliationError):
+            self.rig.points.refund_item(TEST_USER, "coffee", 6, "today")
+
+    def test_ambiguous_legacy_ledger_blocks_only_new_limited_charges(self):
+        with self.rig.gamification.points_store.transaction() as data:
+            PointsStore.ensure_account(data, TEST_USER)["balance"] = 100
+        original = self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, "legacy")
+        with self.rig.gamification.points_store.transaction() as data:
+            PointsStore.find_by_idempotency(data, original.entry["idempotency_key"])["business_date"] = None
+        rules = self.rig.gamification.config.get_points_rules()
+        self.rig.gamification.config.update_sections({"points_rules": {**rules, "interaction_daily_limit": 2}})
+        with self.assertRaises(LedgerReconciliationError):
+            self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, "new")
+        self.assertFalse(self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, "legacy").created)
+        self.assertTrue(self.rig.points.refund_item(TEST_USER, "coffee", 5, "legacy").created)
 
     # ---------- 每日首次对话 +1 ----------
     def test_daily_first_chat_awards_once_per_day(self):

@@ -331,7 +331,8 @@ export class RestClient {
       const code = extractApiErrorCode(result.json)
       const message = extractApiErrorMessage(result.json) ?? `HTTP ${result.status}`
       log.warn('请求返回错误状态', { path, traceId, status: result.status, code })
-      throw new TksApiError(message, { code, httpStatus: result.status, traceId })
+      const body = result.json as { data?: unknown; detail?: { data?: unknown } } | null
+      throw new TksApiError(message, { code, httpStatus: result.status, traceId, data: body?.data ?? body?.detail?.data })
     }
 
     // ── 2xx：判断业务失败（HTTP 200 + code != 0，积分路由的约定）
@@ -346,7 +347,8 @@ export class RestClient {
         throw new TksApiError(body.message ?? `business error ${body.code}`, {
           code: body.code,
           httpStatus: result.status,
-          traceId: body.traceId ?? traceId
+          traceId: body.traceId ?? traceId,
+          data: body.data
         })
       }
       return body.data

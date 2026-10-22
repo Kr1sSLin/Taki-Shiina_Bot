@@ -266,6 +266,20 @@ export interface BotErrorPayload {
   message: string
   requestIds: string[]
   timestamp: number
+  retryable?: boolean
+  recoveryAction?: string
+  refundStatus?: string
+  failureCategory?: string
+}
+
+export interface ChatOperation {
+  status: string
+  requestIds: string[]
+  retryable?: boolean
+  recoveryAction?: string
+  refundStatus?: string
+  failureCategory?: string
+  sources?: TimelineItem[]
 }
 
 /* ---- 积分 / 等级 / 补签卡 WS 事件（§11.1，共 5 个） ---- */

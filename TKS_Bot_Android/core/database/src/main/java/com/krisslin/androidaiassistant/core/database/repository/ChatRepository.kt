@@ -95,6 +95,8 @@ class ChatRepository @Inject constructor(
         return chatMessageDao.getLatest(sessionId, limit)
     }
 
+    suspend fun getMessage(messageId: String): ChatMessageEntity? = chatMessageDao.getById(messageId)
+
     /**
      * 保存用户消息（发送中状态）
      */

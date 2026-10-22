@@ -185,6 +185,10 @@ public sealed class ChatQueuedPayloadDto
 /// <summary>`bot.error` 的 payload。</summary>
 public sealed class BotErrorPayloadDto
 {
+    [JsonPropertyName("retryable")] public bool? Retryable { get; set; }
+    [JsonPropertyName("recoveryAction")] public string? RecoveryAction { get; set; }
+    [JsonPropertyName("refundStatus")] public string? RefundStatus { get; set; }
+    [JsonPropertyName("failureCategory")] public string? FailureCategory { get; set; }
     [JsonPropertyName("errorCode")]
     public string? ErrorCode { get; set; }
 

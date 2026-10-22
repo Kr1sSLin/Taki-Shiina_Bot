@@ -125,6 +125,18 @@ class ReliableImageHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(opened.status_code, 200)
         self.assertEqual(opened.content, self.original)
 
+    async def test_failed_batch_retains_original_image_and_recoverable_source_after_restart(self):
+        self.store.cancel(self.owner_a, self.receipt["turn_id"])
+        self.store = ReliableChatStore(self.path, self.cipher)
+        response = await self.client.get("/api/v1/chat/history", headers=self.headers_a)
+        operation = response.json()["data"]["operations"][0]
+        self.assertEqual(operation["recoveryAction"], "resend_new_request")
+        self.assertEqual(operation["sources"][0]["requestId"], self.request_id)
+        self.assertEqual(operation["sources"][0]["imageCount"], 1)
+        original = await self.client.get(self.url(), headers=self.headers_a)
+        self.assertEqual(original.content, self.original)
+        self.assertNotIn(self.image["dataBase64"], response.text)
+
     async def test_backup_copy_stays_closed_then_returns_original_after_permission_check(self):
         backup_path = str(pathlib.Path(self.temp.name) / "backup.sqlite3")
         authoritative_sequence = self.store.change_head()

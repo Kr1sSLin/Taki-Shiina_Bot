@@ -61,6 +61,24 @@ internal class ChatTimelineSynchronizer(
                 )
             }
         }
+        for (element in response.getAsJsonObject("data")?.getAsJsonArray("operations") ?: JsonArray()) {
+            val operation = element.asJsonObject
+            if (operation.get("status")?.asString != "failed") continue
+            for (source in TimelineHistoryNormalizer.normalize(operation.getAsJsonArray("sources") ?: JsonArray())) {
+                if (chatRepository.getMessage(source.messageId) == null) {
+                    if (!force && source.sourceTimestamp <= historyCursorMs) continue
+                    chatRepository.saveExternalMessage(source.messageId, sessionId, MessageRole.USER, source.content, source.timestamp,
+                        HistoryImageRestorePolicy.contentType(source.content, source.imageCount), ModelProvider.DEEPSEEK)
+                }
+                chatRepository.markMessageError(source.messageId, "RESEND_NEW_REQUEST")
+                if (source.imageCount > 0) imageAttachmentManager.restoreHistoryImages(source.requestId ?: source.messageId, source.messageId, source.imageCount)
+            }
+            for (identity in operation.getAsJsonArray("requestIds") ?: JsonArray()) {
+                val requestId = identity.asString
+                chatRepository.markMessageError(requestId, "RESEND_NEW_REQUEST")
+                chatRepository.deleteMessage("pending_$requestId")
+            }
+        }
         // Commit the cursor only after every Room write succeeds. Display timestamps
         // contain synthetic segment offsets; they must never become server cursors.
         // Re-read the boundary millisecond because the API uses strict `> since`.

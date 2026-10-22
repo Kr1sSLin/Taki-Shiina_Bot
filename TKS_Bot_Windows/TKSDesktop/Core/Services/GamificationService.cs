@@ -131,7 +131,7 @@ public sealed class GamificationService : IGamificationService, IDisposable
         }
         var data = call.Value;
         var success = call.Success && data?.Success == true;
-        var code = int.TryParse(call.ErrorCode, out var parsed) ? parsed : data?.ErrorCode;
+        int? code = int.TryParse(call.ErrorCode, out var parsed) || int.TryParse(data?.ErrorCode?.ToString(), out parsed) ? parsed : null;
         if (data?.Balance is { } balance) await SetBalanceAsync(balance, ct).ConfigureAwait(false);
         if (_delivery is not null) await _delivery.CompleteAsync(requestId, data, success, call.ErrorCode).ConfigureAwait(false);
         if (data?.Balance is null || data.Refunded == true)

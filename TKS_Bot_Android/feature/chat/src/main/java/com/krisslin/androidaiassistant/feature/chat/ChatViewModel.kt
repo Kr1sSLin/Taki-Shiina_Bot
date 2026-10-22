@@ -324,6 +324,13 @@ class ChatViewModel @Inject constructor(
                 return@launch
             }
             if (envelope.code != 0 || data == null || !data.success) {
+                if (data?.recoveryAction == "resend_new_request") {
+                    for (identity in data.requestIds.orEmpty()) {
+                        chatRepository.markMessageError(identity, "RESEND_NEW_REQUEST")
+                        chatRepository.deleteMessage("pending_$identity")
+                    }
+                    syncHistoryFromServer(force = true)
+                }
                 val message = when (data?.errorCode) {
                     "INSUFFICIENT_POINTS" -> "积分不足，先和立希多聊几句吧"
                     "ITEM_NOT_FOUND" -> "这个物品已经下架了"
@@ -601,7 +608,7 @@ class ChatViewModel @Inject constructor(
         val payload = message.payload
         val relatedIds = buildList {
             message.requestId?.let { add(it) }
-            addAll(payload.requestIds)
+            addAll(payload.requestIds.orEmpty())
         }.distinct()
         relatedIds.forEach { requestId ->
             streamingTimeoutJobs.remove(requestId)?.cancel()
@@ -609,7 +616,7 @@ class ChatViewModel @Inject constructor(
             pendingRequestIds.remove(requestId)
             receivedFirstChunk.remove(requestId)
             chatRepository.markMessageError("pending_$requestId", payload.errorCode)
-            chatRepository.markMessageError(requestId, payload.errorCode)
+            chatRepository.markMessageError(requestId, if (payload.recoveryAction == "resend_new_request") "RESEND_NEW_REQUEST" else payload.errorCode)
         }
         _uiState.update { 
             it.copy(
@@ -893,9 +900,18 @@ class ChatViewModel @Inject constructor(
                     height = it.height
                 )
             }
-            val uriList = attachments.mapNotNull { runCatching { Uri.parse(it.localUri) }.getOrNull() }
-            onPickImages(uriList)
-            onInputChange(entity.content)
+            if (entity.contentType in setOf(ContentType.IMAGE, ContentType.MIXED) && attachments.isEmpty()) {
+                _uiState.update { it.copy(error = "原图尚未恢复，请同步后再重新发送") }
+                syncHistoryFromServer(force = true)
+                return@launch
+            }
+            val restored = attachments.mapNotNull { attachment ->
+                val result = imageAttachmentManager.createUiAttachment(Uri.parse(attachment.localUri))
+                result.error?.let { error -> _uiState.update { it.copy(error = error) } }
+                result.value
+            }
+            if (restored.size != attachments.size) return@launch
+            _uiState.update { it.copy(input = entity.content, selectedImages = restored) }
             sendText()
         }
     }

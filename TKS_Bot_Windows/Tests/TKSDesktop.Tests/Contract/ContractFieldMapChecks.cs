@@ -32,7 +32,8 @@ internal static partial class ContractChecks
             "messageId", "userId", "role", "content", "timestamp",
             "contentType", "itemId", "itemName", "itemIcon", "costPoints",
             "interactionFailed", "messageKind", "greetingScenario", "modelProvider", "requestId", "imageCount");
-        yield return Dto("ChatHistoryDataDto", typeof(ChatHistoryDataDto), "items");
+        yield return Dto("ChatHistoryDataDto", typeof(ChatHistoryDataDto), "items", "operations");
+        yield return Dto("ChatOperationDto", typeof(ChatOperationDto), "status", "requestIds", "sources", "failureCategory", "refundStatus", "retryable", "recoveryAction");
         yield return Dto("UserFactDto", typeof(UserFactDto), "factId", "userId", "fact", "timestamp",
             "eventId", "revision", "revisionId", "permissionVersion", "enabled", "stage",
             "truthStatus", "score", "sourceMessageId", "temporalValidity");
@@ -63,7 +64,7 @@ internal static partial class ContractChecks
             "content", "imageCount", "clientMessageId", "timestamp", "originDeviceId");
         yield return Dto("ChatQueuedPayloadDto", typeof(ChatQueuedPayloadDto), "debounceWindowSec");
         yield return Dto("BotErrorPayloadDto", typeof(BotErrorPayloadDto),
-            "errorCode", "message", "requestIds", "timestamp");
+            "errorCode", "message", "requestIds", "timestamp", "retryable", "recoveryAction", "refundStatus", "failureCategory");
         yield return Dto("AuthExpiredPayloadDto", typeof(AuthExpiredPayloadDto), "reason", "timestamp");
         yield return Dto("PointsChangedPayloadDto", typeof(PointsChangedPayloadDto),
             "ledgerId", "reasonCode", "changeAmount", "balanceAfter", "balance",
@@ -89,7 +90,7 @@ internal static partial class ContractChecks
         yield return Dto7("InteractionSendDataDto", typeof(InteractionSendDataDto),
             "success", "itemId", "requestId", "balance", "charged", "refunded", "duplicate", "item",
             "reply", "messageId", "timerInstruction", "mergedCount", "mergedRequestIds",
-            "fallbackText", "errorCode", "messageText");
+            "fallbackText", "errorCode", "messageText", "requestIds", "retryable", "recoveryAction", "refundStatus", "failureCategory");
         yield return Dto7("InteractionSendItemDto", typeof(InteractionSendItemDto), "id", "name", "icon", "costPoints");
 
         // ---- points / level / makeup card (camelCase outer) ----

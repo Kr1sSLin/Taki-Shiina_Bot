@@ -12,6 +12,7 @@
  */
 
 import WebSocket from 'ws'
+import { readFileSync } from 'node:fs'
 
 const HOST = process.env.HOST ?? '127.0.0.1'
 const PORT = Number(process.env.PORT ?? 8787)
@@ -76,6 +77,13 @@ function extractCode(body) {
 /* -------------------------------------------------------------------------- */
 
 async function main() {
+  const samples = JSON.parse(readFileSync(new URL('../../design/foundation-protocol-samples.json', import.meta.url), 'utf8'))
+  section('P0 共享协议样例')
+  check('原始 HTTP/WS 样例保留同一请求身份', samples.http.body.requestId === samples.websocket.message.requestId)
+  const { legacyError, terminalError, processing } = samples.recovery
+  check('旧错误可缺失恢复字段', legacyError.payload.recoveryAction === undefined)
+  check('50302 恢复动作区分处理中与终态', processing.recoveryAction === 'poll_status' && terminalError.payload.recoveryAction === 'resend_new_request')
+  check('终态错误保留整批请求与退款状态', terminalError.payload.requestIds.length === 2 && terminalError.payload.refundStatus === 'refunded' && !terminalError.payload.retryable)
   console.log(`\n\x1b[1mTKS 客户端协议一致性自检\x1b[0m   BASE=${BASE}  WS=${WS_BASE}/ws/chat\n${'─'.repeat(70)}`)
 
   /* ------------------------------- healthz ------------------------------ */

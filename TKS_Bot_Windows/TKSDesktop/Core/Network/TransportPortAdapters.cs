@@ -26,6 +26,14 @@ public sealed class RestPortAdapter : IRestPort, IHistoryImagePort, IMemoryEvent
         int limit,
         CancellationToken cancellationToken = default)
     {
+        var call = await GetChatHistoryPageAsync(since, limit, cancellationToken).ConfigureAwait(false);
+        return call.Success && call.Value is not null
+            ? PortCall<IReadOnlyList<TimelineItemDto>>.Ok(call.Value.Items)
+            : PortCall<IReadOnlyList<TimelineItemDto>>.Fail(call.ErrorCode, call.I18nKey);
+    }
+
+    public async Task<PortCall<ChatHistoryDataDto>> GetChatHistoryPageAsync(long since, int limit, CancellationToken cancellationToken = default)
+    {
         var result = await _rest.GetAsync<ChatHistoryDataDto>(
             "/chat/history",
             new Dictionary<string, string?>(StringComparer.Ordinal)
@@ -36,7 +44,7 @@ public sealed class RestPortAdapter : IRestPort, IHistoryImagePort, IMemoryEvent
             ProtocolConstants.RestTimeoutMs,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        return ToPortCall(result, static data => (IReadOnlyList<TimelineItemDto>)data.Items);
+        return ToPortCall(result, static data => data);
     }
 
     public async Task<PortCall<IReadOnlyList<UserFactDto>>> GetMemoryFactsAsync(

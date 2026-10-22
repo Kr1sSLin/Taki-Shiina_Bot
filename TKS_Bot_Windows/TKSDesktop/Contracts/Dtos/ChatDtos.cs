@@ -70,6 +70,20 @@ public sealed class ChatHistoryDataDto
 {
     [JsonPropertyName("items")]
     public List<TimelineItemDto> Items { get; set; } = [];
+
+    [JsonPropertyName("operations")]
+    public List<ChatOperationDto> Operations { get; set; } = [];
+}
+
+public sealed class ChatOperationDto
+{
+    [JsonPropertyName("sources")] public List<TimelineItemDto> Sources { get; set; } = [];
+    [JsonPropertyName("status")] public string Status { get; set; } = string.Empty;
+    [JsonPropertyName("requestIds")] public List<string> RequestIds { get; set; } = [];
+    [JsonPropertyName("failureCategory")] public string? FailureCategory { get; set; }
+    [JsonPropertyName("refundStatus")] public string? RefundStatus { get; set; }
+    [JsonPropertyName("retryable")] public bool? Retryable { get; set; }
+    [JsonPropertyName("recoveryAction")] public string? RecoveryAction { get; set; }
 }
 
 /// <summary>用户事实（`GET /memory/facts` 的 `items[]`）。</summary>

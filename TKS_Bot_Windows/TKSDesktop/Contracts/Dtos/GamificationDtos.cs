@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Text.Json;
 
 namespace TKSDesktop.Contracts.Dtos;
 
@@ -82,6 +83,11 @@ public sealed class InteractionSendRequestDto
 /// <summary>`POST /interaction/send` 成功/失败响应 `data`（失败同样 HTTP 200）。</summary>
 public sealed class InteractionSendDataDto
 {
+    [JsonPropertyName("requestIds")] public List<string>? RequestIds { get; set; }
+    [JsonPropertyName("retryable")] public bool? Retryable { get; set; }
+    [JsonPropertyName("recoveryAction")] public string? RecoveryAction { get; set; }
+    [JsonPropertyName("refundStatus")] public string? RefundStatus { get; set; }
+    [JsonPropertyName("failureCategory")] public string? FailureCategory { get; set; }
     [JsonPropertyName("success")]
     public bool Success { get; set; }
 
@@ -133,7 +139,7 @@ public sealed class InteractionSendDataDto
 
     /// <summary>失败响应可能附带（宽松读取，缺失不报错）。</summary>
     [JsonPropertyName("errorCode")]
-    public int? ErrorCode { get; set; }
+    public JsonElement? ErrorCode { get; set; }
 
     [JsonPropertyName("messageText")]
     public string? MessageText { get; set; }

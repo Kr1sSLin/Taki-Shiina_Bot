@@ -47,7 +47,7 @@ public sealed class CompositionRootTests
                 provider.GetRequiredService<IReminderScheduler>(),
                 provider.GetRequiredService<IUserNotificationService>(),
                 provider.GetRequiredService<IUiDispatcher>(),
-                NullLogger<ChatService>.Instance, rest: rest);
+                NullLogger<ChatService>.Instance, rest: rest, media: provider.GetRequiredService<IMediaService>(), attachmentPort: provider.GetRequiredService<IAttachmentPort>());
             var changes = new List<ChatMessageView>();
             chat.MessageChanged += (_, message) => changes.Add(message);
 
@@ -71,8 +71,9 @@ public sealed class CompositionRootTests
             var attachments = provider.GetRequiredService<IAttachmentPort>();
             var media = provider.GetRequiredService<IMediaService>();
             var imagePath = Path.Combine(paths.AttachmentsDir, "retained.png");
-            await File.WriteAllBytesAsync(imagePath, [1, 2, 3]);
-            var draft = await attachments.InsertDraftAsync("image/png", imagePath, 3, null, null);
+            var png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=");
+            await File.WriteAllBytesAsync(imagePath, png);
+            var draft = await attachments.InsertDraftAsync("image/png", imagePath, png.Length, null, null);
             await media.RestoreDraftsAsync();
             await attachments.BindAsync([draft.AttachmentId], "request-1");
             await media.ClearDraftsAsync();
@@ -94,6 +95,7 @@ public sealed class CompositionRootTests
             await chat.CompleteAsync("gift-1", giftReply, true, null);
             Assert.Equal(ProtocolConstants.StatusSent, (await repository.GetMessageAsync("merged-chat"))?.Status);
             Assert.Equal(ProtocolConstants.StatusSent, (await repository.GetMessageAsync("gift-1"))?.Status);
+
             var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             chat.TypingChanged += (_, state) => { if (!state.Typing) finished.TrySetResult(); };
             connection.Raise(new WsReplyStreamFrame("gift-1", new()
@@ -116,6 +118,26 @@ public sealed class CompositionRootTests
             Assert.Equal("interaction", (await repository.GetMessageAsync("gift-reply_0"))?.ContentType);
             await chat.CompleteAsync("gift-1", null, false, "TIMEOUT");
             Assert.Equal(ProtocolConstants.StatusSent, (await repository.GetMessageAsync("gift-1"))?.Status);
+
+            using var samples = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(Gate.GateRepo.Root, "..", "design", "foundation-protocol-samples.json")));
+            var recovery = samples.RootElement.GetProperty("recovery");
+            var recovered = System.Text.Json.JsonSerializer.Deserialize<ChatHistoryDataDto>(recovery.GetProperty("historyData").GetRawText(), WsFrameParser.Options)!;
+            recovered.Operations[0].RequestIds.Add("request-1");
+            rest.Operations = recovered.Operations;
+            await giftSync.SyncFullAsync();
+            Assert.Equal("RESEND_NEW_REQUEST", (await repository.GetMessageAsync("sample-text"))?.ErrorCode);
+            Assert.Equal("保留的文字", (await repository.GetMessageAsync("sample-text"))?.Content);
+            Assert.Equal("RESEND_NEW_REQUEST", (await repository.GetMessageAsync("request-1"))?.ErrorCode);
+            Assert.Single(await attachments.ListByMessageAsync("request-1"));
+            connection.Current = new(ConnectionStatus.Connected, 0, null, false);
+            var resend = await chat.RetryAsync("request-1");
+            Assert.True(resend.Success);
+            var newId = connection.SentRequests.Single();
+            Assert.NotEqual("request-1", newId);
+            Assert.Equal("hello", (await repository.GetMessageAsync(newId))?.Content);
+            Assert.Single(await attachments.ListByMessageAsync(newId));
+            Assert.Single(await attachments.ListByMessageAsync("request-1"));
+            Assert.Equal(png, await File.ReadAllBytesAsync((await attachments.ListByMessageAsync(newId)).Single().LocalPath));
 
             var cleared = false;
             chat.ConversationCleared += (_, _) => cleared = true;
@@ -145,6 +167,9 @@ public sealed class CompositionRootTests
         public RestChatRequestDto? Request { get; private set; }
         public bool Fail { get; set; }
         public IReadOnlyList<TimelineItemDto> History { get; set; } = [];
+        public List<ChatOperationDto> Operations { get; set; } = [];
+        public Task<PortCall<ChatHistoryDataDto>> GetChatHistoryPageAsync(long since, int limit, CancellationToken cancellationToken = default)
+            => Task.FromResult(PortCall<ChatHistoryDataDto>.Ok(new() { Items = History.ToList(), Operations = Operations }));
         public Task<PortCall<RestChatDataDto>> SendChatAsync(RestChatRequestDto request, CancellationToken cancellationToken = default)
         {
             Request = request;
@@ -163,12 +188,17 @@ public sealed class CompositionRootTests
     private sealed class DegradedConnection : IWssPort
     {
         public ConnectionSnapshot Current { get; set; } = new(ConnectionStatus.Degraded, 15, null, true);
-        public bool IsConnected => false;
+        public bool IsConnected => Current.Status == ConnectionStatus.Connected;
+        public List<string> SentRequests { get; } = [];
         public bool NeedsFullSync => true;
         public event EventHandler<ConnectionSnapshot>? ConnectionChanged { add { } remove { } }
         public event EventHandler<WsServerFrame>? FrameReceived;
         public void Raise(WsServerFrame frame) => FrameReceived?.Invoke(this, frame);
-        public bool SendChatMessage(string requestId, string? content, IReadOnlyList<ChatImagePayloadDto>? images) => false;
+        public bool SendChatMessage(string requestId, string? content, IReadOnlyList<ChatImagePayloadDto>? images)
+        {
+            SentRequests.Add(requestId);
+            return true;
+        }
         public Task ReconnectAsync(bool manual, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public void MarkFullSyncRequired() { }
     }

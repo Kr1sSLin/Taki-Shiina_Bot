@@ -15,6 +15,7 @@
 import { randomUUID } from 'node:crypto'
 import type {
   ChatMessage,
+  ChatOperation,
   ChatReplyStreamPayload,
   TimerInstruction,
   TimelineItem,
@@ -353,7 +354,7 @@ export class ChatService {
 
     const removed: string[] = []
     for (const requestId of requestIds) {
-      updateMessageStatus(requestId, 'error', code)
+      updateMessageStatus(requestId, 'error', payload.recoveryAction === 'resend_new_request' ? 'RESEND_NEW_REQUEST' : code)
       deletePendingMessage(requestId)
       removed.push(pendingMessageId(requestId))
       this.clearStreaming(requestId)
@@ -725,7 +726,7 @@ export class ChatService {
     log.info('开始历史同步', { mode, since, cursorBefore, localMax, localCount: countMessages() })
 
     try {
-      const data = await this.deps.rest.request<{ items: TimelineItem[] }>('chat/history', {
+      const data = await this.deps.rest.request<{ items: TimelineItem[]; operations?: ChatOperation[] }>('chat/history', {
         query: { since, limit: PROTOCOL.SYNC_LIMIT },
         // 幂等 GET，连接层抖动时退避重试（问题 1 的直接缓解）
         retries: 2
@@ -737,6 +738,24 @@ export class ChatService {
         if (item.role !== 'user' || !item.requestId || !item.imageCount) continue
         if (await restoreHistoryImages(this.deps.rest, item.messageId, item.requestId, item.imageCount)) {
           touchedIds.push(item.messageId)
+        }
+      }
+      for (const operation of data?.operations ?? []) {
+        if (operation.status !== 'failed') continue
+        for (const source of operation.sources ?? []) {
+          if (!getMessage(source.messageId)) {
+            if (source.timestamp <= since) continue
+            this.ingestTimeline([source])
+          }
+          updateMessageStatus(source.messageId, 'error', 'RESEND_NEW_REQUEST')
+          if (source.requestId && source.imageCount) await restoreHistoryImages(this.deps.rest, source.messageId, source.requestId, source.imageCount)
+          touchedIds.push(source.messageId)
+        }
+        for (const requestId of operation.requestIds) {
+          updateMessageStatus(requestId, 'error', 'RESEND_NEW_REQUEST')
+          deletePendingMessage(requestId)
+          this.clearStreaming(requestId)
+          touchedIds.push(requestId)
         }
       }
 

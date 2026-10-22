@@ -31,7 +31,7 @@ from api.v1.deps import (
     require_auth,
     resolve_trace_id,
 )
-from services.interaction_config_service import ConfigValidationError
+from services.interaction_config_service import ConfigValidationError, ConfigRevisionConflict, ConfigUnavailableError, default_config, CONFIG_SECTIONS
 from services.points_events import points_changed_event
 from services.points_service import InsufficientPointsError
 from time_utils import get_business_today, parse_business_date
@@ -61,7 +61,11 @@ async def get_gamification_config(request: Request, authorization: str | None = 
     trace_id = resolve_trace_id(request)
     require_auth(authorization, trace_id)
     gamification = get_gamification()
-    return ok(gamification.config.get_config(), trace_id)
+    try:
+        config = gamification.config.get_config()
+        return ok({**config, "degraded": gamification.config.degraded}, trace_id)
+    except ConfigUnavailableError:
+        return business_error(50303, "配置不可用，需恢复有效版本", {"degraded": True}, trace_id, http_status=503)
 
 
 @router.put("/admin/gamification-config")
@@ -76,18 +80,27 @@ async def update_gamification_config(
     if not payload:
         return business_error(CODE_INVALID_PARAM, "请求体不能为空", None, trace_id, http_status=400)
     try:
-        config = gamification.config.update_sections(payload)
+        revision = payload.get("expectedRevision")
+        if type(revision) is not int:
+            raise ConfigValidationError("缺少 expectedRevision")
+        config = gamification.config.update_sections({key: value for key, value in payload.items() if key != "expectedRevision"}, expected_revision=revision)
+    except ConfigRevisionConflict:
+        return business_error(40901, "配置已改变，请刷新后重试", {"retryable": False, "recoveryAction": "refresh_then_retry"}, trace_id, http_status=409)
     except ConfigValidationError:
         return business_error(CODE_INVALID_PARAM, "配置校验失败", None, trace_id, http_status=400)
+    except (OSError, ConfigUnavailableError):
+        return business_error(50303, "配置未成功发布，请重新读取后核对", None, trace_id, http_status=503)
     return ok(config, trace_id, message="配置已更新")
 
 
 @router.post("/admin/gamification-config/reset")
-async def reset_gamification_config(request: Request, authorization: str | None = Header(default=None)):
+async def reset_gamification_config(request: Request, payload: dict[str, Any] = Body(default_factory=dict), authorization: str | None = Header(default=None)):
     trace_id = resolve_trace_id(request)
     require_auth(authorization, trace_id)
     gamification = get_gamification()
-    return ok(gamification.config.reset_to_default(), trace_id, message="已恢复默认配置")
+    config = default_config()
+    return await update_gamification_config(request, {**{key: config[key] for key in CONFIG_SECTIONS},
+                                                      "expectedRevision": payload.get("expectedRevision")}, authorization)
 
 
 @router.get("/admin/user-progress")

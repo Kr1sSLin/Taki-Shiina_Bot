@@ -86,6 +86,7 @@ _mount_unique(
     http_api.app.routes,
     include=lambda path, _route: path in {
         "/api/v1/chat/history",
+        "/api/v1/chat/requests/{request_id}",
         "/api/v1/chat/images/{request_id}/{index}",
         "/api/v1/memory/facts",
         "/api/v1/memory/facts/{fact_id}",

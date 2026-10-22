@@ -1218,6 +1218,26 @@ async function run(): Promise<number> {
       msgRepo.getMessage(historyImageMessageId)?.attachments?.length === 1)
 
   /* -------------------------------- 日志 ------------------------------ */
+  const recoverySamples = JSON.parse(readFileSync(join(process.cwd(), '../design/foundation-protocol-samples.json'), 'utf8')).recovery
+  const failedOperation = recoverySamples.historyData.operations[0]
+  for (const source of failedOperation.sources) {
+    msgRepo.upsertMessage({ messageId: source.messageId, sessionId: 'default_session', role: 'user',
+      content: source.content, timestamp: source.timestamp, status: 'sent', messageType: 'text', contentType: 'text' })
+  }
+  services.chat.handleBotError(recoverySamples.legacyError)
+  services.chat.handleBotError(recoverySamples.terminalError)
+  check('P0/P1：共享新旧错误帧可消费，终态批量标记失败且保留正文',
+    failedOperation.requestIds.every((id: string) => msgRepo.getMessage(id)?.status === 'error') &&
+    msgRepo.getMessage('sample-text')?.content === '保留的文字')
+  for (const id of failedOperation.requestIds) msgRepo.updateMessageStatus(id, 'sent')
+  await fetch(apiBaseUrl.replace(/\/api\/v1\/?$/, '') + '/__test__/trigger', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${services.auth.getAccessToken() ?? ''}` },
+    body: JSON.stringify({ kind: 'operation_failure', operation: failedOperation, offline: true }) })
+  await services.chat.syncHistory(true)
+  check('P1：丢失实时帧后历史同步恢复全部失败气泡',
+    failedOperation.requestIds.every((id: string) => msgRepo.getMessage(id)?.errorCode === 'RESEND_NEW_REQUEST'))
+  check('P1：失败恢复不会删除原图附件',
+    readFileSync(historyAttachment.localPath).equals(TINY_PNG) && msgRepo.getMessage(historyImageMessageId)?.attachments?.length === 1)
+
   section('§8 / NFR-6 / NFR-7 日志与凭据安全')
   const logDir = paths().logsDir
   const logFiles = readdirSync(logDir).filter((f) => /^tks-\d{8}\.jsonl$/.test(f))

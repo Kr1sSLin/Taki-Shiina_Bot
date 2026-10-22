@@ -544,21 +544,23 @@ os._exit(78)
 
     def test_pending_text_merges_one_gift_but_two_gifts_keep_distinct_paid_turns(self):
         def gift(identity):
-            return replace(self.command(identity), channel="ws", intent="interaction", metadata={"item": {"id": identity}, "attachment": ""})
+            return replace(self.command(identity), channel="ws", intent="interaction",
+                           metadata={"item": {"id": identity}, "attachment": "", "merge_after_payment": True})
 
-        text_before = self.store.accept([replace(self.command("text-before"), channel="ws")], delay=8, merge_pending=True)[0]
+        text = self.store.accept([self.command("text-before")], delay=8, merge_pending=True)[0]
         self.now += 1
         first = self.store.accept([gift("gift-1")], delay=20, merge_pending=True)[0]
-        self.assertEqual(first["turn_id"], text_before["turn_id"])
-        self.now += 1
         second = self.store.accept([gift("gift-2")], delay=20, merge_pending=True)[0]
+        self.assertNotEqual(first["turn_id"], text["turn_id"])
         self.assertNotEqual(first["turn_id"], second["turn_id"])
-        self.now += 1
-        text_after = self.store.accept([replace(self.command("text-after"), channel="ws")], delay=8, merge_pending=True)[0]
-        self.assertEqual(text_after["turn_id"], second["turn_id"])
-        self.store.confirm_interaction("owner", "request-gift-1")
-        self.store.confirm_interaction("owner", "request-gift-2")
-        self.store.ready("owner", [first["turn_id"], second["turn_id"]])
+        later_text = self.store.accept([self.command("text-after")], delay=8, merge_pending=True)[0]
+        self.assertEqual(later_text["turn_id"], text["turn_id"])
+        first_turn = self.store.confirm_interaction("owner", "request-gift-1")
+        second_turn = self.store.confirm_interaction("owner", "request-gift-2")
+        self.assertEqual(first_turn, text["turn_id"])
+        self.assertNotEqual(first_turn, second_turn)
+        self.assertEqual(self.store.request("owner", "request-gift-1")["turn_id"], first_turn)
+        self.store.ready("owner", [first_turn, second_turn])
         snapshots = {}
         for _ in range(2):
             job = self.store.claim(kinds={"chat"})
@@ -567,14 +569,55 @@ os._exit(78)
             self.assertEqual(sum(source["intent"] == "interaction" for source in snapshot["sources"]), 1)
             reply = self.store.commit_reply(job, snapshot, {"reply": "synthetic gift response"})
             self.store.mark_dispatched("owner", reply)
-        self.assertEqual({source["request_id"] for source in snapshots[first["turn_id"]]["sources"]}, {"request-text-before", "request-gift-1"})
-        self.assertEqual({source["request_id"] for source in snapshots[second["turn_id"]]["sources"]}, {"request-gift-2", "request-text-after"})
+        self.assertEqual({source["request_id"] for source in snapshots[first_turn]["sources"]},
+                         {"request-text-before", "request-text-after", "request-gift-1"})
+        self.assertEqual({source["request_id"] for source in snapshots[second_turn]["sources"]}, {"request-gift-2"})
 
     def test_two_gifts_in_one_incoming_batch_are_rejected_atomically(self):
         commands = [replace(self.command(identity), intent="interaction", metadata={"item": {"id": identity}}) for identity in ("gift-1", "gift-2")]
         with self.assertRaises(ValueError):
             self.store.accept(commands, merge_pending=True)
         self.assertTrue(all(count == 0 for count in self.counts().values()))
+
+    def test_unpaid_intent_does_not_block_text_and_paid_gift_cannot_steal_running_text(self):
+        gift = replace(self.command("unpaid"), intent="interaction", metadata={"merge_after_payment": True})
+        unpaid = self.store.accept([gift], delay=20, merge_pending=True)[0]
+        text = self.store.accept([self.command("free-text")], merge_pending=True)[0]
+        self.assertNotEqual(unpaid["turn_id"], text["turn_id"])
+        job = self.store.claim(kinds={"chat"})
+        snapshot = self.store.begin_turn(job)
+        self.assertEqual(snapshot["turn_id"], text["turn_id"])
+        paid_turn = self.store.confirm_interaction("owner", "request-unpaid")
+        self.assertEqual(paid_turn, unpaid["turn_id"])
+        result = self.store.commit_reply(job, snapshot, {"reply": "文字正常回复"})
+        self.assertEqual(result["requestIds"], ["request-free-text"])
+
+    def test_pre_upgrade_unpaid_mixed_intent_is_split_before_a_failed_charge(self):
+        text = self.store.accept([self.command("legacy-text")], delay=8, merge_pending=True)[0]
+        gift = self.store.accept([replace(self.command("legacy-gift"), intent="interaction")], delay=20)[0]
+        with self.store._transaction() as conn:
+            text_row, text_body = self.store._turn(conn, text["turn_id"])
+            gift_row, gift_body = self.store._turn(conn, gift["turn_id"])
+            source_id = gift_body["sources"][0]
+            text_body["sources"].append(source_id)
+            text_body["payments"] = gift_body["payments"]
+            self.store._save_turn(conn, text_row, text_body)
+            conn.execute("UPDATE requests SET turn_id=? WHERE id=?", (text["turn_id"], source_id))
+            self.store._move_interaction_jobs(conn, text_row["owner"], source_id, text["turn_id"])
+            gift_body["sources"], gift_body["payments"] = [], {}
+            self.store._save_turn(conn, gift_row, gift_body, status="cancelled")
+            conn.execute("UPDATE jobs SET status='cancelled' WHERE id=?", (gift_body["job_id"],))
+        def rejected():
+            raise ValueError("合成扣款拒绝")
+        with self.assertRaises(ValueError):
+            self.store.charge_interaction("owner", "request-legacy-gift", rejected)
+        isolated = self.store.request("owner", "request-legacy-gift")["turn_id"]
+        self.assertNotEqual(isolated, text["turn_id"])
+        self.store.cancel("owner", isolated)
+        self.store.ready("owner", [text["turn_id"]])
+        job = self.store.claim(kinds={"chat"})
+        result = self.store.commit_reply(job, self.store.begin_turn(job), {"reply": "原文保留"})
+        self.assertEqual(result["requestIds"], ["request-legacy-text"])
 
 
 if __name__ == "__main__":

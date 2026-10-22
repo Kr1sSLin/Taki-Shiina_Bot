@@ -352,8 +352,10 @@ async def chat_history(
         items = await _load_timeline_async()
         reliable = get_reliable_runtime()
         pending = []
+        operations = []
         if reliable:
             reliable_items, pending = await asyncio.to_thread(reliable.store.history_delivery, auth.user_id, limit=3000)
+            operations = await asyncio.to_thread(reliable.store.failed_operations, auth.user_id)
             items += reliable_items
             items = list({str(item.get("messageId")): item for item in items}.values())
             items.sort(key=lambda item: int(item.get("timestamp", 0)))
@@ -366,8 +368,8 @@ async def chat_history(
         included = {item["messageId"] for item in filtered}
         pending = [result for result in pending if result["messageId"] in included]
         if pending:
-            return ControlledJSONResponse(response_body(0, "ok", {"items": filtered}, trace_id), store=reliable.store, owner=auth.user_id, results=pending)
-        return response_body(0, "ok", {"items": filtered}, trace_id)
+            return ControlledJSONResponse(response_body(0, "ok", {"items": filtered, "operations": operations}, trace_id), store=reliable.store, owner=auth.user_id, results=pending)
+        return response_body(0, "ok", {"items": filtered, "operations": operations}, trace_id)
     except (FileLockTimeoutError, StorageBusy, PermissionDenied):
         logger.exception("history timeline lock timeout")
         return JSONResponse(
@@ -380,6 +382,23 @@ async def chat_history(
             status_code=500,
             content=response_body(5000, "系统异常，请稍后重试", None, trace_id),
         )
+
+
+@app.get("/api/v1/chat/requests/{request_id}")
+async def chat_request_status(request_id: str, request: Request, authorization: str | None = Header(default=None)):
+    trace_id = request.state.trace_id
+    auth = _require_http_auth(authorization, trace_id)
+    headers = {"Cache-Control": "private, no-store"}
+    try:
+        runtime = get_reliable_runtime()
+        if runtime is None:
+            raise PermissionDenied("request journal unavailable")
+        existing = await runtime.request(auth.user_id, request_id)
+        if existing is None:
+            return JSONResponse(status_code=404, content=response_body(40401, "请求不存在", None, trace_id), headers=headers)
+        return JSONResponse(content=response_body(0, "ok", {"requestId": request_id, **existing["operation"]}, trace_id), headers=headers)
+    except (StorageBusy, PermissionDenied, DataCorruptionError, DataDecryptError):
+        return JSONResponse(status_code=503, content=response_body(50301, "服务暂时不可用，请稍后重试", None, trace_id), headers=headers)
 
 
 @app.get("/api/v1/chat/images/{request_id}/{index}")
@@ -635,7 +654,10 @@ async def chat(
     except (StorageBusy, PermissionDenied):
         return JSONResponse(status_code=503, content=response_body(50301, "服务暂时不可用，请稍后重试", None, trace_id))
     except (ChatFailed, TimeoutError):
-        return JSONResponse(status_code=503, content=response_body(50302, "暂时未能完成，请使用原请求重试", None, trace_id))
+        existing = await reliable.request(user_id, request_id)
+        operation = {"requestId": request_id, **existing["operation"]} if existing else None
+        message = "本批次处理失败，请重新发送" if operation and operation["status"] == "failed" else "仍在处理，请查询原请求状态"
+        return JSONResponse(status_code=503, content=response_body(50302, message, operation, trace_id))
     except Exception:
         logger.exception("reliable chat failed")
         return JSONResponse(status_code=500, content=response_body(5000, "系统异常，请稍后重试", None, trace_id))

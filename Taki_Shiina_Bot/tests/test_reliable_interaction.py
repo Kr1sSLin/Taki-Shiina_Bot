@@ -21,6 +21,8 @@ from services.progress_store import PointsStore, REASON_ITEM_REFUND, REASON_ITEM
 from services.reliable_chat_store import ReliableChatStore
 from services.text_generation import TextGenerator
 from controlled_model_fixture import checker_response
+from services.points_service import InsufficientPointsError, InteractionLimitError, LedgerReconciliationError
+from services.interaction_config_service import ConfigUnavailableError
 
 
 class SafePrompt:
@@ -114,6 +116,64 @@ class ReliableInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.store.history(TEST_USER)), 3)
         self.assertIn("synthetic pending text", str(self.messages[0]))
         self.assertEqual(self.store.request(TEST_USER, "text-1")["turn_id"], self.store.request(TEST_USER, "gift-merge")["turn_id"])
+
+    async def test_unpaid_rejections_never_cancel_or_move_pending_text(self):
+        self.rig.client.completions.outcomes = ["原文字的回复。"] * 4
+        for index, error in enumerate((InsufficientPointsError("竞争后余额不足"), InteractionLimitError("限次"), LedgerReconciliationError("核账"), ConfigUnavailableError("配置"))):
+            with self.subTest(error=type(error).__name__):
+                text_id = f"unpaid-text-{index}"
+                receipt = self.store.accept([ChatCommand(TEST_USER, text_id, text_id, "device", "原文字", channel="ws")], delay=20, merge_pending=True)[0]
+                method = "interaction_snapshot" if isinstance(error, ConfigUnavailableError) else "deduct_for_item"
+                target = self.rig.gamification.config if method == "interaction_snapshot" else self.rig.points
+                with patch.object(target, method, side_effect=error):
+                    result = await self.rig.handler.send(TEST_USER, "coffee", f"unpaid-gift-{index}")
+                self.assertFalse(result.ok)
+                self.assertFalse(result.refunded)
+                self.assertEqual(self.store.request(TEST_USER, text_id)["turn_id"], receipt["turn_id"])
+                self.assertEqual(self.store.turn_result(TEST_USER, receipt["turn_id"])["status"], "pending")
+                await self.runtime.ready(TEST_USER, [receipt["turn_id"]])
+                reply = await self.runtime.wait(TEST_USER, receipt["turn_id"], timeout=5)
+                self.assertEqual(reply["requestIds"], [text_id])
+                self.store.mark_dispatched(TEST_USER, reply)
+        self.assertEqual(len(self.messages), 4)
+        self.assertEqual(self.ledger_count(REASON_ITEM_SEND), 0)
+        self.assertEqual(self.ledger_count(REASON_ITEM_REFUND), 0)
+
+    async def test_paid_mixed_failure_survives_restart_and_original_id_replay(self):
+        text = self.store.accept([ChatCommand(TEST_USER, "mixed-text", "mixed-text", "device", "保留原文字", channel="ws")], delay=20, merge_pending=True)[0]
+        self.rig.client.completions.outcomes = [RuntimeError("合成失败")] * 3
+        result = await self.rig.handler.send(TEST_USER, "coffee", "mixed-gift")
+        self.assertFalse(result.ok)
+        self.assertTrue(result.refunded)
+        self.assertEqual(set(result.operation["requestIds"]), {"mixed-text", "mixed-gift"})
+        self.assertEqual(result.operation["recoveryAction"], "resend_new_request")
+        self.assertEqual(self.store.request(TEST_USER, "mixed-gift")["turn_id"], text["turn_id"])
+        self.assertEqual(set(self.rig.events_of("bot.error")[-1]["payload"]["requestIds"]), {"mixed-text", "mixed-gift"})
+        await self.runtime.stop()
+        self.reopen_runtime()
+        operation = self.store.request(TEST_USER, "mixed-text")["operation"]
+        self.assertEqual(operation["refundStatus"], "refunded")
+        self.assertEqual(operation["sources"][0]["content"], "保留原文字")
+        self.assertEqual(self.store.failed_operations("other-owner"), [])
+        replay = await self.rig.handler.send(TEST_USER, "coffee", "mixed-gift")
+        self.assertFalse(replay.ok)
+        self.assertEqual(replay.operation, operation)
+        self.assertEqual(self.ledger_count(REASON_ITEM_SEND), 1)
+        self.assertEqual(self.ledger_count(REASON_ITEM_REFUND), 1)
+        self.rig.client.completions.outcomes = ["新的文字回复。"]
+        resent = (await self.runtime.submit([ChatCommand(TEST_USER, "new-text", "new-text", "device", "保留原文字")]))[0]
+        self.assertEqual(resent["requestIds"], ["new-text"])
+        self.assertEqual(self.ledger_count(REASON_ITEM_SEND), 1)
+
+    async def test_confirm_attachment_failure_refunds_gift_without_touching_text(self):
+        receipt = self.store.accept([ChatCommand(TEST_USER, "safe-text", "safe-text", "device", "原文", channel="ws")], delay=20, merge_pending=True)[0]
+        with patch.object(self.store, "confirm_interaction", side_effect=OSError("合成挂接失败")):
+            result = await self.rig.handler.send(TEST_USER, "coffee", "attach-failed")
+        self.assertFalse(result.ok)
+        self.assertTrue(result.refunded)
+        self.assertEqual(self.store.turn_result(TEST_USER, receipt["turn_id"])["status"], "pending")
+        await self.runtime.ready(TEST_USER, [receipt["turn_id"]])
+        self.assertEqual((await self.runtime.wait(TEST_USER, receipt["turn_id"], timeout=5))["requestIds"], ["safe-text"])
 
     async def test_completed_text_is_not_answered_again_with_gift(self):
         self.rig.client.completions.outcomes = ["文字回复。", "礼物回复。"]

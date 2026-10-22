@@ -35,7 +35,7 @@ const USER = process.env.USERNAME_FOR_LOGIN ?? 'kris'
 const PASS = process.env.PASSWORD_FOR_LOGIN ?? 'taki'
 const USER_ID = process.env.USER_ID ?? 'kris'
 const DEVICE_WHITELIST = (process.env.DEVICE_WHITELIST ?? '').split(',').filter(Boolean)
-const MERGE_WAIT_MS = Number(process.env.MERGE_WAIT_MS ?? 1200)
+const MERGE_WAIT_MS = Number(process.env.MERGE_WAIT_MS ?? 250)
 const ACCESS_TTL_SEC = Number(process.env.ACCESS_TTL_SEC ?? 900)
 /** 设为正数可模拟运维配置了设备白名单（触发 40301）。 */
 const KICK_ON_LOGIN = process.env.KICK_ON_LOGIN === '1'
@@ -55,6 +55,7 @@ const state = {
   ledger: [],
   ledgerSeq: 1,
   history: [],
+  operations: [],
   facts: [],
   correctionRequests: new Map(),
   factSeq: 0,
@@ -434,7 +435,7 @@ const server = createServer(async (req, res) => {
     const since = Number(url.searchParams.get('since') ?? 0)
     const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') ?? 200), 500))
     const items = state.history.filter((x) => x.timestamp > since && x.userId === auth.userId).slice(-limit)
-    return json(res, 200, envelope({ items }))
+    return json(res, 200, envelope({ items, operations: state.operations }))
   }
 
   if (path === '/api/v1/memory/facts' && method === 'GET') {
@@ -908,6 +909,9 @@ const server = createServer(async (req, res) => {
         type: 'makeup_card.changed',
         payload: { reason: 'MONTHLY_GRANT', ...state.makeup, timestamp: nowMs() }
       })
+    } else if (kind === 'operation_failure') {
+      state.operations.push(body.operation)
+      if (!body.offline) broadcast(body.frame)
     } else if (kind === 'bot_error') {
       broadcast({
         type: 'bot.error',
@@ -1083,8 +1087,8 @@ wss.on('connection', (ws) => {
       // EDGE-L17：debounceWindowSec 由服务端下发
       broadcast({ type: 'chat.queued', requestId, payload: { debounceWindowSec: 8 } })
 
-      // 防抖窗口（测试期缩短为 400ms）
-      const debounceMs = Number(process.env.DEBOUNCE_MS ?? 400)
+      // 与现有自检驱动一致，礼物能在普通回复前摘走缓冲。
+      const debounceMs = Number(process.env.DEBOUNCE_MS ?? 600)
       setTimeout(() => {
         const pending = state.messageBuffer.get(auth.userId) ?? []
         if (pending.length === 0) return

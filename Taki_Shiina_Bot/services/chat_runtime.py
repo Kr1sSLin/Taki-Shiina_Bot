@@ -123,13 +123,16 @@ class ChatRuntime:
     async def request(self, owner, request_id):
         return await store_call(self.store.request, owner, request_id)
 
+    async def record_interaction_failure(self, owner, request_id, category, refund_status, error_code=40204):
+        return await store_call(self.store.record_interaction_failure, owner, request_id, category, refund_status, error_code)
+
     def configure_interactions(self, reconciler):
         self.interaction_reconciler = reconciler
         for worker in self.workers:
             worker.handlers["interaction_reconcile"] = self._reconcile_interaction
 
     async def confirm_interaction(self, owner, request_id):
-        await store_call(self.store.confirm_interaction, owner, request_id)
+        return await store_call(self.store.confirm_interaction, owner, request_id)
 
     async def charge_interaction(self, owner, request_id, charge):
         return await store_call(self.store.charge_interaction, owner, request_id, charge)

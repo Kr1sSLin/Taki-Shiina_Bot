@@ -414,6 +414,7 @@ async def send_error(
     message: str,
     request_id: str | None = None,
     request_ids: list[str] | None = None,
+    operation: dict | None = None,
 ):
     await broadcast_json(
         user_id,
@@ -425,6 +426,7 @@ async def send_error(
                 "message": message,
                 "requestIds": request_ids or [],
                 "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+                **(operation or {}),
             },
         },
     )
@@ -575,7 +577,10 @@ async def process_buffered_messages(user_id: str):
         except (PermissionDenied, StorageBusy):
             await send_error(user_id, "SERVICE_UNAVAILABLE", "服务暂时不可用，请稍后重试", request_ids[-1], request_ids)
         except (ChatFailed, TimeoutError):
-            await send_error(user_id, "CHAT_RETRY", "暂时未能完成，请使用原请求重试", request_ids[-1], request_ids)
+            existing = await reliable.request(user_id, request_ids[-1])
+            operation = existing["operation"] if existing else None
+            message = "本批次处理失败，请重新发送" if operation and operation["status"] == "failed" else "仍在处理，请查询原请求状态"
+            await send_error(user_id, "CHAT_RETRY", message, request_ids[-1], request_ids, operation)
         except Exception:
             logger.exception("reliable ws chat failed")
             await send_error(user_id, "INTERNAL_ERROR", "处理失败，请稍后重试", request_ids[-1], request_ids)

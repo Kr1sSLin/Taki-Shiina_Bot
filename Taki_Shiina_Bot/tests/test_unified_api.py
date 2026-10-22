@@ -68,6 +68,7 @@ class UnifiedApiTestCase(unittest.TestCase):
         expected = (
             "/api/v1/auth/login",
             "/api/v1/chat/history",
+            "/api/v1/chat/requests/{request_id}",
             "/api/v1/memory/facts",
             "/api/v1/memory/facts/{fact_id}",
             "/api/v1/memory/facts/{fact_id}/permission",

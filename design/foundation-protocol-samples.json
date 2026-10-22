@@ -78,13 +78,20 @@
     "samplePayload": {
       "content": "请看看这张照片",
       "images": [
-        {"mimeType": "image/jpeg", "dataBase64": "<base64-of-original-jpeg-including-exif>"}
+        {
+          "mimeType": "image/jpeg",
+          "dataBase64": "<base64-of-original-jpeg-including-exif>"
+        }
       ]
     },
     "sampleDataIsPlaceholder": true,
     "serverStorage": "Original bytes in encrypted source request; history exposes requestId and imageCount, outbox does not include original bytes",
     "visionInput": "Original bytes, including EXIF and visible coordinates",
-    "historyUserFields": {"requestId": "sample-request-1", "imageCount": 1, "contentType": "mixed"},
+    "historyUserFields": {
+      "requestId": "sample-request-1",
+      "imageCount": 1,
+      "contentType": "mixed"
+    },
     "download": {
       "method": "GET",
       "path": "/api/v1/chat/images/sample-request-1/0",
@@ -95,5 +102,102 @@
     },
     "retryExpectation": "Same request and same image reuse the original turn; changing the image conflicts",
     "limit": "Default JPEG/PNG, configured 20 MB per image, effective 14,000,000 raw bytes and 3 images per logical turn; later images start another turn"
+  },
+  "recovery": {
+    "legacyError": {
+      "type": "bot.error",
+      "requestId": "sample-text",
+      "payload": {
+        "errorCode": "CHAT_RETRY",
+        "message": "请用原请求重试",
+        "requestIds": [
+          "sample-text"
+        ],
+        "timestamp": 1792627200000
+      }
+    },
+    "terminalError": {
+      "type": "bot.error",
+      "requestId": "sample-gift",
+      "payload": {
+        "errorCode": "AI_FAILED_REFUNDED",
+        "message": "本批次失败，积分已退回",
+        "status": "failed",
+        "requestIds": [
+          "sample-text",
+          "sample-gift"
+        ],
+        "failureCategory": "generation",
+        "refundStatus": "refunded",
+        "retryable": false,
+        "recoveryAction": "resend_new_request",
+        "sources": [
+          {
+            "messageId": "sample-text",
+            "requestId": "sample-text",
+            "role": "user",
+            "content": "保留的文字",
+            "timestamp": 1792627200000,
+            "imageCount": 0,
+            "contentType": "text"
+          },
+          {
+            "messageId": "sample-gift",
+            "requestId": "sample-gift",
+            "role": "user",
+            "content": "☕ 咖啡",
+            "timestamp": 1792627200001,
+            "imageCount": 0,
+            "contentType": "interaction"
+          }
+        ],
+        "timestamp": 1792627200002
+      }
+    },
+    "historyData": {
+      "items": [],
+      "operations": [
+        {
+          "status": "failed",
+          "requestIds": [
+            "sample-text",
+            "sample-gift"
+          ],
+          "failureCategory": "generation",
+          "refundStatus": "refunded",
+          "retryable": false,
+          "recoveryAction": "resend_new_request",
+          "sources": [
+            {
+              "messageId": "sample-text",
+              "requestId": "sample-text",
+              "role": "user",
+              "content": "保留的文字",
+              "timestamp": 1792627200000,
+              "imageCount": 0,
+              "contentType": "text"
+            },
+            {
+              "messageId": "sample-gift",
+              "requestId": "sample-gift",
+              "role": "user",
+              "content": "☕ 咖啡",
+              "timestamp": 1792627200001,
+              "imageCount": 0,
+              "contentType": "interaction"
+            }
+          ]
+        }
+      ]
+    },
+    "processing": {
+      "status": "processing",
+      "requestIds": [
+        "sample-text"
+      ],
+      "retryable": true,
+      "recoveryAction": "poll_status",
+      "refundStatus": "none"
+    }
   }
 }

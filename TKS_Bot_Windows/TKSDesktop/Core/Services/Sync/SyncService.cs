@@ -285,7 +285,7 @@ public sealed class SyncService : ISyncService, IHistoryImageRestorer, IDisposab
             _logger.LogInformation("开始历史同步 mode={Mode} since={Since}（本地最大 {LocalMax}，游标 {Cursor}）", full ? "full" : "incremental", since, localMax, cursor);
 
             var call = await _rest
-                .GetChatHistoryAsync(since, ProtocolConstants.SyncLimit, ct)
+                .GetChatHistoryPageAsync(since, ProtocolConstants.SyncLimit, ct)
                 .ConfigureAwait(false);
 
             if (!call.Success || call.Value is null)
@@ -294,7 +294,7 @@ public sealed class SyncService : ISyncService, IHistoryImageRestorer, IDisposab
                 return 0;
             }
 
-            var items = call.Value;
+            var items = call.Value.Items;
             var written = 0;
             var maxTimestamp = since;
 
@@ -303,6 +303,25 @@ public sealed class SyncService : ISyncService, IHistoryImageRestorer, IDisposab
                 written += await IngestTimelineItemAsync(item, ct).ConfigureAwait(false);
                 await RestoreHistoryImagesAsync(item, ct).ConfigureAwait(false);
                 maxTimestamp = Math.Max(maxTimestamp, item.Timestamp);
+            }
+
+            foreach (var operation in call.Value.Operations.Where(value => value.Status == "failed"))
+            {
+                foreach (var source in operation.Sources)
+                {
+                    if (await _repository.GetMessageAsync(source.MessageId, ct).ConfigureAwait(false) is null)
+                    {
+                        if (source.Timestamp <= since) continue;
+                        written += await IngestTimelineItemAsync(source, ct).ConfigureAwait(false);
+                    }
+                    await _repository.UpdateMessageStatusAsync(source.MessageId, ProtocolConstants.StatusError, "RESEND_NEW_REQUEST", ct).ConfigureAwait(false);
+                    await RestoreHistoryImagesAsync(source, ct).ConfigureAwait(false);
+                }
+                foreach (var requestId in operation.RequestIds)
+                {
+                    await _repository.UpdateMessageStatusAsync(requestId, ProtocolConstants.StatusError, "RESEND_NEW_REQUEST", ct).ConfigureAwait(false);
+                    _ = await _repository.DeleteMessageAsync("pending_" + requestId, ct).ConfigureAwait(false);
+                }
             }
 
             // ⚠️ FR-W-SYNC-10：本地**不得**按 300 截断；服务端条数上限只是提示。

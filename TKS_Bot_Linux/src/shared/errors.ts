@@ -80,13 +80,15 @@ export class TksApiError extends Error {
   readonly code: number | null
   readonly httpStatus: number | null
   readonly traceId: string | null
+  readonly data: unknown
 
-  constructor(message: string, opts: { code?: number | null; httpStatus?: number | null; traceId?: string | null } = {}) {
+  constructor(message: string, opts: { code?: number | null; httpStatus?: number | null; traceId?: string | null; data?: unknown } = {}) {
     super(message)
     this.name = 'TksApiError'
     this.code = opts.code ?? null
     this.httpStatus = opts.httpStatus ?? null
     this.traceId = opts.traceId ?? null
+    this.data = opts.data
   }
 }
 

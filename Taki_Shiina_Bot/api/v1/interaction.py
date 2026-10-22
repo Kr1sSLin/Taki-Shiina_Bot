@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from services.controlled_response import ControlledJSONResponse
 from services.chat_runtime import ChatFailed
 from services.foundation_store import PermissionDenied, StorageBusy, VersionConflict
+from services.interaction_config_service import ConfigUnavailableError
 
 from api.v1.deps import (
     CODE_INSUFFICIENT_POINTS,
@@ -46,7 +47,10 @@ async def interaction_items(request: Request, authorization: str | None = Header
     handler = getattr(gamification, "interaction", None)
     if handler is None:
         return business_error(50301, "互动服务未就绪", None, trace_id, http_status=503)
-    return ok(handler.list_items(auth.user_id), trace_id)
+    try:
+        return ok(handler.list_items(auth.user_id), trace_id)
+    except ConfigUnavailableError:
+        return business_error(50303, "送礼配置暂不可用，请稍后重试", {"retryable": True, "recoveryAction": "refresh_then_retry"}, trace_id)
 
 
 @router.post("/interaction/send")

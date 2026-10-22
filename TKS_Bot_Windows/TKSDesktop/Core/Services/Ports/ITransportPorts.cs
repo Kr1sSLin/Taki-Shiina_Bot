@@ -83,6 +83,14 @@ public interface IRestPort
         int limit,
         CancellationToken cancellationToken = default);
 
+    async Task<PortCall<ChatHistoryDataDto>> GetChatHistoryPageAsync(long since, int limit, CancellationToken cancellationToken = default)
+    {
+        var call = await GetChatHistoryAsync(since, limit, cancellationToken).ConfigureAwait(false);
+        return call.Success && call.Value is not null
+            ? PortCall<ChatHistoryDataDto>.Ok(new() { Items = call.Value.ToList() })
+            : PortCall<ChatHistoryDataDto>.Fail(call.ErrorCode, call.I18nKey);
+    }
+
     /// <summary>`GET /memory/facts?since={since}&amp;limit={limit}`（FR-W-SYNC-7）。</summary>
     Task<PortCall<IReadOnlyList<UserFactDto>>> GetMemoryFactsAsync(
         long since,

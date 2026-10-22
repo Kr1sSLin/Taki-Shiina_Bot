@@ -246,6 +246,7 @@ export function buildServices(opts: BuildOptions): Services {
     rest,
     notify,
     applyMergedRequestIds: (ids) => chat.applyMergedRequestIds(ids),
+    applyInteractionFailure: (frame) => { chat.handleBotError(frame); void chat.syncHistory(true) },
     isWsConnected: () => conn.isConnected(),
     navigate: (route) => bus.send(IPC.evtNavigate, { to: route })
   })

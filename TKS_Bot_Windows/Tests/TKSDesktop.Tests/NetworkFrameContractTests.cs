@@ -11,6 +11,23 @@ namespace TKSDesktop.Tests;
 /// </summary>
 public sealed class NetworkFrameContractTests
 {
+    [Fact]
+    public void SharedSamples_PreserveLegacyAndTerminalRecovery()
+    {
+        var path = Path.Combine(Gate.GateRepo.Root, "..", "design", "foundation-protocol-samples.json");
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        var recovery = document.RootElement.GetProperty("recovery");
+        var old = Assert.IsType<WsBotErrorFrame>(WsFrameParser.Parse(recovery.GetProperty("legacyError").GetRawText()).Frame);
+        Assert.Null(old.Payload.RecoveryAction);
+        var terminal = Assert.IsType<WsBotErrorFrame>(WsFrameParser.Parse(recovery.GetProperty("terminalError").GetRawText()).Frame);
+        Assert.False(terminal.Payload.Retryable);
+        Assert.Equal("resend_new_request", terminal.Payload.RecoveryAction);
+        Assert.Equal(new[] { "sample-text", "sample-gift" }, terminal.Payload.RequestIds);
+        var history = JsonSerializer.Deserialize<Contracts.Dtos.ChatHistoryDataDto>(recovery.GetProperty("historyData").GetRawText(), WsFrameParser.Options)!;
+        Assert.Equal("refunded", history.Operations.Single().RefundStatus);
+        Assert.Equal("保留的文字", history.Operations.Single().Sources[0].Content);
+    }
+
     /* ---------------- 陷阱 1：requestId 在帧顶层 ----------------------------- */
 
     [Fact]
