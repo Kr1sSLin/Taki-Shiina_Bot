@@ -1,18 +1,41 @@
 from copy import deepcopy
 from contextlib import redirect_stdout
+import asyncio
 import io
 import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from dotenv.main import load_dotenv as real_load_dotenv
-from scripts.evaluate_memory_extraction import evaluate, main
+from scripts.evaluate_memory_extraction import evaluate, main, run_model
 
 
 class MemoryEvaluationTests(unittest.TestCase):
+    def test_saved_raw_predictions_replay_current_extractor_contract_offline(self):
+        root = Path(__file__).resolve().parents[2]
+        corpus = json.loads((root / "design/memory-semantic-cases.json").read_text(encoding="utf-8"))
+        saved = json.loads((root / "design/memory-fix-validation-2026-10-20.json").read_text(encoding="utf-8"))["semantic"]
+        identities = {case["input"]: case["id"] for case in corpus["cases"]}
+        async def respond(**kwargs):
+            value = json.loads(kwargs["messages"][-1]["content"])
+            payload = saved["raw_model_predictions"][identities[value["current_input"]]]
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))])
+        create = AsyncMock(side_effect=respond)
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        context = AsyncMock()
+        context.__aenter__.return_value = client
+        with patch("openai.AsyncOpenAI", return_value=context), patch.dict(os.environ, {"DEEPSEEK_API_KEY": "synthetic-key"}):
+            predictions = asyncio.run(run_model(corpus))
+        self.assertEqual(create.await_count, 12)
+        self.assertEqual(predictions["S13"], [])
+        report = evaluate(corpus, predictions)
+        self.assertEqual(report["exact_cases"], 13)
+        self.assertEqual((report["false_positive"], report["false_negative"]), (0, 0))
+
     def test_cli_loads_configured_env_file_without_making_real_model_calls(self):
         with tempfile.TemporaryDirectory(prefix="tks-eval-config-") as directory:
             root = Path(directory)
