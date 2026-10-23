@@ -48,6 +48,19 @@ class UnifiedApiTestCase(unittest.TestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(weather.get_current_city(), "上海")
 
+    def test_gamification_lock_timeout_returns_controlled_error(self):
+        from gamification_fixture import make_rig, TEST_USER
+        from services.file_lock import FileLockTimeoutError
+        from types import SimpleNamespace
+        temp, rig = make_rig()
+        with temp, patch("api.v1.points.get_gamification", return_value=rig.gamification), patch("api.v1.points.require_auth", return_value=SimpleNamespace(user_id=TEST_USER)), patch.object(rig.gamification.points_store, "snapshot", side_effect=FileLockTimeoutError("private path")):
+            response = TestClient(unified_api.app).get("/api/v1/points/balance")
+            self.assertEqual(response.status_code, 503)
+            body = response.json()
+            self.assertEqual(body["code"], 50301)
+            self.assertEqual(body["data"]["recoveryAction"], "retry_same_request")
+            self.assertNotIn("private path", response.text)
+
     def test_key_routes_appear_exactly_once(self):
         paths = Counter()
         route_keys = Counter()

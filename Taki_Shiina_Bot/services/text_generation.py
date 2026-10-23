@@ -1,5 +1,5 @@
 """Text generation outside SQL; endpoint framing stays in protocol adapters."""
-from services.async_storage import store_call
+from services.async_storage import store_call, gamification_call
 import asyncio
 import base64
 import binascii
@@ -98,7 +98,7 @@ class TextGenerator:
 
         check_snapshot.invoke = invoke
 
-        images = self._source_images(snapshot["sources"])
+        images = await store_call(self._source_images, snapshot["sources"])
         if images:
             if self.vision_provider is None:
                 raise RuntimeError("vision model is not configured")
@@ -185,7 +185,7 @@ class TextGenerator:
     async def _interaction_response(self, messages, check_snapshot, invoke, rules=None):
         """Retry generation within the accepted configuration; the turn caps all phases."""
         if rules is None:
-            rules = self.interaction_retry_provider() if self.interaction_retry_provider else {}
+            rules = await gamification_call(self.interaction_retry_provider) if self.interaction_retry_provider else {}
         max_attempts = int(rules.get("max_retries", 5) or 0) + 1
         deadline = time.monotonic() + float(rules.get("total_timeout_seconds", 60))
         attempt_timeout = float(rules.get("attempt_timeout_seconds", 20))

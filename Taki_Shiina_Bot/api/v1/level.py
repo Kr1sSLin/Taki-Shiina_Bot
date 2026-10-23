@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from services.async_storage import gamification_call
+
 from fastapi import APIRouter, Header, Request
 
 from api.v1.deps import get_gamification, ok, require_auth, resolve_trace_id
@@ -21,7 +23,7 @@ async def level_status(request: Request, authorization: str | None = Header(defa
     trace_id = resolve_trace_id(request)
     auth = require_auth(authorization, trace_id)
     gamification = get_gamification()
-    return ok(gamification.get_level_status(auth.user_id), trace_id)
+    return ok(await gamification_call(gamification.get_level_status, auth.user_id), trace_id)
 
 
 @router.get("/level/config")
@@ -29,10 +31,10 @@ async def level_config(request: Request, authorization: str | None = Header(defa
     trace_id = resolve_trace_id(request)
     require_auth(authorization, trace_id)
     gamification = get_gamification()
-    rules = gamification.config.get_points_rules()
+    rules = await gamification_call(gamification.config.get_points_rules)
     return ok(
         {
-            "levels": gamification.config.get_level_table(),
+            "levels": await gamification_call(gamification.config.get_level_table),
             "defaultLevelCode": "NONE",
             # EDGE-7：NONE 态不设专属文案，客户端与“从未升级过的新用户”共用同一套默认展示
             "defaultLevelName": "",

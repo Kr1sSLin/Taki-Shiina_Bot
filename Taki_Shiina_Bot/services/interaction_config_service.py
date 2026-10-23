@@ -27,7 +27,7 @@ import tempfile
 from contextlib import contextmanager
 from string import Formatter
 from typing import Any
-from services.file_lock import acquire_file_lock, release_file_lock
+from services.file_lock import FileLockTimeoutError, acquire_file_lock, release_file_lock
 
 DEFAULT_CONFIG_FILENAME = "gamification_config.json"
 
@@ -402,14 +402,24 @@ class InteractionConfigService:
 
     @contextmanager
     def _publication_lock(self):
-        with self._lock:
+        deadline = time.monotonic() + 10
+        if not self._lock.acquire(timeout=10):
+            raise FileLockTimeoutError("configuration thread lock timed out")
+        try:
             fd = os.open(self.path + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+            locked = False
             try:
-                acquire_file_lock(fd, exclusive=True)
+                acquire_file_lock(fd, exclusive=True, timeout=max(0, deadline - time.monotonic()))
+                locked = True
                 yield
             finally:
-                release_file_lock(fd)
-                os.close(fd)
+                try:
+                    if locked:
+                        release_file_lock(fd)
+                finally:
+                    os.close(fd)
+        finally:
+            self._lock.release()
 
     def _write_atomic(self, config, path=None):
         target = path or self.path

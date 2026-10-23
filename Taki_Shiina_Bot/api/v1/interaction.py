@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from services.async_storage import gamification_call
+
 from fastapi import APIRouter, Header, Request
 from pydantic import BaseModel
 from services.controlled_response import ControlledJSONResponse
@@ -43,12 +45,12 @@ async def interaction_items(request: Request, authorization: str | None = Header
     trace_id = resolve_trace_id(request)
     auth = require_auth(authorization, trace_id)
     gamification = get_gamification()
-    gamification.touch_user(auth.user_id)
+    await gamification_call(gamification.touch_user, auth.user_id)
     handler = getattr(gamification, "interaction", None)
     if handler is None:
         return business_error(50301, "互动服务未就绪", None, trace_id, http_status=503)
     try:
-        return ok(handler.list_items(auth.user_id), trace_id)
+        return ok(await gamification_call(handler.list_items, auth.user_id), trace_id)
     except ConfigUnavailableError:
         return business_error(50303, "送礼配置暂不可用，请稍后重试", {"retryable": True, "recoveryAction": "refresh_then_retry"}, trace_id)
 

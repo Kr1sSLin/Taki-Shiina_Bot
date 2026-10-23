@@ -88,7 +88,13 @@ class ApiEndpointsTestCase(unittest.TestCase):
     # ---------- 菜单与发送 ----------
     def test_interaction_items_endpoint(self):
         self.set_balance(20)
-        response = self.client.get("/api/v1/interaction/items", headers=AUTH_HEADER)
+        original = self.rig.handler.list_items
+        def list_items(user_id):
+            with self.assertRaises(RuntimeError):
+                asyncio.get_running_loop()
+            return original(user_id)
+        with patch.object(self.rig.handler, "list_items", side_effect=list_items):
+            response = self.client.get("/api/v1/interaction/items", headers=AUTH_HEADER)
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["code"], 0)

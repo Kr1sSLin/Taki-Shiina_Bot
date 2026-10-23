@@ -10,6 +10,7 @@ import binascii
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import uuid
@@ -29,6 +30,7 @@ from app_constants import EMOTIONAL_TRIGGERS, LORE_TRIGGERS, USER_MEMO
 from app_state import AppState
 from services.history_store import HistoryStore
 from services.application_service import ChatApplicationService
+from services.async_storage import store_call, gamification_call
 from services.chat_runtime import ChatFailed, get_chat_runtime
 from services.contracts import ChatCommand
 from services.foundation_store import PermissionDenied, StorageBusy, VersionConflict
@@ -53,7 +55,7 @@ from text_utils import (
 
 # ===== 互动礼物 · 积分机制 · 等级体系（PRD 新增功能） =====
 from api.v1.admin import router as admin_router
-from api.v1.deps import AuthRuntime, configure_auth, register_gamification
+from api.v1.deps import AuthRuntime, configure_auth, register_gamification, storage_busy_response
 from api.v1.interaction import router as interaction_router
 from api.v1.level import router as level_router
 from api.v1.points import router as points_router
@@ -163,6 +165,7 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI(title="TakiShiina Bot WebSocket API")
+app.add_exception_handler(FileLockTimeoutError, storage_busy_response)
 
 ACTIVE_CONNECTIONS: dict[str, set[WebSocket]] = {}
 message_buffer: dict[str, list[dict]] = {}
@@ -338,7 +341,7 @@ async def extract_user_facts(user_id: str, message: str):
             if not clean_fact:
                 continue
 
-            db.update_profile(user_id, clean_fact)
+            await store_call(db.update_profile, user_id, clean_fact)
             fact_item = {
                 "factId": f"fact_{uuid.uuid4().hex}",
                 "userId": user_id,
@@ -415,21 +418,45 @@ async def send_error(
     request_id: str | None = None,
     request_ids: list[str] | None = None,
     operation: dict | None = None,
+    websocket: WebSocket | None = None,
 ):
-    await broadcast_json(
-        user_id,
-        {
-            "type": "bot.error",
-            "requestId": request_id,
-            "payload": {
-                "errorCode": error_code,
-                "message": message,
-                "requestIds": request_ids or [],
-                "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
-                **(operation or {}),
-            },
+    frame = {
+        "type": "bot.error",
+        "requestId": request_id,
+        "payload": {
+            "errorCode": error_code,
+            "message": message,
+            "requestIds": request_ids or [],
+            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+            **(operation or {}),
         },
-    )
+    }
+    if websocket is not None:
+        await websocket.send_text(json.dumps(frame, ensure_ascii=False))
+    else:
+        await broadcast_json(user_id, frame)
+
+
+def _validate_frame(message):
+    if not isinstance(message, dict) or not isinstance(message.get("type"), str) or not message["type"]:
+        raise ValueError("invalid frame type")
+    if "payload" in message and not isinstance(message["payload"], dict):
+        raise ValueError("invalid payload")
+    if "requestId" in message and (not isinstance(message["requestId"], str) or not message["requestId"].strip()):
+        raise ValueError("invalid request identity")
+    payload = message.get("payload", {})
+    if "clientMessageId" in payload and (not isinstance(payload["clientMessageId"], str) or not payload["clientMessageId"].strip()):
+        raise ValueError("invalid client identity")
+    if message["type"] == "chat.message" and "content" in payload and payload["content"] is not None and not isinstance(payload["content"], str):
+        raise ValueError("invalid content type")
+    if message["type"] != "ping":
+        return None
+    timestamps = [obj["timestamp"] for obj in (message, payload) if "timestamp" in obj]
+    if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in timestamps):
+        raise ValueError("invalid ping timestamp")
+    if len(timestamps) == 2 and timestamps[0] != timestamps[1]:
+        raise ValueError("conflicting ping timestamps")
+    return timestamps[0] if timestamps else None
 
 
 # ================= 互动礼物 · 积分机制 · 等级体系 接入 =================
@@ -528,8 +555,8 @@ async def record_chat_activity(user_id: str) -> None:
     早安/晚安等系统推送走 ``send_greeting``，不经过本函数，因此天然不计入积分。
     """
     try:
-        gamification.touch_user(user_id)
-        result = gamification.points.record_user_activity(user_id, source=SOURCE_CHAT)
+        await gamification_call(gamification.touch_user, user_id)
+        result = await gamification_call(gamification.points.record_user_activity, user_id, source=SOURCE_CHAT)
     except Exception as exc:
         logger.exception(f"[积分] 记录有效对话失败: user={user_id}, err={exc}")
         return
@@ -539,11 +566,11 @@ async def record_chat_activity(user_id: str) -> None:
             await broadcast_json(user_id, points_changed_event(entry))
         if result.level is not None and result.level.level_changed:
             await broadcast_json(user_id, level_changed_event(result.level))
-        granted = gamification.makeup.ensure_initial_grant(user_id)
+        granted = await gamification_call(gamification.makeup.ensure_initial_grant, user_id)
         if granted:
             await broadcast_json(
                 user_id,
-                makeup_card_changed_event(gamification.makeup.get_summary(user_id), "MONTHLY_GRANT"),
+                makeup_card_changed_event(await gamification_call(gamification.makeup.get_summary, user_id), "MONTHLY_GRANT"),
             )
     except Exception as exc:
         logger.warning(f"[积分] 事件推送失败: user={user_id}, err={exc}")
@@ -793,7 +820,7 @@ async def _process_buffered_messages(user_id: str):
             ]
         )
 
-        service.commit_history(user_id, [
+        await store_call(service.commit_history, user_id, [
             {"role": "user", "content": merged_record, "ts": now_ms - 1},
             {"role": "assistant", "content": final_reply, "ts": now_ms},
         ])
@@ -908,6 +935,44 @@ def schedule_debounce(user_id: str):
     )
 
 
+
+def _parse_ws_images(raw_images):
+    parsed_images = []
+    total_image_bytes = 0
+    if len(raw_images) > VISION_MAX_IMAGE_COUNT:
+        raise ValueError("VISION_IMAGE_COUNT_EXCEEDED", f"单次最多 {VISION_MAX_IMAGE_COUNT} 张图片")
+    for idx, item in enumerate(raw_images):
+        if not isinstance(item, dict):
+            raise ValueError("VISION_INVALID_MIME", f"第 {idx + 1} 张图片格式无效")
+        raw_mime_type = item.get("mimeType", "")
+        mime_type = raw_mime_type.strip().lower() if isinstance(raw_mime_type, str) else ""
+        data_base64 = (item or {}).get("dataBase64", "")
+        if mime_type not in VISION_ALLOWED_MIME:
+            raise ValueError("VISION_INVALID_MIME", f"第 {idx + 1} 张图片格式不支持")
+        if not isinstance(data_base64, str) or len(data_base64) > ((VISION_MAX_IMAGE_MB * 1024 * 1024 + 2) // 3) * 4 + 4:
+            raise ValueError("VISION_IMAGE_TOO_LARGE", f"第 {idx + 1} 张图片超过 {VISION_MAX_IMAGE_MB}MB")
+        try:
+            raw = base64.b64decode(data_base64, validate=True)
+        except (ValueError, binascii.Error):
+            raise ValueError("VISION_INVALID_BASE64", f"第 {idx + 1} 张图片解析失败")
+        if len(raw) > VISION_MAX_IMAGE_MB * 1024 * 1024:
+            raise ValueError("VISION_IMAGE_TOO_LARGE", f"第 {idx + 1} 张图片超过 {VISION_MAX_IMAGE_MB}MB")
+        if not raw:
+            raise ValueError("VISION_INVALID_BASE64", f"第 {idx + 1} 张图片为空")
+        total_image_bytes += len(raw)
+        if total_image_bytes > MAX_INLINE_IMAGE_BYTES:
+            raise ValueError("VISION_IMAGE_TOO_LARGE", "本轮图片总量超过识图模型的请求上限")
+        try:
+            with Image.open(BytesIO(raw)) as decoded:
+                if Image.MIME.get(decoded.format) != mime_type or decoded.width * decoded.height > 50_000_000:
+                    raise ValueError("image format or dimensions are invalid")
+                decoded.verify()
+        except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
+            raise ValueError("VISION_INVALID_MIME", f"第 {idx + 1} 张图片格式无效")
+        parsed_images.append({"mimeType": mime_type, "raw": raw, "dataBase64": base64.b64encode(raw).decode("ascii"), "sha256": hashlib.sha256(raw).hexdigest()})
+    return parsed_images
+
+
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket):
     token, subprotocol = _extract_ws_auth(websocket)
@@ -948,99 +1013,52 @@ async def websocket_chat(websocket: WebSocket):
         while True:
             raw_message = await websocket.receive_text()
             try:
-                message = json.loads(raw_message)
-            except json.JSONDecodeError:
-                await send_error(user_id, "INVALID_JSON", "无效的 JSON 格式")
+                message = await store_call(json.loads, raw_message)
+                ping_timestamp = _validate_frame(message)
+            except (json.JSONDecodeError, ValueError, OverflowError):
+                await send_error(user_id, "INVALID_JSON", "无效的 JSON 格式", websocket=websocket)
                 continue
 
             msg_type = message.get("type", "")
             request_id = message.get("requestId") or str(uuid.uuid4())
 
             if msg_type == "ping":
-                await broadcast_json(
-                    user_id,
-                    {"type": "pong", "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)},
-                )
+                pong = {"type": "pong", "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)}
+                if ping_timestamp is not None:
+                    pong["pingTimestamp"] = ping_timestamp
+                await websocket.send_text(json.dumps(pong))
                 continue
 
             if msg_type == "chat.message":
                 payload = message.get("payload", {})
                 if not isinstance(payload, dict):
-                    await send_error(user_id, "EMPTY_MESSAGE", "消息格式无效", request_id)
+                    await send_error(user_id, "EMPTY_MESSAGE", "消息格式无效", request_id, websocket=websocket)
                     continue
                 raw_content = payload.get("content") or ""
                 if not isinstance(raw_content, str):
-                    await send_error(user_id, "EMPTY_MESSAGE", "消息格式无效", request_id)
+                    await send_error(user_id, "EMPTY_MESSAGE", "消息格式无效", request_id, websocket=websocket)
                     continue
                 content = redact_locations(raw_content.strip())
                 raw_images = payload.get("images") or []
                 if not isinstance(raw_images, list):
-                    await send_error(user_id, "VISION_INVALID_MIME", "图片格式无效", request_id)
+                    await send_error(user_id, "VISION_INVALID_MIME", "图片格式无效", request_id, websocket=websocket)
                     continue
                 if raw_images and not GEMINI_API_KEY:
-                    await send_error(user_id, "GEMINI_NOT_CONFIGURED", "服务端未配置 Gemini Key", request_id)
+                    await send_error(user_id, "GEMINI_NOT_CONFIGURED", "服务端未配置 Gemini Key", request_id, websocket=websocket)
                     continue
                 logger.info("[WS] 收到消息 chars=%d", len(content))
                 if not content and not raw_images:
-                    await send_error(user_id, "EMPTY_MESSAGE", "消息内容不能为空", request_id)
+                    await send_error(user_id, "EMPTY_MESSAGE", "消息内容不能为空", request_id, websocket=websocket)
                     continue
-                parsed_images = []
-                total_image_bytes = 0
-                if raw_images:
-                    if len(raw_images) > VISION_MAX_IMAGE_COUNT:
-                        await send_error(user_id, "VISION_IMAGE_COUNT_EXCEEDED", f"单次最多 {VISION_MAX_IMAGE_COUNT} 张图片", request_id)
-                        continue
-                    for idx, item in enumerate(raw_images):
-                        if not isinstance(item, dict):
-                            await send_error(user_id, "VISION_INVALID_MIME", f"第 {idx + 1} 张图片格式无效", request_id)
-                            parsed_images = []
-                            break
-                        raw_mime_type = item.get("mimeType", "")
-                        mime_type = raw_mime_type.strip().lower() if isinstance(raw_mime_type, str) else ""
-                        data_base64 = (item or {}).get("dataBase64", "")
-                        if mime_type not in VISION_ALLOWED_MIME:
-                            await send_error(user_id, "VISION_INVALID_MIME", f"第 {idx + 1} 张图片格式不支持", request_id)
-                            parsed_images = []
-                            break
-                        if not isinstance(data_base64, str) or len(data_base64) > ((VISION_MAX_IMAGE_MB * 1024 * 1024 + 2) // 3) * 4 + 4:
-                            await send_error(user_id, "VISION_IMAGE_TOO_LARGE", f"第 {idx + 1} 张图片超过 {VISION_MAX_IMAGE_MB}MB", request_id)
-                            parsed_images = []
-                            break
-                        try:
-                            raw = base64.b64decode(data_base64, validate=True)
-                        except (ValueError, binascii.Error):
-                            await send_error(user_id, "VISION_INVALID_BASE64", f"第 {idx + 1} 张图片解析失败", request_id)
-                            parsed_images = []
-                            break
-                        if len(raw) > VISION_MAX_IMAGE_MB * 1024 * 1024:
-                            await send_error(user_id, "VISION_IMAGE_TOO_LARGE", f"第 {idx + 1} 张图片超过 {VISION_MAX_IMAGE_MB}MB", request_id)
-                            parsed_images = []
-                            break
-                        if not raw:
-                            await send_error(user_id, "VISION_INVALID_BASE64", f"第 {idx + 1} 张图片为空", request_id)
-                            parsed_images = []
-                            break
-                        total_image_bytes += len(raw)
-                        if total_image_bytes > MAX_INLINE_IMAGE_BYTES:
-                            await send_error(user_id, "VISION_IMAGE_TOO_LARGE", "本轮图片总量超过识图模型的请求上限", request_id)
-                            parsed_images = []
-                            break
-                        try:
-                            with Image.open(BytesIO(raw)) as decoded:
-                                if Image.MIME.get(decoded.format) != mime_type or decoded.width * decoded.height > 50_000_000:
-                                    raise ValueError("image format or dimensions are invalid")
-                                decoded.verify()
-                        except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
-                            await send_error(user_id, "VISION_INVALID_MIME", f"第 {idx + 1} 张图片格式无效", request_id)
-                            parsed_images = []
-                            break
-                        parsed_images.append({"mimeType": mime_type, "raw": raw, "dataBase64": base64.b64encode(raw).decode("ascii"), "sha256": hashlib.sha256(raw).hexdigest()})
-                    if len(parsed_images) != len(raw_images):
-                        continue
+                try:
+                    parsed_images = await store_call(_parse_ws_images, raw_images)
+                except ValueError as error:
+                    await send_error(user_id, *error.args, request_id, websocket=websocket)
+                    continue
                 try:
                     reliable = get_reliable_runtime()
                 except PermissionDenied:
-                    await send_error(user_id, "SERVICE_UNAVAILABLE", "服务暂时不可用，请稍后重试", request_id)
+                    await send_error(user_id, "SERVICE_UNAVAILABLE", "服务暂时不可用，请稍后重试", request_id, websocket=websocket)
                     continue
                 client_message_id = payload.get("clientMessageId") or request_id
                 if reliable:
@@ -1053,10 +1071,10 @@ async def websocket_chat(websocket: WebSocket):
                                 await reliable.replay(user_id, previous["result"])
                                 continue
                     except VersionConflict:
-                        await send_error(user_id, "REQUEST_CONFLICT", "请求标识与已保存内容冲突", request_id)
+                        await send_error(user_id, "REQUEST_CONFLICT", "请求标识与已保存内容冲突", request_id, websocket=websocket)
                         continue
                     except Exception:
-                        await send_error(user_id, "SERVICE_UNAVAILABLE", "消息暂未保存，请使用原请求重试", request_id)
+                        await send_error(user_id, "SERVICE_UNAVAILABLE", "消息暂未保存，请使用原请求重试", request_id, websocket=websocket)
                         continue
                 message_buffer.setdefault(user_id, []).append({"requestId": request_id, "clientMessageId": client_message_id, "deviceId": device_id, "content": content, "images": parsed_images})
                 last_message_at[user_id] = datetime.now(timezone.utc)
@@ -1088,7 +1106,7 @@ async def websocket_chat(websocket: WebSocket):
                 schedule_debounce(user_id)
                 continue
 
-            await send_error(user_id, "UNKNOWN_TYPE", f"未知的消息类型: {msg_type}", request_id)
+            await send_error(user_id, "UNKNOWN_TYPE", "未知的消息类型", request_id, websocket=websocket)
     except WebSocketDisconnect:
         logger.info(f"[WS] 连接断开: user={user_id}, device={device_id}")
     except Exception:
@@ -1123,7 +1141,7 @@ def _scene_target_user_ids() -> list[str]:
 
 async def refresh_all_scenes() -> int:
     """刷新所有相关用户的「立希当前状态」，返回成功数。"""
-    targets = _scene_target_user_ids()
+    targets = await gamification_call(_scene_target_user_ids)
     succeeded = 0
     for uid in targets:
         try:
@@ -1195,14 +1213,15 @@ async def internal_scene_refresh(
             "data": {"userId": userId, "scene": scene, "period": describe_business_period()},
         }
     count = await refresh_all_scenes()
+    targets = await gamification_call(_scene_target_user_ids)
     return {
         "code": 0,
         "message": "ok",
         "data": {
             "refreshedUsers": count,
-            "userIds": _scene_target_user_ids(),
+            "userIds": targets,
             "period": describe_business_period(),
-            "scenes": {uid: state.scene_cache.get(uid, {}).get("scene") for uid in _scene_target_user_ids()},
+            "scenes": {uid: state.scene_cache.get(uid, {}).get("scene") for uid in targets},
         },
     }
 
@@ -1302,7 +1321,7 @@ async def send_greeting(user_id: str, scenario_type: str):
         history.append({"role": "assistant", "content": final_reply, "ts": now_ms})
         if len(history) > 300:
             state.user_chat_history[user_id] = history[-300:]
-        history_store.save(state.user_chat_history)
+        await store_call(history_store.save, state.user_chat_history)
 
         await append_timeline(
             [{"messageId": greeting_id, "userId": user_id, "role": "bot", "content": final_reply, "timestamp": now_ms}]
@@ -1439,7 +1458,7 @@ async def history_separator_scheduler():
                                 logger.info(f"[分隔] 用户仍活跃，强制插入分隔标记")
 
                 triggered_date = today_str
-                insert_daily_separator(user_id)
+                await store_call(insert_daily_separator, user_id)
 
         except Exception as e:
             logger.exception(f"[分隔] 调度器异常: {e}")

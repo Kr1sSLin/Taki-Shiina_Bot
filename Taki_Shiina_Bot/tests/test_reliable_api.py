@@ -370,7 +370,8 @@ class ReliableApiTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(ws_api, "GEMINI_API_KEY", "synthetic-key"):
             await ws_api.websocket_chat(socket)
         self.assertEqual(self.counts()["requests"], 0)
-        errors = [frame for _, frame in self.frames if frame["type"] == "bot.error"]
+        errors = [frame for frame in socket.sent if frame["type"] == "bot.error"]
+        self.assertFalse(any(frame["type"] == "bot.error" for _, frame in self.frames))
         self.assertEqual(errors[-1]["payload"]["errorCode"], "VISION_INVALID_MIME")
 
     async def test_invalid_second_image_does_not_save_or_queue_first_image(self):
@@ -385,7 +386,8 @@ class ReliableApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.counts()["requests"], 0)
         self.assertEqual(ws_api.message_buffer, {})
         self.assertFalse(any(frame["type"] in {"chat.message.echo", "chat.queued"} for _, frame in self.frames))
-        errors = [frame for _, frame in self.frames if frame["type"] == "bot.error"]
+        errors = [frame for frame in socket.sent if frame["type"] == "bot.error"]
+        self.assertFalse(any(frame["type"] == "bot.error" for _, frame in self.frames))
         self.assertEqual(errors[-1]["payload"]["errorCode"], "VISION_INVALID_MIME")
 
     async def test_inline_budget_rejects_whole_multi_image_message(self):
@@ -401,7 +403,8 @@ class ReliableApiTests(unittest.IsolatedAsyncioTestCase):
             await ws_api.websocket_chat(socket)
         self.assertEqual(self.counts()["requests"], 0)
         self.assertEqual(ws_api.message_buffer, {})
-        errors = [frame for _, frame in self.frames if frame["type"] == "bot.error"]
+        errors = [frame for frame in socket.sent if frame["type"] == "bot.error"]
+        self.assertFalse(any(frame["type"] == "bot.error" for _, frame in self.frames))
         self.assertEqual(errors[-1]["payload"]["errorCode"], "VISION_IMAGE_TOO_LARGE")
 
     async def test_decompression_bomb_is_reported_without_dropping_socket(self):
@@ -411,7 +414,8 @@ class ReliableApiTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(ws_api, "GEMINI_API_KEY", "synthetic-key"), patch.object(ws_api.Image, "open", side_effect=Image.DecompressionBombError("too many pixels")):
             await ws_api.websocket_chat(socket)
         self.assertEqual(self.counts()["requests"], 0)
-        errors = [frame for _, frame in self.frames if frame["type"] == "bot.error"]
+        errors = [frame for frame in socket.sent if frame["type"] == "bot.error"]
+        self.assertFalse(any(frame["type"] == "bot.error" for _, frame in self.frames))
         self.assertEqual(errors[-1]["payload"]["errorCode"], "VISION_INVALID_MIME")
 
     async def test_image_without_vision_key_is_rejected_before_persistence(self):
@@ -419,7 +423,8 @@ class ReliableApiTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(ws_api, "GEMINI_API_KEY", ""):
             await ws_api.websocket_chat(socket)
         self.assertEqual(self.counts()["requests"], 0)
-        errors = [frame for _, frame in self.frames if frame["type"] == "bot.error"]
+        errors = [frame for frame in socket.sent if frame["type"] == "bot.error"]
+        self.assertFalse(any(frame["type"] == "bot.error" for _, frame in self.frames))
         self.assertEqual(errors[-1]["payload"]["errorCode"], "GEMINI_NOT_CONFIGURED")
 
     async def test_vision_adapter_sends_original_exif_bytes_to_gemini(self):

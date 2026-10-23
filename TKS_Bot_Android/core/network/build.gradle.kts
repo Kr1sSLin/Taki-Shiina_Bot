@@ -48,6 +48,7 @@ dependencies {
     implementation(libs.androidx.security.crypto)
     implementation(libs.hilt.android)
     kapt(libs.hilt.compiler)
+    testImplementation("junit:junit:4.13.2")
 }
 
 kapt {

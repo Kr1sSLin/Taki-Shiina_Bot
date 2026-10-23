@@ -48,6 +48,7 @@ export class WsClient extends EventEmitter {
   private status: WsStatus = 'idle'
   private url = ''
   private missedPongs = 0
+  private pendingPings = new Set<number>()
 
   getStatus(): WsStatus {
     return this.status
@@ -81,6 +82,7 @@ export class WsClient extends EventEmitter {
     this.socket = socket
 
     socket.on('open', () => {
+      if (this.socket !== socket) return
       this.status = 'open'
       log.info('WS 已连接')
       this.startHeartbeat()
@@ -88,6 +90,7 @@ export class WsClient extends EventEmitter {
     })
 
     socket.on('message', (data: WebSocket.RawData, isBinary: boolean) => {
+      if (this.socket !== socket) return
       // NFR-12：解析失败不抛错，只记日志并跳过
       let raw: string
       try {
@@ -107,16 +110,14 @@ export class WsClient extends EventEmitter {
       this.emit('frame', parsed, raw)
     })
 
-    socket.on('pong', () => {
-      this.missedPongs = 0
-    })
-
     socket.on('error', (err: Error) => {
+      if (this.socket !== socket) return
       log.warn('WS 错误', { error: err.message })
       this.emit('error', err)
     })
 
     socket.on('unexpected-response', (_req, res) => {
+      if (this.socket !== socket) return
       // 握手返回非 101：401/403 需走 Token 刷新而非普通重连（FR-CONN-4）
       const status = res.statusCode ?? null
       log.warn('WS 握手失败', { status })
@@ -132,6 +133,7 @@ export class WsClient extends EventEmitter {
     })
 
     socket.on('close', (code: number, reasonBuf: Buffer) => {
+      if (this.socket !== socket) return
       const reason = reasonBuf?.toString?.('utf8') ?? ''
       this.stopHeartbeat()
       this.status = 'closed'
@@ -147,12 +149,13 @@ export class WsClient extends EventEmitter {
 
     // `pong` 是顶层 `{type,timestamp}`，没有 payload 包装（§5.3.2）
     if (type === 'pong') {
-      this.missedPongs = 0
+      if (this.pendingPings.size && (!('pingTimestamp' in frame) || this.pendingPings.has(frame.pingTimestamp as number))) {
+        this.missedPongs = 0
+        this.pendingPings.clear()
+      }
       return
     }
 
-    // 服务端收到 ping 后向该账号**所有**连接广播 pong，因此无需自行判定存活，
-    // 只在连续多个心跳周期完全无 pong 时告警（服务端无超时踢人策略）。
     if (type === 'auth.expired') {
       log.warn('服务端下发 auth.expired', { payload: frame.payload })
     }
@@ -162,18 +165,22 @@ export class WsClient extends EventEmitter {
 
   private startHeartbeat(): void {
     this.stopHeartbeat()
+    const socket = this.socket
     this.heartbeatTimer = setInterval(() => {
-      if (!this.isOpen()) return
+      if (this.socket !== socket || !this.isOpen()) return
       if (this.missedPongs >= 3) {
         const err = new Error('heartbeat timeout: no pong for 3 cycles')
         log.warn('心跳无响应，触发重连')
+        this.stopHeartbeat()
         this.emit('heartbeatFailed', err)
         return
       }
       this.missedPongs += 1
+      const timestamp = Date.now()
+      this.pendingPings.add(timestamp)
       const ok = this.send({
         type: 'ping',
-        payload: { timestamp: Date.now() }
+        payload: { timestamp }
       })
       if (!ok) {
         this.emit('heartbeatFailed', new Error('heartbeat send failed'))
@@ -182,6 +189,8 @@ export class WsClient extends EventEmitter {
   }
 
   private stopHeartbeat(): void {
+    this.missedPongs = 0
+    this.pendingPings.clear()
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer)
       this.heartbeatTimer = null
@@ -221,7 +230,7 @@ export class WsClient extends EventEmitter {
       socket.removeAllListeners('unexpected-response')
       if (!silent) {
         socket.on('close', () => {
-          this.status = 'closed'
+          if (this.socket === null) this.status = 'closed'
         })
       }
       socket.close(1000, 'client closing')

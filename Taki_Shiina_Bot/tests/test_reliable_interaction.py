@@ -1,5 +1,7 @@
 """Real synthetic SQL plus the existing points ledger; no external model or push."""
 import asyncio
+import os
+import threading
 from datetime import date
 import json
 import pathlib
@@ -23,6 +25,7 @@ from services.text_generation import TextGenerator
 from controlled_model_fixture import checker_response
 from services.points_service import InsufficientPointsError, InteractionLimitError, LedgerReconciliationError
 from services.interaction_config_service import ConfigUnavailableError
+from services.file_lock import FileLockTimeoutError, acquire_file_lock, release_file_lock
 
 
 class SafePrompt:
@@ -429,6 +432,68 @@ class ReliableInteractionTests(unittest.IsolatedAsyncioTestCase):
         callback.assert_not_called()
         self.assertEqual(self.ledger_count(REASON_ITEM_SEND), 0)
         self.assertEqual(self.rig.points.get_balance(TEST_USER), 20)
+
+    async def test_cancelled_charge_and_refund_wait_for_thread_before_recovery(self):
+        for action in ("charge", "refund"):
+            for phase in ("file_wait", "save"):
+                with self.subTest(action=action, phase=phase):
+                    request_id = f"cancel-{action}-{phase}"
+                    self.accepted_gift(request_id)
+                    if action == "refund":
+                        self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, request_id)
+                    entered, release = threading.Event(), threading.Event()
+                    points_store = self.rig.gamification.points_store
+                    original_save = points_store._save
+                    def save(data):
+                        if phase == "save":
+                            entered.set()
+                            if not release.wait(2):
+                                raise TimeoutError("synthetic save release")
+                        return original_save(data)
+                    fd = None
+                    if phase == "file_wait":
+                        fd = os.open(points_store._lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+                        acquire_file_lock(fd, exclusive=True, timeout=1)
+                    def charge():
+                        entered.set() if phase == "file_wait" else None
+                        return self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, request_id)
+                    async def refund():
+                        entered.set() if phase == "file_wait" else None
+                        return await self.rig.handler._refund_charge(TEST_USER, {"id": "coffee", "name": "咖啡"}, request_id, 5)
+                    with patch.object(points_store, "_save", side_effect=save):
+                        task = asyncio.create_task(self.runtime.charge_interaction(TEST_USER, request_id, charge) if action == "charge" else refund())
+                        try:
+                            self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+                            task.cancel()
+                            await asyncio.sleep(0)
+                            task.cancel()
+                            await asyncio.sleep(0.02)
+                            self.assertFalse(task.done(), "线程未结束时不能传播取消并启动冲突补偿")
+                        finally:
+                            release.set()
+                            if fd is not None:
+                                release_file_lock(fd)
+                                os.close(fd)
+                        with self.assertRaises(asyncio.CancelledError):
+                            await task
+                    # 恢复始终按真实账本补偿；重放不能再扣或再退。
+                    source = (await self.runtime.request(TEST_USER, request_id))["source"]
+                    source["turn_id"] = (await self.runtime.request(TEST_USER, request_id))["turn_id"]
+                    await self.rig.handler.reconcile_reliable(source)
+                    await self.rig.handler.reconcile_reliable(source)
+                    entries = [entry for entry in self.rig.ledger() if entry["idempotency_key"].endswith(request_id)]
+                    self.assertEqual(sum(entry["reason_code"] == REASON_ITEM_SEND for entry in entries), 1)
+                    self.assertEqual(sum(entry["reason_code"] == REASON_ITEM_REFUND for entry in entries), 1)
+                    self.assertEqual(self.rig.points.get_balance(TEST_USER), 20)
+
+    async def test_payment_lock_timeout_is_storage_failure_not_ai_timeout(self):
+        with patch.object(self.runtime, "charge_interaction", side_effect=FileLockTimeoutError("private lock path")):
+            result = await self.rig.handler.send(TEST_USER, "coffee", "lock-timeout", attachment="synthetic")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, CODE_STORAGE_FAILED_REFUNDED)
+        self.assertEqual(self.rig.points.get_balance(TEST_USER), 20)
+        self.assertEqual(self.ledger_count(REASON_ITEM_SEND), 0)
+        self.assertEqual(result.operation["failureCategory"], "storage")
 
     async def test_sql_failure_after_json_charge_refunds_only_that_real_charge(self):
         with patch.object(self.store, "_confirm_payment", side_effect=OSError("synthetic SQL commit failure")):

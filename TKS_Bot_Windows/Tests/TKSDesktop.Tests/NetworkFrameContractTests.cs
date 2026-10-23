@@ -1,4 +1,10 @@
 using Xunit;
+using System.Net;
+using System.Net.Sockets;
+using System.Net.WebSockets;
+using System.Text;
+using Microsoft.Extensions.Logging.Abstractions;
+using TKSDesktop.Core.Network.Ws;
 using System.Text.Json;
 using TKSDesktop.Contracts;
 
@@ -26,6 +32,97 @@ public sealed class NetworkFrameContractTests
         var history = JsonSerializer.Deserialize<Contracts.Dtos.ChatHistoryDataDto>(recovery.GetProperty("historyData").GetRawText(), WsFrameParser.Options)!;
         Assert.Equal("refunded", history.Operations.Single().RefundStatus);
         Assert.Equal("保留的文字", history.Operations.Single().Sources[0].Content);
+    }
+
+    [Fact]
+    public async Task Heartbeat_RequiresCurrentEchoAndIgnoresOldSocketCallbacks()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        using var client = new WsClient(NullLogger<WsClient>.Instance);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var connect = client.ConnectAsync($"ws://127.0.0.1:{port}", "synthetic-token", deadline.Token);
+        var context = await listener.GetContextAsync().WaitAsync(deadline.Token);
+        using var peer = (await context.AcceptWebSocketAsync(null)).WebSocket;
+        Assert.True(await connect);
+        var socketField = typeof(WsClient).GetField("_socket", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var oldSocket = (ClientWebSocket)socketField.GetValue(client)!;
+        var handle = typeof(WsClient).GetMethod("HandleRawFrame", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        long ping = 0;
+        for (var index = 0; index < 3; index++)
+        {
+            Assert.True(client.SendPing());
+            var buffer = new byte[1024];
+            var received = await peer.ReceiveAsync(new ArraySegment<byte>(buffer), deadline.Token);
+            using var frame = JsonDocument.Parse(Encoding.UTF8.GetString(buffer, 0, received.Count));
+            ping = frame.RootElement.GetProperty("payload").GetProperty("timestamp").GetInt64();
+        }
+        Assert.True(client.HeartbeatTimedOut);
+        handle.Invoke(client, ["{\"type\":\"pong\",\"pingTimestamp\":-1}", oldSocket]);
+        Assert.True(client.HeartbeatTimedOut);
+        var observed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.FrameReceived += (_, _) => observed.TrySetResult();
+        var pong = Encoding.UTF8.GetBytes($"{{\"type\":\"pong\",\"timestamp\":123,\"pingTimestamp\":{ping}}}");
+        await peer.SendAsync(new ArraySegment<byte>(pong), WebSocketMessageType.Text, true, deadline.Token);
+        await observed.Task.WaitAsync(deadline.Token);
+        Assert.False(client.HeartbeatTimedOut);
+        // 换连接后旧接收回调不能提供新的存活证据。
+        peer.Abort();
+        await client.CloseAsync(cancellationToken: deadline.Token);
+        using var replacement = new ClientWebSocket();
+        socketField.SetValue(client, replacement);
+        var pending = (HashSet<long>)typeof(WsClient).GetField("_pendingPings", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(client)!;
+        pending.UnionWith([11, 12, 13]);
+        handle.Invoke(client, ["{\"type\":\"pong\"}", oldSocket]);
+        Assert.True(client.HeartbeatTimedOut);
+        handle.Invoke(client, ["{\"type\":\"pong\"}", replacement]);
+        Assert.False(client.HeartbeatTimedOut);
+        socketField.SetValue(client, null);
+    }
+
+    [Fact]
+    public async Task Heartbeat_MissingPongReconnectsAndRequestsHistoryRecovery()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        using var client = new WsClient(NullLogger<WsClient>.Instance);
+        using var manager = new WsConnectionManager(client, new FakeTokenProvider(), () => $"ws://127.0.0.1:{port}", NullLogger<WsConnectionManager>.Instance);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+        var reopened = new TaskCompletionSource<ConnectionOpenedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var opens = 0;
+        manager.Opened += (_, info) => { if (Interlocked.Increment(ref opens) == 2) reopened.TrySetResult(info); };
+        var connect = manager.ConnectAsync(cancellationToken: deadline.Token);
+        var first = await listener.GetContextAsync().WaitAsync(deadline.Token);
+        using var peer = (await first.AcceptWebSocketAsync(null)).WebSocket;
+        Assert.True(await connect);
+        for (var index = 0; index < 3; index++) Assert.True(client.SendPing());
+        var closeHandshake = Task.Run(async () =>
+        {
+            var buffer = new byte[1024];
+            while ((await peer.ReceiveAsync(new ArraySegment<byte>(buffer), deadline.Token)).MessageType != WebSocketMessageType.Close) { }
+            await peer.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "heartbeat timeout", deadline.Token);
+        });
+        var second = await listener.GetContextAsync().WaitAsync(deadline.Token);
+        using var replacement = (await second.AcceptWebSocketAsync(null)).WebSocket;
+        var recovery = await reopened.Task.WaitAsync(deadline.Token);
+        Assert.True(recovery.FullSync);
+        Assert.True(manager.IsConnected);
+        Assert.False(client.HeartbeatTimedOut);
+        // 超时连接沿用既有强制关闭路径，服务端可能先看到断开。
+        try { await closeHandshake; }
+        catch (WebSocketException) { }
+        replacement.Abort();
+        await manager.DisconnectAsync(cancellationToken: deadline.Token);
     }
 
     /* ---------------- 陷阱 1：requestId 在帧顶层 ----------------------------- */
@@ -117,6 +214,9 @@ public sealed class NetworkFrameContractTests
         Assert.Equal(WsFrameParseKind.Known, result.Kind);
         var frame = Assert.IsType<WsPongFrame>(result.Frame);
         Assert.Equal(1700000000123, frame.Timestamp);
+        Assert.Null(frame.PingTimestamp);
+        var echoed = Assert.IsType<WsPongFrame>(WsFrameParser.Parse("""{"type":"pong","timestamp":999,"pingTimestamp":123}""").Frame);
+        Assert.Equal(123, echoed.PingTimestamp);
     }
 
     [Fact]

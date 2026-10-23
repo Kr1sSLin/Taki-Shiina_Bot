@@ -59,7 +59,7 @@ public sealed record ConnectionClosedEventArgs(int Code, string Reason, bool Aut
 ///   <item>连接 `{wsBaseUrl}` + <see cref="ProtocolConstants.WsChatPath"/>（`/ws/chat`），
 ///         鉴权走 `Authorization` 请求头（**不得**用 query `?token=`）；</item>
 ///   <item>心跳：每 <see cref="ProtocolConstants.HeartbeatIntervalMs"/>（25s）发
-///         `{"type":"ping","payload":{"timestamp":&lt;ms&gt;}}`；**发送失败立即触发重连**；</item>
+///         `{"type":"ping","payload":{"timestamp":&lt;ms&gt;}}`；发送失败或连续三次无 pong 触发重连；</item>
 ///   <item>退避：`2^n` 秒、上限 <see cref="ProtocolConstants.ReconnectMaxMs"/>（60s）、
 ///         最多 <see cref="ProtocolConstants.ReconnectMaxAttempts"/>（15）次；
 ///         连接成功后计数**归零**；达上限 → <see cref="ConnectionState.Degraded"/>；</item>
@@ -394,6 +394,7 @@ public sealed class WsConnectionManager : IDisposable
 
     private async Task RefreshAndReconnectAsync()
     {
+        _needFullSyncOnNextOpen = true;
         var outcome = await RefreshTokenAsync(CancellationToken.None).ConfigureAwait(false);
 
         if (_stopped)
@@ -434,6 +435,7 @@ public sealed class WsConnectionManager : IDisposable
             return;
         }
 
+        _needFullSyncOnNextOpen = true;
         var attempt = _state.Attempt + 1;
 
         if (attempt > ProtocolConstants.ReconnectMaxAttempts)
@@ -554,13 +556,14 @@ public sealed class WsConnectionManager : IDisposable
                     continue;
                 }
 
-                if (!_client.SendPing())
+                if (_client.HeartbeatTimedOut)
                 {
-                    _logger.LogWarning("心跳发送失败，触发重连（FR-W-CONN-2）");
-                    await _client.CloseAsync("heartbeat-failed", cancellationToken).ConfigureAwait(false);
-                    ScheduleReconnect("heartbeat-failed");
-                    return;
+                    _logger.LogWarning("连续三个心跳无响应，触发重连");
+                    await _client.CloseAsync("heartbeat-timeout", cancellationToken).ConfigureAwait(false);
+                    ScheduleReconnect("heartbeat-timeout");
+                    continue;
                 }
+                _client.SendPing();
             }
         }
         catch (OperationCanceledException)

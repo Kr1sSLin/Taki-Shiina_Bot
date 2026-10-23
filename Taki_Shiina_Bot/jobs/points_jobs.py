@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+from services.async_storage import gamification_call
+
 import asyncio
 import logging
 from datetime import date, timedelta
@@ -78,16 +80,16 @@ class PointsJobs:
     async def scan_breaks(self, today: date | None = None) -> dict[str, Any]:
         today = today or get_business_today()
         gamification = self.gamification
-        rules = gamification.config.get_points_rules()
+        rules = await gamification_call(gamification.config.get_points_rules)
         break_gap_days = int(rules.get("break_gap_days", 5))
         warning_gaps = set(rules.get("warning_gap_days", [3, 4]) or [])
         today_str = today.isoformat()
 
         summary = {"scanned": 0, "warned": [], "broken": []}
-        for user_id in gamification.known_user_ids():
+        for user_id in await gamification_call(gamification.known_user_ids):
             try:
                 # 先只读推算，拿到“断签前”的等级，再决定是否落库与通知
-                preview = gamification.level.recompute(
+                preview = await gamification_call(gamification.level.recompute,
                     user_id, today=today, change_source=SOURCE_BREAK_SCAN, persist=False
                 )
                 summary["scanned"] += 1
@@ -96,7 +98,7 @@ class PointsJobs:
                     continue
 
                 if gap_days >= break_gap_days:
-                    change = gamification.level.recompute(
+                    change = await gamification_call(gamification.level.recompute,
                         user_id, today=today, change_source=SOURCE_BREAK_SCAN, persist=True
                     )
                     if await self._notify_break(user_id, preview, change, today_str, break_gap_days):
@@ -120,12 +122,8 @@ class PointsJobs:
         self, user_id: str, preview, today_str: str, break_gap_days: int
     ) -> bool:
         """FR-18：连续 3～4 天未对话时提醒；用户当日完成对话后提醒自动解除。"""
-        gamification = self.gamification
-        with gamification.progress_store.transaction() as data:
-            meta = data["meta"].setdefault("streak_warnings", {})
-            if meta.get(user_id) == today_str:
-                return False
-            meta[user_id] = today_str
+        if not await gamification_call(self._mark_notice, "streak_warnings", user_id, today_str):
+            return False
         remaining = max(0, break_gap_days - int(preview.gap_days or 0))
         await self._push(user_id, streak_warning_event(preview, remaining))
         self.logger.info(
@@ -138,13 +136,8 @@ class PointsJobs:
         self, user_id: str, preview, change, today_str: str, break_gap_days: int
     ) -> bool:
         """6.2 步骤 3：达到阈值直接断签（不因持有补签卡而暂缓，可事后追溯挽回）。"""
-        gamification = self.gamification
         occurrence = preview.last_valid_date or today_str
-        with gamification.progress_store.transaction() as data:
-            meta = data["meta"].setdefault("break_notices", {})
-            already = meta.get(user_id) == occurrence
-            if not already:
-                meta[user_id] = occurrence
+        already = not await gamification_call(self._mark_notice, "break_notices", user_id, occurrence)
         # 仅当断签前确实持有等级时才通知，避免对一直是 NONE 的用户产生噪音。
         # 注意用 prev_level_code（断签前的等级）判断：preview 里的 level_code 已经是
         # 按 gap≥阈值推算后的 NONE。
@@ -169,15 +162,15 @@ class PointsJobs:
         month = today.strftime("%Y-%m")
         gamification = self.gamification
         granted: list[str] = []
-        for user_id in gamification.known_user_ids():
+        for user_id in await gamification_call(gamification.known_user_ids):
             try:
-                card = gamification.makeup.grant_for_month(user_id, month)
+                card = await gamification_call(gamification.makeup.grant_for_month, user_id, month)
                 if not card:
                     continue
                 granted.append(user_id)
                 await self._push(
                     user_id,
-                    makeup_card_changed_event(gamification.makeup.get_summary(user_id), "MONTHLY_GRANT"),
+                    makeup_card_changed_event(await gamification_call(gamification.makeup.get_summary, user_id), "MONTHLY_GRANT"),
                 )
             except Exception as exc:
                 self.logger.exception(f"[积分任务] 补签卡发放失败: user={user_id}, err={exc}")
@@ -189,7 +182,7 @@ class PointsJobs:
     async def grant_anniversaries(self, today: date | None = None) -> dict[str, Any]:
         today = today or get_business_today()
         gamification = self.gamification
-        rules = gamification.config.get_points_rules()
+        rules = await gamification_call(gamification.config.get_points_rules)
         month_day = today.strftime("%m-%d")
         matched = [
             entry for entry in rules.get("anniversaries", []) if entry.get("date") == month_day
@@ -198,10 +191,10 @@ class PointsJobs:
             return {"date": today.isoformat(), "granted": []}
 
         granted: list[dict[str, Any]] = []
-        for user_id in gamification.known_user_ids():
+        for user_id in await gamification_call(gamification.known_user_ids):
             for entry in matched:
                 try:
-                    reward = gamification.points.grant_anniversary(
+                    reward = await gamification_call(gamification.points.grant_anniversary,
                         user_id=user_id,
                         anniversary_date=today,
                         name=entry.get("name", "纪念日"),
@@ -211,7 +204,7 @@ class PointsJobs:
                         continue
                     granted.append({"userId": user_id, "name": entry.get("name"), "points": reward.amount})
                     await self._push(
-                        user_id, points_changed_event(reward.entry, balance=gamification.points.get_balance(user_id))
+                        user_id, points_changed_event(reward.entry, balance=await gamification_call(gamification.points.get_balance, user_id))
                     )
                 except Exception as exc:
                     self.logger.exception(f"[积分任务] 纪念日奖励发放失败: user={user_id}, err={exc}")
@@ -220,6 +213,14 @@ class PointsJobs:
         return {"date": today.isoformat(), "granted": granted}
 
     # ==================== 工具 ====================
+    def _mark_notice(self, section, user_id, occurrence):
+        with self.gamification.progress_store.transaction() as data:
+            meta = data["meta"].setdefault(section, {})
+            if meta.get(user_id) == occurrence:
+                return False
+            meta[user_id] = occurrence
+            return True
+
     async def _push(self, user_id: str, event: dict[str, Any]) -> None:
         if not self.broadcast_json:
             return

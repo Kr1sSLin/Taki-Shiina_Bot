@@ -1,5 +1,5 @@
 """Application orchestration shared by HTTP and WS, with durable recovery workers."""
-from services.async_storage import store_call
+from services.async_storage import store_call, gamification_call
 import asyncio
 import json
 import logging
@@ -135,7 +135,7 @@ class ChatRuntime:
         return await store_call(self.store.confirm_interaction, owner, request_id)
 
     async def charge_interaction(self, owner, request_id, charge):
-        return await store_call(self.store.charge_interaction, owner, request_id, charge)
+        return await gamification_call(self.store.charge_interaction, owner, request_id, charge)
 
     async def _reconcile_interaction(self, job):
         source = await store_call(self.store.begin_interaction_reconciliation, job)

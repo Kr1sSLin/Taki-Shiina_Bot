@@ -15,6 +15,11 @@ from fastapi.responses import JSONResponse
 
 from auth_utils import AuthContext, DeviceEntry, resolve_auth_context
 
+
+async def storage_busy_response(request, _error):
+    return business_error(50301, "存储暂时繁忙，请使用原请求重试", {"retryable": True, "recoveryAction": "retry_same_request"},
+                          resolve_trace_id(request), http_status=503)
+
 # 业务错误码（HTTP 层统一返回 200 + code，便于客户端按 code 判定业务结果）
 CODE_OK = 0
 CODE_INVALID_PARAM = 40001

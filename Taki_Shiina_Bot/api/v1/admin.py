@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from services.async_storage import gamification_call
+
 import hmac
 import os
 import time
@@ -62,7 +64,7 @@ async def get_gamification_config(request: Request, authorization: str | None = 
     require_auth(authorization, trace_id)
     gamification = get_gamification()
     try:
-        config = gamification.config.get_config()
+        config = await gamification_call(gamification.config.get_config)
         return ok({**config, "degraded": gamification.config.degraded}, trace_id)
     except ConfigUnavailableError:
         return business_error(50303, "配置不可用，需恢复有效版本", {"degraded": True}, trace_id, http_status=503)
@@ -83,7 +85,7 @@ async def update_gamification_config(
         revision = payload.get("expectedRevision")
         if type(revision) is not int:
             raise ConfigValidationError("缺少 expectedRevision")
-        config = gamification.config.update_sections({key: value for key, value in payload.items() if key != "expectedRevision"}, expected_revision=revision)
+        config = await gamification_call(gamification.config.update_sections, {key: value for key, value in payload.items() if key != "expectedRevision"}, expected_revision=revision)
     except ConfigRevisionConflict:
         return business_error(40901, "配置已改变，请刷新后重试", {"retryable": False, "recoveryAction": "refresh_then_retry"}, trace_id, http_status=409)
     except ConfigValidationError:
@@ -114,8 +116,8 @@ async def user_progress(
     gamification = get_gamification()
     target = (userId or "").strip() or auth.user_id
 
-    progress_data = gamification.progress_store.snapshot()
-    points_data = gamification.points_store.snapshot()
+    progress_data = await gamification_call(gamification.progress_store.snapshot)
+    points_data = await gamification_call(gamification.points_store.snapshot)
     activity = [
         entry
         for entry in progress_data.get("daily_activity_log", {}).values()
@@ -125,9 +127,9 @@ async def user_progress(
     return ok(
         {
             "userId": target,
-            "balance": gamification.points.get_balance(target),
-            "level": gamification.get_level_status(target),
-            "makeupCard": gamification.makeup.get_summary(target),
+            "balance": await gamification_call(gamification.points.get_balance, target),
+            "level": await gamification_call(gamification.get_level_status, target),
+            "makeupCard": await gamification_call(gamification.makeup.get_summary, target),
             "progress": progress_data.get("user_progress", {}).get(target),
             "recentActivity": activity[:30],
             "ledgerCount": sum(
@@ -174,21 +176,21 @@ async def adjust_points(
 
     gamification = get_gamification()
     target = (payload.userId or "").strip() or auth.user_id
-    gamification.touch_user(target)
+    await gamification_call(gamification.touch_user, target)
 
     if payload.amount is None and payload.balance is None:
         return business_error(CODE_INVALID_PARAM, "amount 与 balance 至少提供一个", None, trace_id, http_status=400)
 
     try:
         if payload.balance is not None:
-            reward = gamification.points.set_balance(target, payload.balance, note=payload.note)
+            reward = await gamification_call(gamification.points.set_balance, target, payload.balance, note=payload.note)
         else:
-            reward = gamification.points.adjust_balance(target, int(payload.amount or 0), note=payload.note)
+            reward = await gamification_call(gamification.points.adjust_balance, target, int(payload.amount or 0), note=payload.note)
     except InsufficientPointsError:
         return business_error(
             CODE_INVALID_PARAM,
             "扣减后余额会变成负数，请检查 amount",
-            {"balance": gamification.points.get_balance(target)},
+            {"balance": await gamification_call(gamification.points.get_balance, target)},
             trace_id,
             http_status=400,
         )
@@ -197,7 +199,7 @@ async def adjust_points(
 
     data = {
         "userId": target,
-        "balance": gamification.points.get_balance(target),
+        "balance": await gamification_call(gamification.points.get_balance, target),
         "change": reward.entry.get("change_amount"),
         "ledgerId": reward.entry.get("id"),
         "reasonCode": reward.entry.get("reason_code"),
@@ -250,7 +252,7 @@ async def backfill_progress(
         if days <= 0 or days > 400:
             return business_error(CODE_INVALID_PARAM, "days 需在 1~400 之间", None, trace_id, http_status=400)
 
-    data = gamification.backfill_activity(
+    data = await gamification_call(gamification.backfill_activity,
         target, days=days, award_points=bool(payload.awardPoints)
     )
     if gamification.interaction is not None and data["level"].get("changeType") not in (None, "NONE"):
@@ -282,7 +284,7 @@ async def reset_progress(
 
     gamification = get_gamification()
     target = (payload.userId or "").strip() or auth.user_id
-    data = gamification.reset_progress(target, clear_makeup_cards=bool(payload.clearMakeupCards))
+    data = await gamification_call(gamification.reset_progress, target, clear_makeup_cards=bool(payload.clearMakeupCards))
     return ok(data, trace_id, message="等级与连续天数已重置（积分保留）")
 
 

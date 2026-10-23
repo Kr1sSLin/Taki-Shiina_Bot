@@ -14,6 +14,8 @@
 """
 
 from __future__ import annotations
+
+from services.async_storage import gamification_call
 from services.public_policy import public_messages, checked_completion
 
 import asyncio
@@ -41,6 +43,7 @@ from services.debounce_merge import (
 from time_utils import build_time_block, get_business_today_str
 from services.points_events import level_changed_event, makeup_card_changed_event, points_changed_event
 from services.points_service import InsufficientPointsError, InteractionLimitError, LedgerReconciliationError
+from services.file_lock import FileLockTimeoutError
 from services.interaction_config_service import ConfigUnavailableError
 from services.progress_store import SOURCE_INTERACTION
 from services.application_service import ChatApplicationService
@@ -260,17 +263,17 @@ class InteractionHandler:
             replay = InteractionSendResult(**{**cached.__dict__, "duplicate": True})
             return replay
 
-        previous_charge = self.points_service.find_ledger_entry(user_id, f"item_send:{user_id}:{request_id}")
+        previous_charge = await gamification_call(self.points_service.find_ledger_entry, user_id, f"item_send:{user_id}:{request_id}")
         if previous_charge:
-            refunded = self.points_service.find_ledger_entry(user_id, f"item_refund:{user_id}:{request_id}") is not None
+            refunded = await gamification_call(self.points_service.find_ledger_entry, user_id, f"item_refund:{user_id}:{request_id}") is not None
             return InteractionSendResult(not refunded, user_id, item_id, request_id, duplicate=True, refunded=refunded,
                                          error_code=CODE_AI_FAILED_REFUNDED if refunded else CODE_OK,
-                                         balance=self.points_service.get_balance(user_id))
+                                         balance=await gamification_call(self.points_service.get_balance, user_id))
         try:
-            config, item = self.config_service.interaction_snapshot(item_id)
+            config, item = await gamification_call(self.config_service.interaction_snapshot, item_id)
         except ConfigUnavailableError:
             return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_CONFIG_UNAVAILABLE,
-                                         message="送礼配置暂不可用，请稍后重试", balance=self.points_service.get_balance(user_id))
+                                         message="送礼配置暂不可用，请稍后重试", balance=await gamification_call(self.points_service.get_balance, user_id))
         if not item or not item.get("is_active"):
             return InteractionSendResult(
                 ok=False,
@@ -279,7 +282,7 @@ class InteractionHandler:
                 request_id=request_id,
                 error_code=CODE_ITEM_NOT_FOUND,
                 message="物品不存在或已下架",
-                balance=self.points_service.get_balance(user_id),
+                balance=await gamification_call(self.points_service.get_balance, user_id),
             )
 
         cost = int(item["cost_points"])
@@ -287,7 +290,7 @@ class InteractionHandler:
 
         # ---- 1) 原子扣减 + ITEM_SEND 流水 ----
         try:
-            deduction = self.points_service.deduct_for_item(
+            deduction = await gamification_call(self.points_service.deduct_for_item,
                 user_id=user_id,
                 item_id=item["id"],
                 cost_points=cost,
@@ -296,7 +299,7 @@ class InteractionHandler:
                 config_snapshot=config,
             )
         except InsufficientPointsError:
-            balance = self.points_service.get_balance(user_id)
+            balance = await gamification_call(self.points_service.get_balance, user_id)
             self.logger.info(f"[互动] 积分不足: user={user_id}, item={item['id']}, balance={balance}")
             return InteractionSendResult(
                 ok=False,
@@ -310,9 +313,9 @@ class InteractionHandler:
             )
         except (InteractionLimitError, LedgerReconciliationError) as error:
             return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_DAILY_LIMIT if isinstance(error, InteractionLimitError) else CODE_CONFIG_UNAVAILABLE,
-                                         message=str(error), balance=self.points_service.get_balance(user_id))
+                                         message=str(error), balance=await gamification_call(self.points_service.get_balance, user_id))
 
-        balance = self.points_service.get_balance(user_id)
+        balance = await gamification_call(self.points_service.get_balance, user_id)
         if not deduction.created:
             # 账本里已存在同一幂等键：视为重放，不重复扣分也不重复生成回复
             self.logger.info(f"[互动] 幂等重放: user={user_id}, key={request_id}")
@@ -345,9 +348,9 @@ class InteractionHandler:
 
         # 新用户首次互动时补发当月补签卡（需求方确认规则）
         try:
-            granted = self.makeup_card_service.ensure_initial_grant(user_id)
+            granted = await gamification_call(self.makeup_card_service.ensure_initial_grant, user_id)
             if granted:
-                summary = self.makeup_card_service.get_summary(user_id)
+                summary = await gamification_call(self.makeup_card_service.get_summary, user_id)
                 await self._push(user_id, makeup_card_changed_event(summary, "MONTHLY_GRANT"))
         except Exception as exc:
             self.logger.warning(f"[互动] 补签卡首发检查失败: {exc}")
@@ -409,7 +412,7 @@ class InteractionHandler:
             result.refunded = refunded
             result.attempts = exc.attempts
             result.fallback_text = DEFAULT_FALLBACK_TEXT if refunded else None
-            result.balance = self.points_service.get_balance(user_id)
+            result.balance = await gamification_call(self.points_service.get_balance, user_id)
             self._remember(request_id, result)
             await self._push(user_id, {"type": "chat.typing", "payload": {"typing": False}})
             return result
@@ -430,7 +433,7 @@ class InteractionHandler:
         if attachment:
             timeline_user_content = f"{timeline_user_content} · {attachment}"
         try:
-            self._append_history(user_id, item, final_reply, now_ms, attachment=prompt_attachment)
+            await gamification_call(self._append_history, user_id, item, final_reply, now_ms, attachment=prompt_attachment)
             await self.append_timeline(
                 # 被摘走（合进本次礼物回复）的聊天消息也必须逐条写时间线。
                 build_user_timeline_items(merged_items, now_ms - 1, user_id=user_id)
@@ -468,7 +471,7 @@ class InteractionHandler:
             result.error_code = CODE_STORAGE_FAILED_REFUNDED
             result.message = "保存失败，积分已退回" if refunded else "保存失败，请联系管理员核对积分"
             result.refunded = refunded
-            result.balance = self.points_service.get_balance(user_id)
+            result.balance = await gamification_call(self.points_service.get_balance, user_id)
             self._remember(request_id, result)
             await self._push(user_id, {"type": "chat.typing", "payload": {"typing": False}})
             await self._push(
@@ -532,52 +535,52 @@ class InteractionHandler:
     async def _send_reliable(self, runtime, user_id, item_id, request_id, device_id, attachment):
         """Keep the points ledger's rules; SQL owns the single durable chat result."""
         existing = await runtime.request(user_id, request_id)
-        charge = self.points_service.find_ledger_entry(user_id, f"item_send:{user_id}:{request_id}")
-        refund = self.points_service.find_ledger_entry(user_id, f"item_refund:{user_id}:{request_id}")
+        charge = await gamification_call(self.points_service.find_ledger_entry, user_id, f"item_send:{user_id}:{request_id}")
+        refund = await gamification_call(self.points_service.find_ledger_entry, user_id, f"item_refund:{user_id}:{request_id}")
         if existing:
             source = existing["source"]
             metadata = source.get("metadata") or {}
             item = metadata.get("item") or {}
             if source.get("intent") != "interaction" or item.get("id") != item_id or metadata.get("attachment", "") != attachment:
                 return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_INVALID_PARAM,
-                                             message="请求标识已用于其他输入", balance=self.points_service.get_balance(user_id))
+                                             message="请求标识已用于其他输入", balance=await gamification_call(self.points_service.get_balance, user_id))
             if existing["operation"]["status"] == "failed":
                 runtime.start()
                 operation = existing["operation"]
                 return InteractionSendResult(False, user_id, item_id, request_id, item=item, duplicate=True,
                                              error_code=operation["failureCode"], message="此前操作已失败，请重新发送",
                                              refunded=operation["refundStatus"] == "refunded", operation=operation,
-                                             balance=self.points_service.get_balance(user_id))
+                                             balance=await gamification_call(self.points_service.get_balance, user_id))
         else:
             if charge:
                 return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_CONFIG_UNAVAILABLE,
                                              message="原扣款缺少请求意图，需核账后恢复", duplicate=True,
-                                             balance=self.points_service.get_balance(user_id))
+                                             balance=await gamification_call(self.points_service.get_balance, user_id))
             try:
-                config, item = self.config_service.interaction_snapshot(item_id)
+                config, item = await gamification_call(self.config_service.interaction_snapshot, item_id)
             except ConfigUnavailableError:
                 return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_CONFIG_UNAVAILABLE,
-                                             message="送礼配置暂不可用，请稍后重试", balance=self.points_service.get_balance(user_id))
+                                             message="送礼配置暂不可用，请稍后重试", balance=await gamification_call(self.points_service.get_balance, user_id))
             if not item or (not item.get("is_active") and charge is None):
                 return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_ITEM_NOT_FOUND,
-                                             message="物品不存在或已下架", balance=self.points_service.get_balance(user_id))
+                                             message="物品不存在或已下架", balance=await gamification_call(self.points_service.get_balance, user_id))
             metadata = {"item": {key: item.get(key) for key in ("id", "name", "icon", "cost_points")},
-                        "attachment": attachment, "prompt_template": self.config_service.render_prompt(item, config=config),
+                        "attachment": attachment, "prompt_template": await gamification_call(self.config_service.render_prompt, item, config=config),
                         "business_date": get_business_today_str(),
                         "retry_rules": config["points_rules"]["deepseek_retry"],
                         "config_revision": config["revision"], "daily_limit": config["points_rules"]["interaction_daily_limit"],
                         "merge_after_payment": not attachment}
         if charge and charge.get("related_item_id") != item_id:
             return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_INVALID_PARAM,
-                                         message="请求标识已用于其他物品", balance=self.points_service.get_balance(user_id))
+                                         message="请求标识已用于其他物品", balance=await gamification_call(self.points_service.get_balance, user_id))
         cost = abs(int(charge["change_amount"])) if charge else int(item["cost_points"])
         if refund:
             return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_AI_FAILED_REFUNDED,
                                          message="此前互动失败，积分已退回", item=item, duplicate=True, refunded=True,
-                                         balance=self.points_service.get_balance(user_id), fallback_text=DEFAULT_FALLBACK_TEXT)
+                                         balance=await gamification_call(self.points_service.get_balance, user_id), fallback_text=DEFAULT_FALLBACK_TEXT)
         result = InteractionSendResult(True, user_id, item_id, request_id, item=item,
                                        duplicate=charge is not None,
-                                       balance=self.points_service.get_balance(user_id))
+                                       balance=await gamification_call(self.points_service.get_balance, user_id))
         turn_id = existing["turn_id"] if existing else None
         try:
             if turn_id is None:
@@ -602,15 +605,15 @@ class InteractionHandler:
                 code = CODE_INSUFFICIENT_POINTS if isinstance(rejection, InsufficientPointsError) else CODE_DAILY_LIMIT if isinstance(rejection, InteractionLimitError) else CODE_CONFIG_UNAVAILABLE
                 operation = await runtime.record_interaction_failure(user_id, request_id, "rejected", "none", code)
                 return InteractionSendResult(False, user_id, item_id, request_id, error_code=code,
-                                             message=str(rejection), item=item, operation=operation, balance=self.points_service.get_balance(user_id))
+                                             message=str(rejection), item=item, operation=operation, balance=await gamification_call(self.points_service.get_balance, user_id))
             result.duplicate = not deduction.created
             result.charged = cost if deduction.created else 0
-            result.balance = self.points_service.get_balance(user_id)
+            result.balance = await gamification_call(self.points_service.get_balance, user_id)
             if deduction.created:
                 await self._push(user_id, points_changed_event(deduction.entry, balance=result.balance))
                 try:
-                    if self.makeup_card_service.ensure_initial_grant(user_id):
-                        await self._push(user_id, makeup_card_changed_event(self.makeup_card_service.get_summary(user_id), "MONTHLY_GRANT"))
+                    if await gamification_call(self.makeup_card_service.ensure_initial_grant, user_id):
+                        await self._push(user_id, makeup_card_changed_event(await gamification_call(self.makeup_card_service.get_summary, user_id), "MONTHLY_GRANT"))
                 except Exception as error:
                     self.logger.warning("interaction makeup grant failed (%s)", type(error).__name__)
             # No model can claim this gift until its durable payment gate opens.
@@ -635,14 +638,14 @@ class InteractionHandler:
             turn_id = recovered["turn_id"] if recovered else None
             durable = await runtime.cancel(user_id, turn_id) if turn_id else None
             if durable is None:
-                charge = self.points_service.find_ledger_entry(user_id, f"item_send:{user_id}:{request_id}")
+                charge = await gamification_call(self.points_service.find_ledger_entry, user_id, f"item_send:{user_id}:{request_id}")
                 if charge is not None:
                     result.refunded = await self._refund_charge(user_id, item, request_id, abs(int(charge["change_amount"])))
                 result.ok = False
-                storage_failure = not isinstance(error, (ChatFailed, TimeoutError)) or getattr(error, "category", "") == "storage"
+                storage_failure = isinstance(error, FileLockTimeoutError) or not isinstance(error, (ChatFailed, TimeoutError)) or getattr(error, "category", "") == "storage"
                 result.error_code = CODE_STORAGE_FAILED_REFUNDED if storage_failure else CODE_AI_FAILED_REFUNDED
                 result.message = "互动失败，积分已退回" if result.refunded else ("消息保存失败，未扣积分" if charge is None else "互动失败，请联系管理员核对积分")
-                result.balance = self.points_service.get_balance(user_id)
+                result.balance = await gamification_call(self.points_service.get_balance, user_id)
                 result.fallback_text = DEFAULT_FALLBACK_TEXT if result.refunded else None
                 if recovered:
                     result.operation = await runtime.record_interaction_failure(user_id, request_id, "storage" if storage_failure else "generation",
@@ -669,7 +672,7 @@ class InteractionHandler:
         return result
 
     async def _record_success_activity(self, user_id, business_date=None, result=None):
-        activity = self.points_service.record_user_activity(
+        activity = await gamification_call(self.points_service.record_user_activity,
             user_id, source=SOURCE_INTERACTION,
             today=date.fromisoformat(business_date) if business_date else None,
         )
@@ -700,12 +703,12 @@ class InteractionHandler:
             raise RuntimeError("reconciliation runtime is unavailable")
         owner, request_id = source["owner"], source["request_id"]
         item = source["metadata"]["item"]
-        charge = self.points_service.find_ledger_entry(owner, f"item_send:{owner}:{request_id}")
+        charge = await gamification_call(self.points_service.find_ledger_entry, owner, f"item_send:{owner}:{request_id}")
         if charge is not None:
             amount = int(charge.get("change_amount", 0))
             if charge.get("related_item_id") != item["id"] or amount >= 0:
                 raise ValueError("reconciliation charge identity is inconsistent")
-            refund = self.points_service.find_ledger_entry(owner, f"item_refund:{owner}:{request_id}")
+            refund = await gamification_call(self.points_service.find_ledger_entry, owner, f"item_refund:{owner}:{request_id}")
             if refund is None:
                 if not await self._refund_charge(owner, item, request_id, -amount):
                     raise RuntimeError("interaction refund remains unresolved")
@@ -720,7 +723,7 @@ class InteractionHandler:
     # ==================== 内部：DeepSeek ====================
     async def _call_deepseek(self, messages: list[dict], retry_rules=None) -> tuple[str, int]:
         """按配置调用 DeepSeek：默认最多重试 5 次，总预算 60 秒。"""
-        retry_rules = retry_rules if retry_rules is not None else self.config_service.get_points_rules().get("deepseek_retry", {})
+        retry_rules = retry_rules if retry_rules is not None else (await gamification_call(self.config_service.get_points_rules)).get("deepseek_retry", {})
         max_retries = int(retry_rules.get("max_retries", 5) or 0)
         total_timeout = float(retry_rules.get("total_timeout_seconds", 60))
         attempt_timeout = float(retry_rules.get("attempt_timeout_seconds", 20))
@@ -837,7 +840,7 @@ class InteractionHandler:
     ) -> bool:
         """Refund an interaction charge exactly once via the points ledger key."""
         try:
-            refund = self.points_service.refund_item(
+            refund = await gamification_call(self.points_service.refund_item,
                 user_id=user_id,
                 item_id=item["id"],
                 amount=cost,
@@ -846,7 +849,7 @@ class InteractionHandler:
                 note=f"互动失败退回（{item['name']}）",
             )
             if refund.created:
-                balance = self.points_service.get_balance(user_id)
+                balance = await gamification_call(self.points_service.get_balance, user_id)
                 await self._push(user_id, points_changed_event(refund.entry, balance=balance))
             return True
         except Exception as exc:
@@ -865,7 +868,7 @@ class InteractionHandler:
 
         与 ``send`` 走同一套组装逻辑，唯一的差别是不会发起模型调用、也不产生任何副作用。
         """
-        item = self.config_service.get_item(item_id)
+        item = await gamification_call(self.config_service.get_item, item_id)
         if not item or not item.get("is_active"):
             return None
         messages, _polluted = await self._build_messages(user_id, item, attachment=attachment)
@@ -876,7 +879,7 @@ class InteractionHandler:
             "model": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
             "temperature": 0.8,
             "promptTemplateId": item.get("prompt_template_id"),
-            "promptTemplate": self.config_service.render_prompt(item),
+            "promptTemplate": await gamification_call(self.config_service.render_prompt, item),
             "attachment": attachment or None,
             "messageCount": len(messages),
             "messages": messages,
@@ -904,7 +907,7 @@ class InteractionHandler:
         )
 
         # EDGE-9：模板在请求发起时快照，后台更新只对之后的请求生效
-        interaction_prompt = self.config_service.render_prompt(item, config=config)
+        interaction_prompt = await gamification_call(self.config_service.render_prompt, item, config=config)
 
         # 附言优先；没有附言时才回退到防抖缓冲（两者不叠加，避免同一句话出现两次）
         attachment = (attachment or "").strip()

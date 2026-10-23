@@ -1060,6 +1060,8 @@ wss.on('connection', (ws) => {
     let frame
     try {
       frame = JSON.parse(raw.toString('utf8'))
+      if (!frame || Array.isArray(frame) || typeof frame !== 'object' || typeof frame.type !== 'string' ||
+          ('payload' in frame && (!frame.payload || Array.isArray(frame.payload) || typeof frame.payload !== 'object'))) throw new Error('invalid frame')
     } catch {
       ws.send(JSON.stringify({ type: 'bot.error', requestId: null, payload: { errorCode: 'INVALID_JSON', message: '无效的 JSON 格式', requestIds: [], timestamp: nowMs() } }))
       return
@@ -1070,8 +1072,13 @@ wss.on('connection', (ws) => {
     const type = frame.type
 
     if (type === 'ping') {
-      // pong 是顶层 {type,timestamp}，无 payload，且向该账号所有连接广播
-      broadcast({ type: 'pong', timestamp: nowMs() })
+      const timestamps = [frame, frame.payload ?? {}].filter((item) => 'timestamp' in item).map((item) => item.timestamp)
+      if (timestamps.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value < 0) ||
+          (timestamps.length === 2 && timestamps[0] !== timestamps[1])) {
+        ws.send(JSON.stringify({ type: 'bot.error', payload: { errorCode: 'INVALID_JSON', message: '无效的 JSON 格式' } }))
+        return
+      }
+      ws.send(JSON.stringify({ type: 'pong', timestamp: nowMs(), ...(timestamps.length ? { pingTimestamp: timestamps[0] } : {}) }))
       return
     }
 

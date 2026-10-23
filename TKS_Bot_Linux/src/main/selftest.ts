@@ -311,6 +311,75 @@ async function run(): Promise<number> {
   closeDatabase()
   process.stdout.write(`  \u001b[90m（数据库层断言完成，重新建库用于后续端到端流程）\u001b[0m\n`)
 
+  section('P3 逐连接心跳与旧连接隔离（真实 loopback WS）')
+  {
+    const { WebSocketServer } = await import('ws')
+    const { WsClient } = await import('./core/network/ws-client')
+    const { PROTOCOL } = await import('../shared/levels')
+    const server = new WebSocketServer({ port: 0, host: '127.0.0.1' })
+    await new Promise<void>((resolve) => server.once('listening', resolve))
+    const address = server.address() as { port: number }
+    const client = new WsClient()
+    type Socket = import('ws').default
+    let peer: Socket | null = null
+    let failed = 0
+    let seenFrames = 0
+    const ticks: Array<() => void> = []
+    const originalInterval = global.setInterval
+    const incoming: Array<Record<string, unknown>> = []
+    server.on('connection', (socket) => {
+      peer = socket
+      socket.on('message', (raw) => incoming.push(JSON.parse(String(raw))))
+    })
+    client.on('heartbeatFailed', () => { failed += 1 })
+    client.on('error', () => {})
+    client.on('frame', () => { seenFrames += 1 })
+    // 只压缩心跳时钟，不替换 WebSocket 或响应处理。
+    global.setInterval = ((callback: () => void, interval: number) => {
+      if (interval === PROTOCOL.HEARTBEAT_INTERVAL_MS) ticks.push(callback)
+      return originalInterval(callback, interval)
+    }) as typeof setInterval
+    try {
+      const connect = async (): Promise<void> => {
+        client.connect(`ws://127.0.0.1:${address.port}`, 'synthetic-token')
+        if (!await waitFor(() => client.isOpen() && peer, 2000, 'P3 loopback open')) throw new Error('P3 loopback open failed')
+      }
+      await connect()
+      const oldSocket = (client as unknown as { socket: Socket }).socket
+      const oldMessage = oldSocket.listeners('message')[0]
+      const oldOpen = oldSocket.listeners('open')[0]
+      const oldClose = oldSocket.listeners('close')[0]
+      const tick = (): void => { ticks[ticks.length - 1]() }
+      tick()
+      await waitFor(() => incoming.length === 1, 2000, 'P3 ping')
+      const timestamp = (incoming[0].payload as { timestamp: number }).timestamp
+      peer!.send(JSON.stringify({ type: 'pong', timestamp: Date.now(), pingTimestamp: timestamp }))
+      await waitFor(() => seenFrames === 1, 2000, 'P3 matching pong')
+      tick(); tick(); tick()
+      check('P3：匹配回显重置连续超时计数', failed === 0)
+      peer!.send(JSON.stringify({ type: 'pong', pingTimestamp: -1 }))
+      await waitFor(() => seenFrames === 2, 2000, 'P3 mismatched pong')
+      tick()
+      check('P3：错误回显不能证明存活，无 pong 触发恢复事件', failed === 1)
+      await connect()
+      const before = seenFrames
+      oldMessage.call(oldSocket, Buffer.from('{"type":"pong"}'), false)
+      oldOpen.call(oldSocket)
+      oldClose.call(oldSocket, 1006, Buffer.from('stale'))
+      check('P3：旧连接回调不能关闭或污染新连接', client.isOpen() && seenFrames === before)
+      tick(); tick(); tick()
+      peer!.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }))
+      await waitFor(() => seenFrames === before + 1, 2000, 'P3 legacy pong')
+      tick()
+      check('P3：重连清除在途心跳并兼容旧 pong', failed === 1)
+    } finally {
+      global.setInterval = originalInterval
+      client.close(true)
+      for (const socket of server.clients) socket.terminate()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  }
+
   /* --------------------------- 组装真实服务图 -------------------------- */
   section('§5 / §7 真实服务链路（REST + WS + 持久化）')
 

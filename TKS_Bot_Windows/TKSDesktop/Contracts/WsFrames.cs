@@ -341,7 +341,7 @@ public sealed class MakeupCardChangedPayloadDto
 public abstract record WsServerFrame(long Timestamp);
 
 /// <summary>心跳应答。⚠️ 顶层 `{type, timestamp}`，无 payload 包装（陷阱 2）。</summary>
-public sealed record WsPongFrame(long Timestamp) : WsServerFrame(Timestamp);
+public sealed record WsPongFrame(long Timestamp, long? PingTimestamp = null) : WsServerFrame(Timestamp);
 
 /// <summary>多设备回声；按 `RequestId` 幂等，自己的回声必须跳过（EDGE-W-4）。</summary>
 public sealed record WsEchoFrame(string RequestId, ChatEchoPayloadDto Payload)

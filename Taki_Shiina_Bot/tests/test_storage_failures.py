@@ -2,6 +2,9 @@
 import base64
 import json
 import logging
+import os
+import threading
+import time
 import pathlib
 import sys
 import tempfile
@@ -16,6 +19,7 @@ from secure_storage import (
 from services.history_store import HistoryStore
 from services.memory_service import MemoryService
 from services.progress_store import ProgressStore
+from services.file_lock import FileLockTimeoutError, acquire_file_lock, release_file_lock
 
 
 class StorageFailures(unittest.TestCase):
@@ -103,6 +107,44 @@ class StorageFailures(unittest.TestCase):
                     with progress.transaction():
                         pass
                 self.assertEqual(self.path.read_bytes(), original)
+
+    def test_progress_lock_timeout_is_bounded_and_does_not_write(self):
+        key = base64.urlsafe_b64encode(b"x" * 32).decode()
+        with patch.dict("os.environ", {"DATA_ENC_KEY": key, "DATA_AUTO_MIGRATE": "0"}):
+            progress = ProgressStore(str(self.path), logging.getLogger(__name__), lock_timeout=0.05)
+            fd = os.open(progress._lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                acquire_file_lock(fd, exclusive=True, timeout=1)
+                for operation in (progress.snapshot, lambda: self._transaction(progress)):
+                    start = time.monotonic()
+                    with self.assertRaises(FileLockTimeoutError):
+                        operation()
+                    self.assertLess(time.monotonic() - start, 0.5)
+                self.assertFalse(self.path.exists())
+            finally:
+                release_file_lock(fd)
+                os.close(fd)
+            held, release = threading.Event(), threading.Event()
+            def hold():
+                with progress._thread_lock:
+                    held.set()
+                    release.wait(2)
+            holder = threading.Thread(target=hold)
+            holder.start()
+            try:
+                self.assertTrue(held.wait(1))
+                with self.assertRaises(FileLockTimeoutError):
+                    progress.snapshot()
+            finally:
+                release.set()
+                holder.join(2)
+            with progress.transaction() as data:
+                self.assertIsInstance(data, dict)
+
+    @staticmethod
+    def _transaction(progress):
+        with progress.transaction():
+            pass
 
     def test_hex_key_configuration(self):
         with patch.dict("os.environ", {"DATA_ENC_KEY": (b"x" * 32).hex()}):

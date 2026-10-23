@@ -186,6 +186,7 @@ export class ConnectionManager extends EventEmitter {
   }
 
   private async refreshAndReconnect(): Promise<void> {
+    this.needFullSyncOnNextOpen = true
     const ok = await this.auth.handleWsAuthExpired()
     if (this.stopped) return
     if (ok) {
@@ -207,6 +208,7 @@ export class ConnectionManager extends EventEmitter {
 
   private scheduleReconnect(reason: string, closeCode?: number): void {
     if (this.stopped) return
+    this.needFullSyncOnNextOpen = true
     this.clearReconnectTimer()
 
     const attempt = this.state.attempt + 1

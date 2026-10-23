@@ -66,6 +66,7 @@ public sealed class WsClient : IDisposable
 
     private readonly HashSet<string> _pendingRequests = new(StringComparer.Ordinal);
     private readonly object _pendingGate = new();
+    private readonly HashSet<long> _pendingPings = [];
 
     private ClientWebSocket? _socket;
     private CancellationTokenSource? _pumpCts;
@@ -96,6 +97,11 @@ public sealed class WsClient : IDisposable
 
     /// <summary>是否处于打开状态。</summary>
     public bool IsOpen => _socket?.State == WebSocketState.Open;
+
+    public bool HeartbeatTimedOut
+    {
+        get { lock (_pendingGate) { return _pendingPings.Count >= 3; } }
+    }
 
     /// <summary>当前 socket 状态（排障用）。</summary>
     public WebSocketState State => _socket?.State ?? WebSocketState.None;
@@ -215,6 +221,7 @@ public sealed class WsClient : IDisposable
             receivePump = _receivePump;
 
             _socket = null;
+            lock (_pendingGate) { _pendingPings.Clear(); }
             _pumpCts = null;
             _sendPump = null;
             _receivePump = null;
@@ -273,6 +280,7 @@ public sealed class WsClient : IDisposable
         }
 
         pumpCts?.Dispose();
+        while (_sendQueue.Reader.TryRead(out _)) { }
     }
 
     /* ---------------------------------------------------------------------- */
@@ -331,9 +339,15 @@ public sealed class WsClient : IDisposable
     /// </summary>
     public bool SendPing()
     {
+        long timestamp;
+        lock (_pendingGate)
+        {
+            timestamp = Math.Max(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), _pendingPings.Count == 0 ? 0 : _pendingPings.Max() + 1);
+            _pendingPings.Add(timestamp);
+        }
         var frame = new WsPingFrameDto
         {
-            Payload = new WsPingPayloadDto { Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() },
+            Payload = new WsPingPayloadDto { Timestamp = timestamp },
         };
 
         var ok = TryEnqueue(JsonSerializer.Serialize(frame, WsFrameParser.Options));
@@ -353,6 +367,7 @@ public sealed class WsClient : IDisposable
             {
                 while (reader.TryRead(out var json))
                 {
+                    if (!ReferenceEquals(_socket, socket)) return;
                     if (socket.State != WebSocketState.Open)
                     {
                         SendFailed?.Invoke(this, new InvalidOperationException("socket is not open"));
@@ -370,6 +385,7 @@ public sealed class WsClient : IDisposable
                     }
                     catch (Exception ex) when (ex is WebSocketException or OperationCanceledException or ObjectDisposedException)
                     {
+                        if (!ReferenceEquals(_socket, socket)) return;
                         _logger.LogWarning("WS 发送失败，触发重连 error={Error}", ex.Message);
                         SendFailed?.Invoke(this, ex);
                         return;
@@ -406,6 +422,7 @@ public sealed class WsClient : IDisposable
                 {
                     result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken)
                         .ConfigureAwait(false);
+                    if (!ReferenceEquals(_socket, socket)) return;
 
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
@@ -437,7 +454,7 @@ public sealed class WsClient : IDisposable
                 }
 
                 var raw = Encoding.UTF8.GetString(message.GetBuffer(), 0, (int)message.Length);
-                HandleRawFrame(raw);
+                HandleRawFrame(raw, socket);
             }
         }
         catch (OperationCanceledException)
@@ -446,6 +463,7 @@ public sealed class WsClient : IDisposable
         }
         catch (WebSocketException ex)
         {
+            if (!ReferenceEquals(_socket, socket)) return;
             LastCloseCode = TryGetHandshakeHttpStatus(ex);
             LastCloseReason = ex.Message;
             _logger.LogWarning("WS 接收异常（连接中断）error={Error}", ex.Message);
@@ -454,6 +472,7 @@ public sealed class WsClient : IDisposable
         }
         catch (Exception ex)
         {
+            if (!ReferenceEquals(_socket, socket)) return;
             _logger.LogDebug("接收泵退出 error={Error}", ex.Message);
             MarkPendingRequestsLost();
             Closed?.Invoke(this, new WsCloseInfo(0, ex.Message, WasClean: false, AuthFailure: false));
@@ -468,8 +487,9 @@ public sealed class WsClient : IDisposable
     /// 帧解析入口：**一律走 <see cref="WsFrameParser.Parse"/>**；
     /// 未知 type / 非法 JSON **只记 debug 日志后丢弃**，**不得中断连接**（NFR-W-12 / FR-W-NET-2）。
     /// </summary>
-    private void HandleRawFrame(string raw)
+    private void HandleRawFrame(string raw, ClientWebSocket socket)
     {
+        if (!ReferenceEquals(_socket, socket)) return;
         var parsed = WsFrameParser.Parse(raw);
 
         switch (parsed.Kind)
@@ -499,6 +519,14 @@ public sealed class WsClient : IDisposable
     {
         switch (frame)
         {
+            case WsPongFrame pong:
+                lock (_pendingGate)
+                {
+                    if (pong.PingTimestamp is null || _pendingPings.Contains(pong.PingTimestamp.Value))
+                        _pendingPings.Clear();
+                }
+                break;
+
             case WsEchoFrame echo:
                 RemovePending(echo.RequestId);
                 break;
