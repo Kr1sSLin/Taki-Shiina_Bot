@@ -21,6 +21,8 @@ from services.application_service import ChatApplicationService
 from services.chat_runtime import ChatFailed, get_chat_runtime
 from services.controlled_response import ControlledJSONResponse
 from services.contracts import ChatCommand
+from services.input_budget import BODY_BYTES, InputTooLong, validate_text, edit_input, error_data
+from services.http_errors import install_http_errors
 from services.foundation_store import PermissionDenied, StorageBusy, VersionConflict
 from services.text_generation import TextGenerator
 from services.vision_generation import describe_images
@@ -101,6 +103,7 @@ prompt_service = PromptService(
 )
 
 app = FastAPI(title="TakiShiina Bot HTTP API")
+install_http_errors(app)
 TIMELINE_FILE = os.path.join(_data_dir, "chat_timeline.json")
 MEMORY_TIMELINE_FILE = os.path.join(_data_dir, "memory_timeline.json")
 
@@ -295,7 +298,7 @@ class ProactiveSettingsRequest(BaseModel):
 
 
 def response_body(code: int, message: str, data: dict | None, trace_id: str):
-    return {"code": code, "message": message, "data": data, "traceId": trace_id}
+    return {"code": code, "message": message, "data": error_data(code, data), "traceId": trace_id}
 
 
 def _require_http_auth(authorization: str | None, trace_id: str) -> AuthContext:
@@ -658,12 +661,21 @@ async def chat(
         reliable = get_reliable_runtime()
         if reliable:
             request_id = payload.requestId or f"http_{uuid.uuid4().hex}"
+            if not await reliable.request(user_id, request_id):
+                validate_text(payload.message)
+                if getattr(request.state, "body_size", 0) > BODY_BYTES:
+                    raise InputTooLong("请求体最多 64 KiB，请编辑后发送")
             command = ChatCommand(user_id, request_id, payload.clientMessageId or request_id, auth.device_id, message_text, channel="http")
             result, = await reliable.submit([command])
             state.last_activity[user_id] = datetime.now(timezone.utc)
             state.last_bot_response_time[user_id] = datetime.now(timezone.utc)
             data = {**result, "conversationId": payload.conversationId or f"conv_{user_id}", "debounceWindowSec": calc_debounce_window(user_id)}
             return ControlledJSONResponse(response_body(0, "ok", data, trace_id), store=reliable.store, owner=user_id, results=[result])
+        validate_text(payload.message)
+        if getattr(request.state, "body_size", 0) > BODY_BYTES:
+            raise InputTooLong("请求体最多 64 KiB，请编辑后发送")
+    except InputTooLong as error:
+        return JSONResponse(status_code=400, content=response_body(40001, str(error), edit_input(payload.requestId), trace_id))
     except VersionConflict:
         return JSONResponse(status_code=409, content=response_body(40901, "请求标识与已保存内容冲突", None, trace_id))
     except (StorageBusy, PermissionDenied):

@@ -12,6 +12,7 @@ from services.foundation_store import PermissionDenied, VersionConflict
 from services.memory_policy import relevance, timestamp
 from services.owner_fence import serialized_owner
 from services.privacy import scrub_locations
+from services.input_budget import MEMORY_BYTES, json_bytes
 
 
 def daily_enabled():
@@ -175,8 +176,8 @@ class DailyEventMixin:
                 conn.execute("UPDATE jobs SET status='succeeded',lease_token=NULL,lease_until=NULL WHERE id=?", (job["job_id"],))
             return {"event_id": identity, "revision": revision}
 
-    def select_memories(self, owner, query, *, limit=12, domain=None):
-        refs = super().select_memories(owner, query, limit=limit, domain=domain)
+    def select_memories(self, owner, query, *, limit=12, domain=None, byte_limit=MEMORY_BYTES):
+        refs = super().select_memories(owner, query, limit=limit, domain=domain, byte_limit=byte_limit)
         if domain is not None and domain != Domain.CHARACTER_DAILY:
             return refs
         # Include the authoritative state and time even when the base lexical
@@ -212,7 +213,13 @@ class DailyEventMixin:
                              "source": "authored_daily", "lore_version": None, "event_id": row["id"],
                              "event_state": data["status"], "event": {k: data[k] for k in (
                                  "event_revision", "event_type", "participants", "object", "status", "outcome", "scheduled_at", "occurred_at", "scheduled_at_utc", "scheduled_at_local", "occurred_at_utc", "occurred_at_local", "character_date", "timezone", "previous_refs", "chat_refs", "rule_versions")}})
-        return sorted(refs, key=lambda r: (-r["rank"], -r["weight"], r["fact_id"]))[:limit]
+        selected, size = [], 2
+        for ref in sorted(refs, key=lambda r: (-r["rank"], -r["weight"], r["fact_id"]))[:limit]:
+            cost = json_bytes(ref) + 2
+            if byte_limit is None or size + cost <= byte_limit:
+                selected.append(ref)
+                size += cost
+        return selected
 
     def _commit_memory_usage(self, conn, owner, turn_id, refs):
         super()._commit_memory_usage(conn, owner, turn_id, refs)

@@ -39,6 +39,7 @@ except ImportError:  # pragma: no cover - project directory on sys.path only
     from core.config import settings
 
 app = FastAPI(title="TakiShiina Bot Unified API")
+http_api.install_http_errors(app)
 app.add_exception_handler(ws_api.FileLockTimeoutError, ws_api.storage_busy_response)
 app.add_middleware(
     CORSMiddleware,

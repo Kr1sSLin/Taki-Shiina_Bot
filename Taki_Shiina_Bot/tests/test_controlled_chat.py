@@ -20,6 +20,8 @@ from services.public_policy import PUBLIC_POLICY, PUBLIC_POLICY_VERSION, PUBLIC_
 from services.reliable_chat_store import ReliableChatStore
 from services.reply_check import CHECKS, DraftBudgetExceeded, ReplyRejected, hard_violations
 from services.text_generation import TextGenerator
+from services.input_budget import MODEL_INPUT_BYTES, MODEL_OUTPUT_TOKENS, MODEL_OUTPUT_BYTES, CANDIDATE_BYTES, ModelBudgetExceeded, json_bytes
+from services.public_policy import public_messages, checked_completion
 
 
 class ControlledChatTests(unittest.IsolatedAsyncioTestCase):
@@ -98,7 +100,97 @@ class ControlledChatTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(PUBLIC_POLICY_VERSION, policy)
             self.assertIn(PUBLIC_POLICY_HASH, policy)
             self.assertIn(PUBLIC_POLICY, policy)
+            self.assertLessEqual(json_bytes(call), MODEL_INPUT_BYTES)
+            self.assertEqual(call["max_tokens"], MODEL_OUTPUT_TOKENS)
         self.assertIn("task=chat_rewrite", self.calls[2]["messages"][0]["content"])
+
+    async def test_legacy_stream_is_bounded_before_any_chunk_is_exposed(self):
+        class Stream:
+            closed = False
+            def __init__(inner, texts): inner.texts = texts
+            def __aiter__(inner): return inner.chunks()
+            async def chunks(inner):
+                for text in inner.texts:
+                    yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text), finish_reason="stop")])
+            async def close(inner): inner.closed = True
+        for texts, oversized in ((["第一段", "第二段"], False), (["中" * MODEL_OUTPUT_BYTES], True)):
+            stream = Stream(texts)
+            client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=AsyncMock(return_value=stream))))
+            if oversized:
+                with self.assertRaises(ModelBudgetExceeded):
+                    await checked_completion(client, model="synthetic", messages=public_messages([], "legacy"), stream=True)
+            else:
+                result = await checked_completion(client, model="synthetic", messages=public_messages([], "legacy"), stream=True)
+                self.assertEqual([chunk.choices[0].delta.content async for chunk in result], texts)
+            self.assertTrue(stream.closed)
+
+    async def test_maximum_emoji_source_reaches_generation_and_complete_check_intact(self):
+        text = "😀" * 8000
+        job, snapshot = self.begin(self.command("max-emoji", text))
+        result = await self.generator(snapshot, self.store)
+        self.assertTrue(result["check"]["approved"])
+        self.assertEqual(snapshot["sources"][0]["text"], text)
+        for call in self.calls:
+            self.assertLessEqual(json_bytes(call), MODEL_INPUT_BYTES)
+            self.assertIn(PUBLIC_POLICY, call["messages"][0]["content"])
+        checked = json.loads(self.calls[-1]["messages"][-1]["content"])
+        self.assertEqual(checked["context"]["current_input"][0]["text"], text)
+
+    async def test_each_task_rejects_oversize_before_call_without_removing_policy(self):
+        for task in ("chat", "fact_extraction", "reply_check", "chat_rewrite"):
+            with self.subTest(task=task), self.assertRaises(ModelBudgetExceeded):
+                await checked_completion(self.client, model="synthetic", messages=public_messages([
+                    {"role": "user", "content": "中" * MODEL_INPUT_BYTES}], task))
+        self.assertEqual(self.calls, [])
+
+    async def test_oversized_draft_and_checker_fail_closed_without_history(self):
+        for stage in ("draft", "checker"):
+            with self.subTest(stage=stage):
+                self.drafts = ["中" * MODEL_OUTPUT_BYTES] if stage == "draft" else ["嗯。"]
+                self.verdicts = [self.verdict(claims=[{"text": "中" * MODEL_OUTPUT_BYTES}])] if stage == "checker" else []
+                runtime = await self.runtime_start()
+                with self.assertRaises(ChatFailed):
+                    await runtime.submit([self.command(stage)], timeout=3)
+                operation = self.store.request("owner", stage)["operation"]
+                self.assertEqual(operation["recoveryAction"], "resend_new_request")
+                self.assertTrue(operation["sources"][0]["content"])
+                self.assertEqual(self.store.history("owner"), [])
+                await runtime.stop()
+
+    async def test_incomplete_candidates_preserve_source_and_cannot_certify_new_fact(self):
+        for number in range(65):
+            self.fact(str(number))
+        self.store.accept([self.command("large-candidates", "之前咖啡记错了，现在我喜欢茶")], memory_first=True)
+        job = self.store.claim(kinds={"extract"})
+        candidates = self.store.extraction_candidates(job)
+        self.assertFalse(candidates.complete)
+        self.assertLessEqual(len(candidates), 64)
+        self.assertLessEqual(json_bytes(candidates), CANDIDATE_BYTES)
+        runtime = ChatRuntime(self.store, self.generator, self.generator.extract, AsyncMock())
+        await runtime._extract(job)
+        chat = self.store.claim(kinds={"chat"})
+        snapshot = self.store.begin_turn(chat)
+        self.assertTrue(snapshot["memory_extraction_incomplete"])
+        self.assertEqual(self.store.prepare_memories(snapshot, "咖啡"), [])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.store.request("owner", "large-candidates")["source"]["text"], "之前咖啡记错了，现在我喜欢茶")
+
+    async def test_real_sdk_rate_limit_retries_are_bounded_and_length_finish_fails(self):
+        import httpx
+        from openai import AsyncOpenAI
+        requests = []
+        def respond(request):
+            requests.append(json.loads(request.content))
+            if len(requests) < 3:
+                return httpx.Response(429, json={"error": {"message": "synthetic rate limit"}})
+            return httpx.Response(200, json={"id": "synthetic", "object": "chat.completion", "created": 0,
+                "model": "synthetic", "choices": [{"index": 0, "message": {"role": "assistant", "content": "未完整回复"}, "finish_reason": "length"}]})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as transport:
+            async with AsyncOpenAI(api_key="synthetic", http_client=transport) as client:
+                with self.assertRaises(ModelBudgetExceeded):
+                    await checked_completion(client, model="synthetic", messages=public_messages([], "chat"))
+        self.assertEqual(len(requests), 3)
+        self.assertTrue(all(call["max_tokens"] == MODEL_OUTPUT_TOKENS and json_bytes(call) <= MODEL_INPUT_BYTES for call in requests))
 
     async def test_later_bubble_failure_and_checker_exception_deliver_zero_draft_characters(self):
         self.drafts = ["嗯。\n你答应今天送我挂件。"]

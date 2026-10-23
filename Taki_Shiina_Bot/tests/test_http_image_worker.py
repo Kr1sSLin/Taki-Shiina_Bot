@@ -65,7 +65,9 @@ class StandaloneHttpImageWorkerTests(unittest.IsolatedAsyncioTestCase):
             def __init__(inner, model_name):
                 self.assertEqual(model_name, "gemini-2.5-flash")
 
-            def generate_content(inner, parts):
+            def generate_content(inner, parts, **options):
+                self.assertEqual(options["generation_config"]["max_output_tokens"], 1024)
+                self.assertIsNone(options["request_options"]["retry"])
                 self.vision_parts.append(parts)
                 return SimpleNamespace(text="画面显示 GPS 31.2304,121.4737 和蓝色方块")
 

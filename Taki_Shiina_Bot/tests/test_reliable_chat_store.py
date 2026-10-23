@@ -75,6 +75,42 @@ os._exit(78)
 """
         return subprocess.run([sys.executable, "-B", "-c", script, self.path, str(pathlib.Path(__file__).resolve().parents[1]), mode], capture_output=True, timeout=15)
 
+    def test_text_budget_splits_batch_without_losing_sources_and_old_ids_replay(self):
+        from services.input_budget import InputTooLong, turn_fits
+        before = self.counts()
+        with self.assertRaises(InputTooLong):
+            self.store.accept([self.command("too-long", text="😀" * 8001)])
+        self.assertEqual(self.counts(), before)
+        commands = [self.command(f"bounded-{i}", text="中" * 6000) for i in range(3)]
+        receipts = self.store.accept(commands, delay=8, merge_pending=True)
+        self.assertEqual(receipts[0]["turn_id"], receipts[1]["turn_id"])
+        self.assertNotEqual(receipts[1]["turn_id"], receipts[2]["turn_id"])
+        job = self.store.claim(kinds={"chat"})
+        self.assertIsNone(job)
+        self.now += 8
+        for turn in dict.fromkeys(receipt["turn_id"] for receipt in receipts):
+            job = self.store.claim(kinds={"chat"})
+            snapshot = self.store.begin_turn(job)
+            self.assertTrue(turn_fits([source["text"] for source in snapshot["sources"]]))
+            result = self.store.commit_reply(job, snapshot, {"reply": "已保留完整来源"})
+            self.store.mark_dispatched("owner", result)
+        with patch("services.input_budget.TEXT_CODEPOINTS", 1):
+            self.assertTrue(self.store.accept([commands[0]])[0]["duplicate"])
+        self.assertEqual(self.counts()["requests"], 3)
+
+    def test_merge_source_count_and_paid_gift_cannot_overflow_text_turn(self):
+        commands = [self.command(f"source-{i}") for i in range(9)]
+        receipts = self.store.accept(commands, delay=8, merge_pending=True)
+        self.assertEqual(len({r["turn_id"] for r in receipts[:8]}), 1)
+        self.assertNotEqual(receipts[7]["turn_id"], receipts[8]["turn_id"])
+        full = self.store.accept([self.command("full-a", text="中" * 6000), self.command("full-b", text="中" * 6000)], delay=8, merge_pending=True)
+        gift = ChatCommand("owner", "bounded-gift", "bounded-gift", "device", "咖啡", intent="interaction", metadata={"merge_after_payment": True})
+        isolated = self.store.accept([gift], delay=8)[0]
+        self.assertEqual(self.store.confirm_interaction("owner", "bounded-gift"), isolated["turn_id"])
+        self.assertNotEqual(isolated["turn_id"], full[0]["turn_id"])
+        self.assertEqual(self.store.request("owner", "request-full-a")["turn_id"], full[0]["turn_id"])
+
+
     def test_concurrent_cross_protocol_retry_has_one_source_turn_and_extraction(self):
         command = self.command()
         barrier = threading.Barrier(2)

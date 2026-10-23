@@ -4,6 +4,17 @@ import com.krisslin.androidaiassistant.core.database.repository.ContentType
 import com.krisslin.androidaiassistant.core.database.repository.MessageStatus
 import com.krisslin.androidaiassistant.core.database.repository.ModelProvider
 
+internal fun chatInputTooLong(text: String): Boolean =
+    text.codePointCount(0, text.length) > 8000 || text.toByteArray(Charsets.UTF_8).size > 32 * 1024
+
+internal fun chatRecoveryCode(action: String?, code: String): String = when (action) {
+    "resend_new_request" -> "RESEND_NEW_REQUEST"
+    "edit_input" -> "EDIT_INPUT"
+    "poll_status" -> "POLL_STATUS"
+    "retry_same_request" -> "RETRY_SAME_REQUEST"
+    else -> code
+}
+
 data class ChatAttachmentUi(
     val id: String,
     val localUri: String,

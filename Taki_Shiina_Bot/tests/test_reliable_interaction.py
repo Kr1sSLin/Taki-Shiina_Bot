@@ -81,6 +81,16 @@ class ReliableInteractionTests(unittest.IsolatedAsyncioTestCase):
     def ledger_count(self, reason):
         return sum(entry["reason_code"] == reason for entry in self.rig.ledger())
 
+    async def test_attachment_limit_rejects_before_intent_charge_or_model(self):
+        for unit in ("中", "😀", "e\u0301"):
+            text = unit * (8000 // len(unit)) + "中"
+            result = await self.rig.handler.send(TEST_USER, "coffee", "oversize-attachment", attachment=text)
+            self.assertFalse(result.ok)
+            self.assertEqual(result.to_http_data()["recoveryAction"], "edit_input")
+            self.assertIsNone(self.store.request(TEST_USER, "oversize-attachment"))
+        self.assertEqual(self.ledger_count(REASON_ITEM_SEND), 0)
+        self.assertEqual(self.messages, [])
+
     async def test_success_and_restart_replay_use_one_charge_and_sql_result(self):
         first = await self.rig.handler.send(TEST_USER, "coffee", "gift-1", attachment="synthetic attachment")
         self.assertTrue(first.ok)

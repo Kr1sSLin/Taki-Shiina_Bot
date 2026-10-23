@@ -17,6 +17,7 @@ from services.vision_limits import MAX_INLINE_IMAGE_BYTES
 from services.owner_fence import serialized_owner
 from services.public_policy import PUBLIC_POLICY_VERSION, PROMPT_VERSIONS
 from services.reply_check import reply_digest, DraftBudgetExceeded
+from services.input_budget import validate_text, turn_fits
 
 
 class HistoryCursorReset(ValueError):
@@ -77,6 +78,7 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
                         raise VersionConflict("request identity reused with changed images")
                     receipts.append({"turn_id": existing["turn_id"], "message_id": existing["id"], "duplicate": True})
                 else:
+                    validate_text((command.metadata or {}).get("attachment", "") if command.intent == "interaction" else command.text)
                     pending.append((command, request_key, client_key))
             if not pending:
                 return receipts
@@ -86,87 +88,100 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
                 raise ValueError("only one interaction is allowed per logical turn")
             if incoming_interactions and len(pending) != 1:
                 raise ValueError("unpaid interaction must have an isolated intent")
-            max_images = max(1, int(os.getenv("VISION_MAX_IMAGE_COUNT", "3")))
-            incoming_images = sum(len((command.metadata or {}).get("images") or []) for command, _, _ in pending)
-            if incoming_images > max_images:
-                raise ValueError("image count exceeds the logical turn limit")
-            incoming_image_bytes = sum(
-                len(base64.b64decode(image["dataBase64"]))
-                for command, _, _ in pending
-                for image in ((command.metadata or {}).get("images") or [])
-            )
-            if incoming_image_bytes > MAX_INLINE_IMAGE_BYTES:
-                raise ValueError("image bytes exceed the logical turn limit")
-            turn_row = None
-            candidates = conn.execute("SELECT * FROM chat_turns WHERE owner=? AND status IN ('pending','running','completed') AND deadline>? ORDER BY created DESC,rowid DESC", (owner, now))
-            for candidate in candidates:
-                row, candidate_body = self._turn(conn, candidate["id"])
-                if incoming_interactions or any(state != "confirmed" for state in candidate_body.get("payments", {}).values()):
-                    continue
-                if candidate_body.get("dispatched_at") or candidate_body.get("revoked"):
-                    continue
-                # Existing paid operations retain their independent identity.
-                if incoming_interactions and candidate_body.get("payments"):
-                    continue
-                job = conn.execute("SELECT status FROM jobs WHERE id=?", (candidate_body["job_id"],)).fetchone()
-                if job and job["status"] in ("failed", "cancelled"):
-                    continue
-                in_flight = row["status"] in ("running", "completed")
-                if job and (in_flight or (merge_pending and candidate_body.get("merge_pending") and job["status"] == "pending")):
-                    image_count = candidate_body.get("image_count")
-                    image_bytes = candidate_body.get("image_bytes")
-                    if image_count is None or image_bytes is None:
-                        image_count, image_bytes = 0, 0
-                        for source_id in candidate_body["sources"]:
-                            source_row = conn.execute("SELECT body FROM requests WHERE id=? AND owner=?", (source_id, owner)).fetchone()
-                            source = self.cipher.decrypt(Domain.SOURCE_MESSAGE, owner, source_id, source_row["body"])
-                            images = (source.get("metadata") or {}).get("images") or []
-                            image_count += len(images)
-                            image_bytes += sum(len(base64.b64decode(image["dataBase64"])) for image in images)
-                    if image_count + incoming_images > max_images or image_bytes + incoming_image_bytes > MAX_INLINE_IMAGE_BYTES:
+            groups = [[]]
+            for item in pending:
+                if groups[-1] and not turn_fits([*[command.text for command, _, _ in groups[-1]], item[0].text]):
+                    groups.append([])
+                groups[-1].append(item)
+            for pending in groups:
+                max_images = max(1, int(os.getenv("VISION_MAX_IMAGE_COUNT", "3")))
+                incoming_images = sum(len((command.metadata or {}).get("images") or []) for command, _, _ in pending)
+                if incoming_images > max_images:
+                    raise ValueError("image count exceeds the logical turn limit")
+                incoming_image_bytes = sum(
+                    len(base64.b64decode(image["dataBase64"]))
+                    for command, _, _ in pending
+                    for image in ((command.metadata or {}).get("images") or [])
+                )
+                if incoming_image_bytes > MAX_INLINE_IMAGE_BYTES:
+                    raise ValueError("image bytes exceed the logical turn limit")
+                turn_row = None
+                candidates = conn.execute("SELECT * FROM chat_turns WHERE owner=? AND status IN ('pending','running','completed') AND deadline>? ORDER BY created DESC,rowid DESC", (owner, now))
+                for candidate in candidates:
+                    row, candidate_body = self._turn(conn, candidate["id"])
+                    if incoming_interactions or any(state != "confirmed" for state in candidate_body.get("payments", {}).values()):
+                        continue
+                    if candidate_body.get("dispatched_at") or candidate_body.get("revoked"):
+                        continue
+                    # Existing paid operations retain their independent identity.
+                    if incoming_interactions and candidate_body.get("payments"):
+                        continue
+                    job = conn.execute("SELECT status FROM jobs WHERE id=?", (candidate_body["job_id"],)).fetchone()
+                    if job and job["status"] in ("failed", "cancelled"):
+                        continue
+                    in_flight = row["status"] in ("running", "completed")
+                    if job and (in_flight or (merge_pending and candidate_body.get("merge_pending") and job["status"] == "pending")):
+                        if not turn_fits([*self._turn_texts(conn, owner, candidate_body), *[command.text for command, _, _ in pending]]):
+                            break
+                        image_count = candidate_body.get("image_count")
+                        image_bytes = candidate_body.get("image_bytes")
+                        if image_count is None or image_bytes is None:
+                            image_count, image_bytes = 0, 0
+                            for source_id in candidate_body["sources"]:
+                                source_row = conn.execute("SELECT body FROM requests WHERE id=? AND owner=?", (source_id, owner)).fetchone()
+                                source = self.cipher.decrypt(Domain.SOURCE_MESSAGE, owner, source_id, source_row["body"])
+                                images = (source.get("metadata") or {}).get("images") or []
+                                image_count += len(images)
+                                image_bytes += sum(len(base64.b64decode(image["dataBase64"])) for image in images)
+                        if image_count + incoming_images > max_images or image_bytes + incoming_image_bytes > MAX_INLINE_IMAGE_BYTES:
+                            break
+                        candidate_body["image_count"] = image_count
+                        candidate_body["image_bytes"] = image_bytes
+                        if row["status"] == "completed":
+                            self._revoke_reply(conn, row, candidate_body, "new_input")
+                            candidate_body["result"] = None
+                            candidate_body["memory_refs"] = []
+                            candidate_body.pop("revoked", None)
+                            conn.execute("UPDATE jobs SET status='pending',available=?,lease_token=NULL,lease_until=NULL WHERE id=?", (now, candidate_body["job_id"]))
+                        turn_row, turn_body = row, candidate_body
                         break
-                    candidate_body["image_count"] = image_count
-                    candidate_body["image_bytes"] = image_bytes
-                    if row["status"] == "completed":
-                        self._revoke_reply(conn, row, candidate_body, "new_input")
-                        candidate_body["result"] = None
-                        candidate_body["memory_refs"] = []
-                        candidate_body.pop("revoked", None)
-                        conn.execute("UPDATE jobs SET status='pending',available=?,lease_token=NULL,lease_until=NULL WHERE id=?", (now, candidate_body["job_id"]))
-                    turn_row, turn_body = row, candidate_body
-                    break
-            if turn_row is None:
-                turn_id = new_id()
-                turn_body = {"owner": commands[0].owner, "sources": [], "merge_pending": merge_pending, "result": None, "image_count": 0, "image_bytes": 0, "phases": [{"phase": "accepted", "at": now, "generation": 1}]}
-                job_id = self._enqueue(conn, owner, "chat", turn_id, {"kind": "chat", "turn_id": turn_id, "dependencies": []})
-                turn_body["job_id"] = job_id
-                conn.execute("INSERT INTO chat_turns VALUES (?,?,'pending',1,?,?,?)", (turn_id, owner, now, now + 120, self.cipher.encrypt(Domain.DERIVED, owner, turn_id, turn_body)))
-                turn_row, _ = self._turn(conn, turn_id)
-            turn_id = turn_row["id"]
-            turn_body.pop("memory_control_result", None)
-            turn_body["memory_first"] = bool(memory_first or turn_body.get("memory_first"))
-            seen = set()
-            for command, request_key, client_key in pending:
-                if request_key in seen:
-                    raise VersionConflict("duplicate request within the same batch")
-                seen.add(request_key)
-                message_id = new_id()
-                conn.execute("INSERT INTO requests VALUES (?,?,?,?,?,?)", (owner, request_key, client_key, message_id, turn_id, self.cipher.encrypt(Domain.SOURCE_MESSAGE, owner, message_id, {**asdict(command), "received_at": now})))
-                turn_body["sources"].append(message_id)
-                turn_body["image_count"] += len((command.metadata or {}).get("images") or [])
-                turn_body["image_bytes"] += sum(len(base64.b64decode(image["dataBase64"])) for image in ((command.metadata or {}).get("images") or []))
-                extraction_epoch = self._extraction_epoch(conn, owner)
-                self._enqueue(conn, owner, "extract", message_id, {"kind": "extract", "message_id": message_id, "turn_id": turn_id, "permission_epoch": extraction_epoch, "dependencies": []})
-                if command.intent == "interaction":
-                    turn_body.setdefault("payments", {})[message_id] = "pending"
-                    recovery = self._enqueue(conn, owner, "interaction_reconcile", message_id, {"kind": "interaction_reconcile", "message_id": message_id, "turn_id": turn_id, "dependencies": []})
-                    conn.execute("UPDATE jobs SET available=? WHERE id=?", (now + 15, recovery))
-                receipts.append({"turn_id": turn_id, "message_id": message_id, "duplicate": False})
-            appended = len(turn_body["sources"]) > len(pending)
-            self._save_turn(conn, turn_row, turn_body, status="pending" if turn_row["status"] == "completed" else None, generation=turn_row["generation"] + int(appended))
-            # Silence-window resets are bounded independently of the 120s turn.
-            conn.execute("UPDATE jobs SET available=? WHERE id=? AND status='pending'", (min(now + delay, turn_row["created"] + 25, turn_row["deadline"] - 1), turn_body["job_id"]))
+                if turn_row is None:
+                    turn_id = new_id()
+                    turn_body = {"owner": commands[0].owner, "sources": [], "merge_pending": merge_pending, "result": None, "image_count": 0, "image_bytes": 0, "phases": [{"phase": "accepted", "at": now, "generation": 1}]}
+                    job_id = self._enqueue(conn, owner, "chat", turn_id, {"kind": "chat", "turn_id": turn_id, "dependencies": []})
+                    turn_body["job_id"] = job_id
+                    conn.execute("INSERT INTO chat_turns VALUES (?,?,'pending',1,?,?,?)", (turn_id, owner, now, now + 120, self.cipher.encrypt(Domain.DERIVED, owner, turn_id, turn_body)))
+                    turn_row, _ = self._turn(conn, turn_id)
+                turn_id = turn_row["id"]
+                turn_body.pop("memory_control_result", None)
+                turn_body["memory_first"] = bool(memory_first or turn_body.get("memory_first"))
+                seen = set()
+                for command, request_key, client_key in pending:
+                    if request_key in seen:
+                        raise VersionConflict("duplicate request within the same batch")
+                    seen.add(request_key)
+                    message_id = new_id()
+                    conn.execute("INSERT INTO requests VALUES (?,?,?,?,?,?)", (owner, request_key, client_key, message_id, turn_id, self.cipher.encrypt(Domain.SOURCE_MESSAGE, owner, message_id, {**asdict(command), "received_at": now})))
+                    turn_body["sources"].append(message_id)
+                    turn_body["image_count"] += len((command.metadata or {}).get("images") or [])
+                    turn_body["image_bytes"] += sum(len(base64.b64decode(image["dataBase64"])) for image in ((command.metadata or {}).get("images") or []))
+                    extraction_epoch = self._extraction_epoch(conn, owner)
+                    self._enqueue(conn, owner, "extract", message_id, {"kind": "extract", "message_id": message_id, "turn_id": turn_id, "permission_epoch": extraction_epoch, "dependencies": []})
+                    if command.intent == "interaction":
+                        turn_body.setdefault("payments", {})[message_id] = "pending"
+                        recovery = self._enqueue(conn, owner, "interaction_reconcile", message_id, {"kind": "interaction_reconcile", "message_id": message_id, "turn_id": turn_id, "dependencies": []})
+                        conn.execute("UPDATE jobs SET available=? WHERE id=?", (now + 15, recovery))
+                    receipts.append({"turn_id": turn_id, "message_id": message_id, "duplicate": False})
+                appended = len(turn_body["sources"]) > len(pending)
+                self._save_turn(conn, turn_row, turn_body, status="pending" if turn_row["status"] == "completed" else None, generation=turn_row["generation"] + int(appended))
+                # Silence-window resets are bounded independently of the 120s turn.
+                conn.execute("UPDATE jobs SET available=? WHERE id=? AND status='pending'", (min(now + delay, turn_row["created"] + 25, turn_row["deadline"] - 1), turn_body["job_id"]))
             return receipts
+
+    def _turn_texts(self, conn, owner, body):
+        return [self.cipher.decrypt(Domain.SOURCE_MESSAGE, owner, identity,
+                                   conn.execute("SELECT body FROM requests WHERE id=? AND owner=?", (identity, owner)).fetchone()["body"])["text"]
+                for identity in body["sources"]]
 
     @serialized_owner()
     def set_permission(self, owner, *args, **kwargs):
@@ -778,6 +793,15 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
             conn.execute("UPDATE jobs SET status='succeeded',lease_token=NULL,lease_until=NULL WHERE id=?", (job["job_id"],))
             return result
 
+    @serialized_owner("job")
+    def incomplete_extraction(self, job):
+        with self._transaction() as conn:
+            row = self._lease(conn, job)
+            turn, body = self._turn(conn, job["payload"]["turn_id"])
+            body.update(memory_identity_unresolved=True, memory_extraction_incomplete=True)
+            self._save_turn(conn, turn, body)
+            conn.execute("UPDATE jobs SET status='failed',lease_token=NULL,lease_until=NULL WHERE id=?", (row["id"],))
+
     def extraction_context_allowed(self, job):
         with self._transaction(write=False) as conn:
             self._require_ready(conn)
@@ -992,6 +1016,8 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
                     other, value = self._turn(conn, candidate["id"])
                     job = conn.execute("SELECT status FROM jobs WHERE id=?", (value["job_id"],)).fetchone()
                     if value.get("merge_pending") and not value.get("payments") and not value.get("dispatched_at") and job and job["status"] == "pending":
+                        if not turn_fits([*self._turn_texts(conn, row["owner"], value), command["text"]]):
+                            break
                         target = other, value
                         break
             if target is not None:

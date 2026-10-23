@@ -140,6 +140,18 @@ public sealed class CompositionRootTests
             Assert.Single(await attachments.ListByMessageAsync("request-1"));
             Assert.Equal(png, await File.ReadAllBytesAsync((await attachments.ListByMessageAsync(newId)).Single().LocalPath));
 
+            await repository.UpdateMessageStatusAsync("request-1", ProtocolConstants.StatusError, "EDIT_INPUT");
+            var blockedRetry = await chat.RetryAsync("request-1");
+            Assert.False(blockedRetry.Success);
+            Assert.Equal("EDIT_INPUT", blockedRetry.ErrorCode);
+            Assert.Single(connection.SentRequests);
+            var viewModel = provider.GetRequiredService<ChatViewModel>();
+            var editable = new MessageItemViewModel(new("request-1", "user", "text", "保留待编辑原文", ProtocolConstants.StatusError,
+                1, "EDIT_INPUT", null, null, false, false, []));
+            await viewModel.RetryMessageCommand.ExecuteAsync(editable);
+            Assert.Equal("保留待编辑原文", viewModel.InputText);
+            Assert.Single(connection.SentRequests);
+
             const int totalHistory = 10050;
             var checkpointPort = Assert.IsAssignableFrom<IHistoryCheckpointPort>(repository);
             var cursorRest = new CursorRest();

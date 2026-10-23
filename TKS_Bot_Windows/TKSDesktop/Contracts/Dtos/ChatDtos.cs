@@ -219,6 +219,8 @@ public sealed class RestChatRequestDto
 /// <summary>`POST /chat` 响应 `data`。</summary>
 public sealed class RestChatDataDto
 {
+    [JsonPropertyName("recoveryAction")] public string? RecoveryAction { get; set; }
+    [JsonPropertyName("requestIds")] public List<string>? RequestIds { get; set; }
     [JsonPropertyName("conversationId")]
     public string? ConversationId { get; set; }
 

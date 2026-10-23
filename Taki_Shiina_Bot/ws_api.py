@@ -33,6 +33,8 @@ from services.application_service import ChatApplicationService
 from services.async_storage import store_call, gamification_call
 from services.chat_runtime import ChatFailed, get_chat_runtime
 from services.contracts import ChatCommand
+from services.input_budget import BODY_BYTES, InputTooLong, validate_text, edit_input
+from services.http_errors import install_http_errors
 from services.foundation_store import PermissionDenied, StorageBusy, VersionConflict
 from services.text_generation import TextGenerator
 from services.privacy_logging import install_privacy_logging
@@ -165,6 +167,7 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI(title="TakiShiina Bot WebSocket API")
+install_http_errors(app)
 app.add_exception_handler(FileLockTimeoutError, storage_busy_response)
 
 ACTIVE_CONNECTIONS: dict[str, set[WebSocket]] = {}
@@ -422,12 +425,15 @@ async def send_error(
 ):
     frame = {
         "type": "bot.error",
+        "traceId": uuid.uuid4().hex,
         "requestId": request_id,
         "payload": {
             "errorCode": error_code,
             "message": message,
             "requestIds": request_ids or [],
             "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+            "retryable": error_code in ("CHAT_RETRY", "SERVICE_UNAVAILABLE", "AI_TIMEOUT", "INTERNAL_ERROR"),
+            "recoveryAction": "retry_same_request" if error_code in ("CHAT_RETRY", "SERVICE_UNAVAILABLE") else "poll_status" if error_code in ("AI_TIMEOUT", "INTERNAL_ERROR") else "edit_input",
             **(operation or {}),
         },
     }
@@ -692,31 +698,7 @@ async def _process_buffered_messages(user_id: str):
                     "payload": {"typing": True, "stage": "vision"},
                 },
             )
-            model = genai.GenerativeModel(GEMINI_MODEL)
-            vision_prompt = public_text("image_description") + "\n" + VISION_DESCRIPTION_PROMPT
-            if merged_text:
-                vision_prompt += f"\n\n用户留言：{merged_text}"
-            require_public_text(vision_prompt)
-            parts = [vision_prompt]
-            for img in merged_images[:VISION_MAX_IMAGE_COUNT]:
-                parts.append(
-                    {
-                        "mime_type": img["mimeType"],
-                        "data": img["raw"],
-                    }
-                )
-            try:
-                resp = await asyncio.wait_for(
-                    asyncio.to_thread(model.generate_content, parts),
-                    timeout=GEMINI_TIMEOUT,
-                )
-                vision_description = (resp.text or "").strip()
-            except asyncio.TimeoutError:
-                logger.warning(f"[WS] 识图超时，使用降级描述: user={user_id}")
-                vision_description = "图片内容无法辨认（识图超时）。"
-            except Exception as e:
-                logger.exception(f"[WS] 识图失败，使用降级描述: {e}")
-                vision_description = "图片内容无法辨认（识图失败）。"
+            vision_description = await describe_images(merged_images, merged_text)
             _trace_text("VISION_DESC", user_id, vision_description)
 
             user_message = {
@@ -1012,6 +994,9 @@ async def websocket_chat(websocket: WebSocket):
     try:
         while True:
             raw_message = await websocket.receive_text()
+            if len(raw_message.encode("utf-8")) > VISION_WS_MAX_SIZE:
+                await send_error(user_id, "INVALID_JSON", "请求体过大，请编辑后发送", operation=edit_input(), websocket=websocket)
+                continue
             try:
                 message = await store_call(json.loads, raw_message)
                 ping_timestamp = _validate_frame(message)
@@ -1061,6 +1046,14 @@ async def websocket_chat(websocket: WebSocket):
                     await send_error(user_id, "SERVICE_UNAVAILABLE", "服务暂时不可用，请稍后重试", request_id, websocket=websocket)
                     continue
                 client_message_id = payload.get("clientMessageId") or request_id
+                try:
+                    if not reliable or not await reliable.request(user_id, request_id):
+                        validate_text(raw_content)
+                        if not raw_images and len(raw_message.encode("utf-8")) > BODY_BYTES:
+                            raise InputTooLong("请求体最多 64 KiB，请编辑后发送")
+                except InputTooLong as error:
+                    await send_error(user_id, "INPUT_TOO_LONG", str(error), request_id, operation=edit_input(request_id), websocket=websocket)
+                    continue
                 if reliable:
                     try:
                         command = ChatCommand(user_id, request_id, client_message_id, device_id, content or "[图片]", channel="ws", metadata={"images": _source_images(parsed_images)} if parsed_images else None)
@@ -1070,6 +1063,9 @@ async def websocket_chat(websocket: WebSocket):
                             if previous["status"] == "completed":
                                 await reliable.replay(user_id, previous["result"])
                                 continue
+                    except InputTooLong as error:
+                        await send_error(user_id, "INPUT_TOO_LONG", str(error), request_id, operation=edit_input(request_id), websocket=websocket)
+                        continue
                     except VersionConflict:
                         await send_error(user_id, "REQUEST_CONFLICT", "请求标识与已保存内容冲突", request_id, websocket=websocket)
                         continue

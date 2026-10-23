@@ -1,0 +1,65 @@
+{
+  "python": "3.14.6",
+  "platform": "win32",
+  "synthetic": true,
+  "rows": [
+    {
+      "facts": 1000,
+      "measurements": {
+        "select_memories": {
+          "elapsed_ms": 578.948,
+          "peak_python_bytes": 45605,
+          "returned_count": 12,
+          "returned_json_bytes": 4404,
+          "complete": null
+        },
+        "extraction_candidates": {
+          "elapsed_ms": 513.09,
+          "peak_python_bytes": 73027,
+          "returned_count": 64,
+          "returned_json_bytes": 13880,
+          "complete": false
+        }
+      }
+    },
+    {
+      "facts": 5000,
+      "measurements": {
+        "select_memories": {
+          "elapsed_ms": 2445.377,
+          "peak_python_bytes": 40791,
+          "returned_count": 12,
+          "returned_json_bytes": 4404,
+          "complete": null
+        },
+        "extraction_candidates": {
+          "elapsed_ms": 2546.357,
+          "peak_python_bytes": 58923,
+          "returned_count": 64,
+          "returned_json_bytes": 13880,
+          "complete": false
+        }
+      }
+    },
+    {
+      "facts": 20000,
+      "measurements": {
+        "select_memories": {
+          "elapsed_ms": 9674.143,
+          "peak_python_bytes": 40817,
+          "returned_count": 12,
+          "returned_json_bytes": 4404,
+          "complete": null
+        },
+        "extraction_candidates": {
+          "elapsed_ms": 10608.914,
+          "peak_python_bytes": 58947,
+          "returned_count": 64,
+          "returned_json_bytes": 13880,
+          "complete": false
+        }
+      }
+    }
+  ],
+  "note": "单次合成读路径，含密文解密；peak_python_bytes 为 tracemalloc Python 分配峰值，不含 SQLite/C 原生内存；非语义质量或生产容量结论。"
+}

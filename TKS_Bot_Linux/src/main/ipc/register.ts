@@ -127,10 +127,7 @@ export function registerIpcHandlers(services: Services): void {
   })
 
   handle<void>(IPC.chatRetryMessage, async (messageId) => {
-    const msg = listMessages({ limit: 1 }).find((m) => m.messageId === String(messageId))
-    if (!msg) return
-    // FR-CHAT-11：重试仅针对用户消息——把它标记回发送中，由渲染端复用同一 requestId 重发
-    void msg
+    await services.chat.retrySameRequest(String(messageId))
   })
 
   handle<ChatMessage[]>(IPC.chatSearch, async (keyword, limit) => {

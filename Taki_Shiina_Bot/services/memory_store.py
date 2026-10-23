@@ -4,11 +4,18 @@ Legacy rows remain pending. Extraction matching sees only allowed facts; unknown
 identity after a disable is quarantined instead of creating a resurrection ID.
 """
 import os
+import heapq
+
+from services.input_budget import MEMORY_BYTES, CANDIDATE_BYTES, CANDIDATE_COUNT, json_bytes
 
 from services.contracts import Domain, new_id
 from services.foundation_store import FoundationStore, PermissionDenied, VersionConflict
 from services.memory_policy import eligible, initial_weight, memory_control, normalized, relevance, timestamp
 from services.privacy import scrub_locations
+
+
+class ExtractionCandidates(list):
+    complete = True
 
 
 class MemoryStore(FoundationStore):
@@ -240,26 +247,33 @@ class MemoryStore(FoundationStore):
                 value = {"fact_id": fact_id, "revision": row["revision"], "domain": row["domain"], "data": data}
         return value
 
-    def select_memories(self, owner, query, *, limit=12, domain=None):
+    def select_memories(self, owner, query, *, limit=12, domain=None, byte_limit=MEMORY_BYTES):
         if not 1 <= limit <= 1000:
             raise ValueError("invalid context memory limit")
         key = self.cipher.index("owner", owner)
         with self._transaction(write=False) as conn:
             self._require_ready(conn)
-            result = []
-            for row in conn.execute("SELECT * FROM facts WHERE owner=?", (key,)):
-                if domain is not None and row["domain"] != domain:
-                    continue
-                _, data = self._fact(conn, key, row["id"])
-                if not self._model_eligible(conn, key, row, data):
-                    continue
-                rank = relevance(query, data.get("text", ""))
-                if rank:
-                    result.append({"fact_id": row["id"], "revision": row["revision"], "revision_id": data["revision_id"], "permission_version": data["permission_version"], "domain": row["domain"], "subject": data.get("subject"), "text": data["text"], "temporal_type": data["temporal_type"], "temporal_validity": data["temporal_validity"], "rank": rank, "weight": data["weight"], "source": data.get("source"), "lore_version": data.get("lore_version"), "event_id": data.get("event_id"), "event_state": data.get("event_state")})
-            return sorted(result, key=lambda x: (-x["rank"], -x["weight"], x["fact_id"]))[:limit]
+            def candidates():
+                for row in conn.execute("SELECT * FROM facts WHERE owner=?", (key,)):
+                    if domain is not None and row["domain"] != domain:
+                        continue
+                    data = self.cipher.decrypt(Domain(row["domain"]), key, f"{row['id']}:{row['revision']}", row["body"])
+                    if not self._model_eligible(conn, key, row, data):
+                        continue
+                    rank = relevance(query, data.get("text", ""))
+                    if rank:
+                        yield {"fact_id": row["id"], "revision": row["revision"], "revision_id": data["revision_id"], "permission_version": data["permission_version"], "domain": row["domain"], "subject": data.get("subject"), "text": data["text"], "temporal_type": data["temporal_type"], "temporal_validity": data["temporal_validity"], "rank": rank, "weight": data["weight"], "source": data.get("source"), "lore_version": data.get("lore_version"), "event_id": data.get("event_id"), "event_state": data.get("event_state")}
+            selected = heapq.nsmallest(limit, candidates(), key=lambda ref: (-ref["rank"], -ref["weight"], ref["fact_id"]))
+            result, size = [], 2
+            for ref in selected:
+                cost = json_bytes(ref) + 2
+                if byte_limit is None or size + cost <= byte_limit:
+                    result.append(ref)
+                    size += cost
+            return result
 
     def search(self, owner, domain, query, *, limit=100):
-        return [self.read_fact(owner, ref["fact_id"], for_model=True) for ref in self.select_memories(owner, query, limit=limit, domain=domain)]
+        return [self.read_fact(owner, ref["fact_id"], for_model=True) for ref in self.select_memories(owner, query, limit=limit, domain=domain, byte_limit=None)]
 
     def fact_detail(self, owner, fact_id):
         key = self.cipher.index("owner", owner)
@@ -307,16 +321,30 @@ class MemoryStore(FoundationStore):
             self._change(conn, owner, row["id"], row["revision"]+1, "reinforced", ("sync",))
 
     def extraction_candidates(self, job):
-        """Controlled extractor input, never part of a reply context."""
+        source = self.source_for_job(job)
+        query = (source.get("metadata") or {}).get("attachment", "") if source.get("intent") == "interaction" else source["text"]
         with self._transaction(write=False) as conn:
             self._require_ready(conn)
             lease = self._lease(conn, job)
-            result = []
-            for row in conn.execute("SELECT * FROM facts WHERE owner=? AND domain=? ORDER BY id", (lease["owner"], Domain.USER_FACT.value)):
-                _, data = self._fact(conn, lease["owner"], row["id"])
-                retention = timestamp(data.get("retention_until"))
-                if data.get("enabled") and data.get("revision_status") == "active" and (retention is None or self.clock() < retention):
-                    result.append({"fact_id": row["id"], "revision": row["revision"], "text": data["text"], "subject": data.get("subject"), "truth_status": data.get("truth_status", "pending"), "temporal_type": data["temporal_type"], "temporal_validity": data["temporal_validity"]})
+            count = 0
+            def candidates():
+                nonlocal count
+                for row in conn.execute("SELECT * FROM facts WHERE owner=? AND domain=? ORDER BY id", (lease["owner"], Domain.USER_FACT.value)):
+                    data = self.cipher.decrypt(Domain.USER_FACT, lease["owner"], f"{row['id']}:{row['revision']}", row["body"])
+                    retention = timestamp(data.get("retention_until"))
+                    if (data.get("enabled") and data.get("model_permission") == "allowed" and data.get("revision_status") == "active"
+                            and (retention is None or self.clock() < retention)):
+                        count += 1
+                        yield {"fact_id": row["id"], "revision": row["revision"], "text": data["text"], "subject": data.get("subject"),
+                               "truth_status": data.get("truth_status", "pending"), "temporal_type": data["temporal_type"], "temporal_validity": data["temporal_validity"]}
+            selected = heapq.nsmallest(CANDIDATE_COUNT, candidates(), key=lambda ref: (-relevance(query, ref["text"]), ref["fact_id"]))
+            result, size = ExtractionCandidates(), 2
+            for ref in selected:
+                cost = json_bytes(ref) + 2
+                if size + cost <= CANDIDATE_BYTES:
+                    result.append(ref)
+                    size += cost
+            result.complete = count == len(result)
             return result
 
     def _apply_revision(self, conn, owner, source_id, turn_id, source_text, item):

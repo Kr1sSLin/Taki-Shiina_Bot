@@ -205,6 +205,8 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         }
 
         var content = (text ?? string.Empty).Trim();
+        if (ProtocolConstants.ChatInputTooLong(content))
+            return new SendResult(false, "INPUT_TOO_LONG", "error.server.INPUT_TOO_LONG");
         if (content.Length == 0 && attachments.Count == 0)
         {
             // 文本为空且无附件 → 本地先拒绝，避免服务端 EMPTY_MESSAGE 往返。
@@ -246,6 +248,8 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         }
 
         var row = BuildUserRecord(requestId, text.Trim(), false, ProtocolConstants.StatusSending, null);
+        if (ProtocolConstants.ChatInputTooLong(text.Trim()))
+            return new(false, "INPUT_TOO_LONG", "error.server.INPUT_TOO_LONG");
         await _repository.UpsertMessageAsync(row).ConfigureAwait(false);
         await RaiseMessageChangedAsync(ToView(row)).ConfigureAwait(false);
         var result = await _rest.SendChatAsync(new RestChatRequestDto
@@ -256,8 +260,9 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
             Stream = false,
         }).ConfigureAwait(false);
         var status = result.Success ? ProtocolConstants.StatusSent : ProtocolConstants.StatusError;
-        await _repository.UpdateMessageStatusAsync(requestId, status, result.ErrorCode).ConfigureAwait(false);
-        await RaiseMessageChangedAsync(ToView(row with { Status = status, ErrorCode = result.ErrorCode })).ConfigureAwait(false);
+        var errorCode = ProtocolConstants.ChatRecoveryCode(result.Value?.RecoveryAction, result.ErrorCode ?? "SEND_FAILED");
+        await _repository.UpdateMessageStatusAsync(requestId, status, result.Success ? null : errorCode).ConfigureAwait(false);
+        await RaiseMessageChangedAsync(ToView(row with { Status = status, ErrorCode = result.Success ? null : errorCode })).ConfigureAwait(false);
         if (!result.Success || result.Value is null)
         {
             return new(false, result.ErrorCode, result.I18nKey);
@@ -303,6 +308,8 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
             return new SendResult(false, null, NoticeNotConnected);
         }
 
+        if (row.ErrorCode is "EDIT_INPUT" or "POLL_STATUS")
+            return new SendResult(false, row.ErrorCode, "error.server.INPUT_TOO_LONG");
         if (row.ErrorCode == "RESEND_NEW_REQUEST")
         {
             var drafts = new List<AttachmentDraft>();
@@ -810,7 +817,7 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
             }
 
             _ = await _repository
-                .UpdateMessageStatusAsync(requestId, ProtocolConstants.StatusError, payload.RecoveryAction == "resend_new_request" ? "RESEND_NEW_REQUEST" : code)
+                .UpdateMessageStatusAsync(requestId, ProtocolConstants.StatusError, ProtocolConstants.ChatRecoveryCode(payload.RecoveryAction, code))
                 .ConfigureAwait(false);
             await RaiseRowAsync(requestId).ConfigureAwait(false);
         }

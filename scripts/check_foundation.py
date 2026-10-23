@@ -16,11 +16,54 @@ from services.domain_cipher import DomainCipher
 from services.foundation_store import FoundationStore, PermissionDenied
 
 
+def memory_measurement(count):
+    from services.contracts import ChatCommand
+    from services.reliable_chat_store import ReliableChatStore
+    from services.input_budget import json_bytes
+    with tempfile.TemporaryDirectory(prefix="tks-memory-budget-") as temp:
+        cipher = DomainCipher(os.urandom(32), "synthetic-v1")
+        store = ReliableChatStore(str(Path(temp) / "memory.db"), cipher)
+        owner = "synthetic-owner"
+        key = cipher.index("owner", owner)
+        with store._transaction() as conn:
+            for index in range(count):
+                data = {"text": f"用户喜欢合成青椒品种{index}", "enabled": index % 7 != 0, "model_permission": "blocked" if index % 7 == 0 else "allowed",
+                        "permission_version": 1, "revision_id": str(index), "subject": "user", "weight": 6, "stage": "formal",
+                        "truth_status": "accepted", "revision_status": "active", "temporal_type": "preference",
+                        "temporal_validity": {"from": None, "until": None}, "source": f"synthetic-{index}"}
+                FoundationStore._write_fact(store, conn, key, f"fact-{index:06d}", Domain.USER_FACT, 1, data)
+        store.accept([ChatCommand(owner, "synthetic-request", "synthetic-request", "synthetic-device", "我之前说的青椒记错了")])
+        job = store.claim(kinds={"extract"}, lease_seconds=300)
+        measurements = {}
+        for name, action in (("select_memories", lambda: store.select_memories(owner, "青椒")),
+                             ("extraction_candidates", lambda: store.extraction_candidates(job))):
+            tracemalloc.start()
+            started = time.perf_counter()
+            values = action()
+            elapsed = (time.perf_counter() - started) * 1000
+            _, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            measurements[name] = {"elapsed_ms": round(elapsed, 3), "peak_python_bytes": peak, "returned_count": len(values),
+                                  "returned_json_bytes": json_bytes(values), "complete": getattr(values, "complete", None)}
+        return {"facts": count, "measurements": measurements}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--facts", type=int, default=250)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--memory", action="store_true", help="测量 P4 合成 1k/5k/20k 召回与提取候选")
     args = parser.parse_args()
+    if args.memory:
+        result = {"python": sys.version.split()[0], "platform": sys.platform, "synthetic": True,
+                  "rows": [memory_measurement(count) for count in (1000, 5000, 20000)],
+                  "note": "单次合成读路径，含密文解密；peak_python_bytes 为 tracemalloc Python 分配峰值，不含 SQLite/C 原生内存；非语义质量或生产容量结论。"}
+        text = json.dumps(result, ensure_ascii=False, indent=2)
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(text + "\n", encoding="utf-8")
+        print(text)
+        return
     if not 1 <= args.facts <= 10000:
         parser.error("facts must be between 1 and 10000")
     with tempfile.TemporaryDirectory(prefix="tks-foundation-benchmark-") as temp:

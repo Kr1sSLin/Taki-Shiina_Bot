@@ -1,6 +1,10 @@
 """Versioned public constraints shared by every model task (PRD-08)."""
 import hashlib
 import re
+import asyncio
+
+from openai import APIConnectionError, APIStatusError
+from services.input_budget import MODEL_INPUT_BYTES, MODEL_OUTPUT_TOKENS, MODEL_OUTPUT_BYTES, ModelBudgetExceeded, json_bytes, validate_output
 
 PUBLIC_POLICY_VERSION = "08-v0.3"
 PERSONA_VERSION = "04-v0.3-persona-1"
@@ -63,4 +67,47 @@ async def checked_completion(client, *, messages, **kwargs):
     if not isinstance(messages, list) or not messages or not isinstance(messages[0], dict) or messages[0].get("role") != "system":
         raise ValueError("model call requires public constraints as its first system message")
     require_public_text(messages[0].get("content"))
-    return await client.chat.completions.create(messages=messages, **kwargs)
+    kwargs["max_tokens"] = min(kwargs.get("max_tokens", MODEL_OUTPUT_TOKENS), MODEL_OUTPUT_TOKENS)
+    if json_bytes({"messages": messages, **kwargs}) > MODEL_INPUT_BYTES:
+        raise ModelBudgetExceeded("模型输入超过完整请求预算")
+    # SDK 不叠加重试；上层持久截止时间仍包住退避和每次调用。
+    provider = client.with_options(max_retries=0, timeout=20) if callable(getattr(client, "with_options", None)) else client
+    for attempt in range(3):
+        try:
+            async with asyncio.timeout(20):
+                response = await provider.chat.completions.create(messages=messages, **kwargs)
+                if kwargs.get("stream"):
+                    return await _bounded_stream(response)
+            for choice in response.choices:
+                if getattr(choice, "finish_reason", None) == "length":
+                    raise ModelBudgetExceeded("模型输出未完整结束")
+                validate_output((choice.message.content or "") + (getattr(choice.message, "reasoning_content", None) or ""))
+            return response
+        except (APIConnectionError, APIStatusError) as error:
+            if isinstance(error, APIStatusError) and error.status_code not in (408, 429, 500, 502, 503, 504):
+                raise
+            if attempt == 2:
+                raise
+            await asyncio.sleep(0.25 * 2**attempt)
+
+
+async def _bounded_stream(response):
+    chunks, size = [], 0
+    try:
+        async for chunk in response:
+            for choice in chunk.choices:
+                if getattr(choice, "finish_reason", None) == "length":
+                    raise ModelBudgetExceeded("模型输出未完整结束")
+                size += len(((choice.delta.content or "") + (getattr(choice.delta, "reasoning_content", None) or "")).encode("utf-8"))
+            if size > MODEL_OUTPUT_BYTES or len(chunks) >= MODEL_OUTPUT_TOKENS * 2:
+                raise ModelBudgetExceeded("模型流式返回超过预算")
+            if chunk.choices:
+                chunks.append(chunk)
+    finally:
+        if callable(getattr(response, "close", None)):
+            await response.close()
+    # 旧入口仍可迭代帧，但超限前不泄漏半截回复。
+    async def replay():
+        for chunk in chunks:
+            yield chunk
+    return replay()

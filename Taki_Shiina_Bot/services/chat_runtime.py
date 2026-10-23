@@ -15,6 +15,7 @@ from services.owner_fence import async_owner_fence, start_guarded_call
 from services.reply_check import ReplyRejected, reply_digest
 from services.public_policy import PUBLIC_POLICY_VERSION, PROMPT_VERSIONS
 from services.memory_policy import memory_control
+from services.input_budget import ModelBudgetExceeded
 from services.reliable_chat_store import ReliableChatStore
 from services.daily_generation import DailyGenerator
 from services.daily_store import daily_enabled
@@ -158,7 +159,7 @@ class ChatRuntime:
             if isinstance(error, VersionConflict) and snapshot is not None:
                 if await store_call(self.store.restart_changed_turn, job, snapshot):
                     return CommittedJob()
-            if isinstance(error, ReplyRejected):
+            if isinstance(error, (ReplyRejected, ModelBudgetExceeded)):
                 await store_call(self.store.fail_closed, job)
                 return CommittedJob()
             try:
@@ -185,12 +186,23 @@ class ChatRuntime:
             await store_call(self.store.assert_extraction_snapshot, job, candidates)
         if text.strip() and contextual:
             candidates = await store_call(self.store.extraction_candidates, job)
+            if not candidates.complete:
+                await store_call(self.store.incomplete_extraction, job)
+                return CommittedJob()
             # Recheck after reading controlled input and immediately before call.
             if not await store_call(self.store.extraction_context_allowed, job):
                 return CommittedJob(await store_call(self.store.commit_extraction, job, []))
-            facts = await asyncio.wait_for(start_guarded_call(self.store, source["owner"], validate, lambda: contextual(text, candidates, source.get("received_at"))), timeout=60)
+            factory = lambda: contextual(text, candidates, source.get("received_at"))
         else:
-            facts = await asyncio.wait_for(start_guarded_call(self.store, source["owner"], validate, lambda: self.extractor(text)), timeout=60) if text.strip() else []
+            factory = lambda: self.extractor(text)
+        remaining = source.get("received_at", self.store.clock()) + 120 - self.store.clock()
+        try:
+            if remaining <= 0:
+                raise ModelBudgetExceeded("提取持久期限已耗尽")
+            facts = await asyncio.wait_for(start_guarded_call(self.store, source["owner"], validate, factory), timeout=min(60, remaining)) if text.strip() else []
+        except ModelBudgetExceeded:
+            await store_call(self.store.incomplete_extraction, job)
+            return CommittedJob()
         if not isinstance(facts, list):
             raise ValueError("fact extraction must return a list")
         return CommittedJob(await store_call(self.store.commit_extraction, job, facts))

@@ -35,6 +35,23 @@ public sealed class NetworkFrameContractTests
     }
 
     [Fact]
+    public void InputBudget_UsesCodepointsAndRecoveryActions()
+    {
+        Assert.False(ProtocolConstants.ChatInputTooLong(string.Concat(Enumerable.Repeat("😀", 8000))));
+        Assert.True(ProtocolConstants.ChatInputTooLong(string.Concat(Enumerable.Repeat("😀", 8001))));
+        Assert.False(ProtocolConstants.ChatInputTooLong(string.Concat(Enumerable.Repeat("e\u0301", 4000))));
+        Assert.True(ProtocolConstants.ChatInputTooLong(string.Concat(Enumerable.Repeat("e\u0301", 4001))));
+        Assert.Equal("EDIT_INPUT", ProtocolConstants.ChatRecoveryCode("edit_input", "INPUT_TOO_LONG"));
+        Assert.Equal("POLL_STATUS", ProtocolConstants.ChatRecoveryCode("poll_status", "CHAT_RETRY"));
+        Assert.Equal("CHAT_RETRY", ProtocolConstants.ChatRecoveryCode(null, "CHAT_RETRY"));
+        var path = Path.Combine(Gate.GateRepo.Root, "..", "design", "foundation-protocol-samples.json");
+        using var samples = JsonDocument.Parse(File.ReadAllText(path));
+        var frame = Assert.IsType<WsBotErrorFrame>(WsFrameParser.Parse(samples.RootElement.GetProperty("recovery").GetProperty("inputTooLong").GetRawText()).Frame);
+        Assert.Equal("edit_input", frame.Payload.RecoveryAction);
+        Assert.False(frame.Payload.Retryable);
+    }
+
+    [Fact]
     public async Task Heartbeat_RequiresCurrentEchoAndIgnoresOldSocketCallbacks()
     {
         var portProbe = new TcpListener(IPAddress.Loopback, 0);

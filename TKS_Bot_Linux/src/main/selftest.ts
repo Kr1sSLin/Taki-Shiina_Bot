@@ -22,6 +22,7 @@
  */
 
 import { app, clipboard } from 'electron'
+import { chatInputTooLong, chatRecoveryCode } from '@shared/errors'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -1304,6 +1305,29 @@ async function run(): Promise<number> {
     msgRepo.upsertMessage({ messageId: source.messageId, sessionId: 'default_session', role: 'user',
       content: source.content, timestamp: source.timestamp, status: 'sent', messageType: 'text', contentType: 'text' })
   }
+  check('P4：中文 Emoji 与组合字符使用 Unicode code point 上限',
+    !chatInputTooLong('中'.repeat(8000)) && chatInputTooLong('中'.repeat(8001)) &&
+    !chatInputTooLong('😀'.repeat(8000)) && chatInputTooLong('😀'.repeat(8001)) &&
+    !chatInputTooLong('e\u0301'.repeat(4000)) && chatInputTooLong('e\u0301'.repeat(4001)))
+  msgRepo.upsertMessage({ messageId: 'sample-too-long', sessionId: 'default_session', role: 'user', content: '保留待编辑原文',
+    timestamp: Date.now(), status: 'sent', messageType: 'text', contentType: 'text' })
+  services.chat.handleBotError(recoverySamples.inputTooLong)
+  check('P4：输入超限落库为编辑动作，查询动作不转换成新请求',
+    msgRepo.getMessage('sample-too-long')?.errorCode === 'EDIT_INPUT' &&
+    msgRepo.getMessage('sample-too-long')?.content === '保留待编辑原文' &&
+    chatRecoveryCode('poll_status', 'CHAT_RETRY') === 'POLL_STATUS')
+  const originalSend = services.conn.send
+  const originalConnected = services.conn.isConnected
+  let retriedRequestId = ''
+  try {
+    services.conn.isConnected = () => true
+    services.conn.send = (frame) => { retriedRequestId = (frame as { requestId?: string }).requestId ?? ''; return true }
+    services.chat.handleBotError({ ...recoverySamples.inputTooLong, payload: { ...recoverySamples.inputTooLong.payload,
+      recoveryAction: 'retry_same_request', errorCode: 'CHAT_RETRY' } })
+    await services.chat.retrySameRequest('sample-too-long')
+    check('P4：临时失败重试保留原请求 ID 与已落库原文', retriedRequestId === 'sample-too-long' &&
+      msgRepo.getMessage('sample-too-long')?.content === '保留待编辑原文')
+  } finally { services.conn.send = originalSend; services.conn.isConnected = originalConnected }
   services.chat.handleBotError(recoverySamples.legacyError)
   services.chat.handleBotError(recoverySamples.terminalError)
   check('P0/P1：共享新旧错误帧可消费，终态批量标记失败且保留正文',

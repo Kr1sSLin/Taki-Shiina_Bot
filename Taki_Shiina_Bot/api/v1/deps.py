@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
+from services.input_budget import error_data
 
 from auth_utils import AuthContext, DeviceEntry, resolve_auth_context
 
@@ -83,7 +84,7 @@ def resolve_trace_id(request) -> str:
 
 
 def response_body(code: int, message: str, data: Any, trace_id: str) -> dict[str, Any]:
-    return {"code": code, "message": message, "data": data, "traceId": trace_id}
+    return {"code": code, "message": message, "data": error_data(code, data), "traceId": trace_id}
 
 
 def ok(data: Any, trace_id: str, message: str = "ok") -> dict[str, Any]:

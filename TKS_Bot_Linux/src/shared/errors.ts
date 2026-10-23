@@ -7,11 +7,20 @@
 
 import type { ApiErrorDetailBody, AppErrorCode } from './protocol'
 
+export function chatInputTooLong(text: string): boolean {
+  return [...text].length > 8000 || new TextEncoder().encode(text).length > 32 * 1024
+}
+
+export function chatRecoveryCode(action: string | undefined, code: string): string {
+  return action === 'resend_new_request' ? 'RESEND_NEW_REQUEST' : action === 'edit_input' ? 'EDIT_INPUT' : action === 'poll_status' ? 'POLL_STATUS' : action === 'retry_same_request' ? 'RETRY_SAME_REQUEST' : code
+}
+
 /** 服务端 WS 错误码 → i18n key（§5.3.3）。 */
 export const SERVER_ERROR_I18N: Record<string, string> = {
   INVALID_JSON: 'error.server.INVALID_JSON',
   UNKNOWN_TYPE: 'error.server.UNKNOWN_TYPE',
   EMPTY_MESSAGE: 'error.server.EMPTY_MESSAGE',
+  INPUT_TOO_LONG: 'error.server.INPUT_TOO_LONG',
   VISION_IMAGE_COUNT_EXCEEDED: 'error.server.VISION_IMAGE_COUNT_EXCEEDED',
   VISION_INVALID_MIME: 'error.server.VISION_INVALID_MIME',
   VISION_INVALID_BASE64: 'error.server.VISION_INVALID_BASE64',
@@ -25,7 +34,8 @@ export const SERVER_ERROR_I18N: Record<string, string> = {
 export const CLIENT_ERROR_I18N: Record<string, string> = {
   SEND_FAILED: 'error.client.SEND_FAILED',
   TIMEOUT: 'error.client.TIMEOUT',
-  CONNECTION_LOST: 'error.client.CONNECTION_LOST'
+  CONNECTION_LOST: 'error.client.CONNECTION_LOST',
+  EDIT_INPUT: 'error.server.INPUT_TOO_LONG'
 }
 
 /** HTTP / 业务错误码 → i18n key（§5.2、§7.0）。 */

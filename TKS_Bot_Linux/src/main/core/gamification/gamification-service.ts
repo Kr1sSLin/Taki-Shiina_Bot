@@ -39,7 +39,7 @@ import type {
   PointsSnapshotPayload,
   StreakWarningPayload
 } from '@shared/protocol'
-import { TksApiError } from '@shared/errors'
+import { TksApiError, chatInputTooLong } from '@shared/errors'
 import { bus } from '../../app/bus'
 import { t } from '../../app/i18n'
 import { createLogger } from '../../app/logger'
@@ -211,6 +211,7 @@ export class GamificationService {
 
     const body: { itemId: string; requestId: string; text?: string } = { itemId, requestId }
     const trimmed = (text ?? '').trim()
+    if (chatInputTooLong(trimmed)) throw new TksApiError('input too long', { code: 40001 })
     if (trimmed) body.text = trimmed
 
     try {

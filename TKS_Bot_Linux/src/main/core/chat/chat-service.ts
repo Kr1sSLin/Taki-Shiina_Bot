@@ -67,7 +67,7 @@ import { applyFactPage, upsertFact } from '../database/repositories/notification
 import { getHistoryState, setHistoryState, listHistoryState, deleteHistoryState } from '../database/repositories/message-repository'
 import { getDb } from '../database/db'
 import { getUserId } from '../auth/token-manager'
-import { TksApiError } from '@shared/errors'
+import { TksApiError, chatInputTooLong, chatRecoveryCode } from '@shared/errors'
 
 const log = createLogger('chat')
 
@@ -137,6 +137,7 @@ export class ChatService {
     // FR-CHAT-4：未连接时禁止发送，不做离线队列（理由见 EDGE-L6 / 服务端防抖基于服务端时间）
     if (!this.deps.conn.isConnected()) throw new Error('NOT_CONNECTED')
     if (!content && attachmentIds.length === 0) throw new Error('EMPTY_MESSAGE')
+    if (chatInputTooLong(content)) throw new TksApiError('input too long', { code: 40001 })
 
     const attachments = listAttachmentsByMessageIds(attachmentIds)
     const hasImages = attachments.length > 0
@@ -194,6 +195,7 @@ export class ChatService {
   async sendViaRest(input: { requestId: string; content: string }): Promise<{ reply: string; messages: ChatMessage[] }> {
     const content = (input.content ?? '').trim()
     if (!content) throw new Error('EMPTY_MESSAGE')
+    if (chatInputTooLong(content)) throw new TksApiError('input too long', { code: 40001 })
 
     upsertMessage({
       messageId: input.requestId,
@@ -237,10 +239,24 @@ export class ChatService {
       this.deps.onAfterReply()
       return { reply: data?.reply ?? '', messages }
     } catch (err) {
-      updateMessageStatus(input.requestId, 'error', 'SEND_FAILED')
+      const failure = err instanceof TksApiError ? err.data as { recoveryAction?: string } | undefined : undefined
+      updateMessageStatus(input.requestId, 'error', chatRecoveryCode(failure?.recoveryAction, 'SEND_FAILED'))
       this.emitMessages([input.requestId], [])
       throw err
     }
+  }
+
+  async retrySameRequest(messageId: string): Promise<void> {
+    const message = getMessage(messageId)
+    if (!message || message.role !== 'user' || message.errorCode !== 'RETRY_SAME_REQUEST') return
+    if (!this.deps.conn.isConnected()) throw new Error('NOT_CONNECTED')
+    const images = (message.attachments ?? []).map((attachment) => ({
+      mimeType: attachment.mimeType, dataBase64: readFileAsBase64(attachment.localPath)
+    }))
+    const sent = this.deps.conn.send({ type: 'chat.message', requestId: messageId,
+      payload: { content: message.content, images: images.length ? images : undefined } })
+    updateMessageStatus(messageId, sent ? 'sent' : 'error', sent ? null : 'RETRY_SAME_REQUEST')
+    this.emitMessages([messageId], [])
   }
 
   /* -------------------------------------------------------- 服务端帧处理 */
@@ -358,12 +374,13 @@ export class ChatService {
 
     const removed: string[] = []
     for (const requestId of requestIds) {
-      updateMessageStatus(requestId, 'error', payload.recoveryAction === 'resend_new_request' ? 'RESEND_NEW_REQUEST' : code)
+      updateMessageStatus(requestId, 'error', chatRecoveryCode(payload.recoveryAction, code))
       deletePendingMessage(requestId)
       removed.push(pendingMessageId(requestId))
       this.clearStreaming(requestId)
     }
     if (requestIds.length > 0) this.emitMessages(requestIds, removed)
+    if (payload.recoveryAction === 'poll_status') void this.syncHistory(true).catch(() => undefined)
 
     this.deps.insertBotNotification({ errorCode: code, message, timestamp })
     bus.send(IPC.evtNotificationCreated, { errorCode: code, message, timestamp })

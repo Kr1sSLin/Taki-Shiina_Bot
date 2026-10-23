@@ -477,6 +477,19 @@ public sealed partial class ChatViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (item.ErrorCode == "POLL_STATUS")
+        {
+            await _sync.SyncFullAsync().ConfigureAwait(true);
+            return;
+        }
+        if (item.ErrorCode == "EDIT_INPUT")
+        {
+            InputText = item.Content;
+            foreach (var path in item.Attachments)
+                await _media.AddFromFileAsync(path).ConfigureAwait(true);
+            await RefreshDraftThumbnailsAsync().ConfigureAwait(true);
+            return;
+        }
         var result = await _chat.RetryAsync(item.MessageId).ConfigureAwait(true);
         if (!result.Success)
         {

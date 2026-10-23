@@ -13,6 +13,7 @@ import google.generativeai as genai
 
 from services.vision_limits import MAX_INLINE_IMAGE_BYTES
 from services.public_policy import public_text, require_public_text
+from services.input_budget import MODEL_INPUT_BYTES, VISION_OUTPUT_BYTES, ModelBudgetExceeded, validate_output
 
 
 VISION_DESCRIPTION_PROMPT = (
@@ -35,12 +36,19 @@ async def describe_images(images: list[dict], caption: str) -> str:
     model = genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
     prompt = public_text("image_description") + "\n" + VISION_DESCRIPTION_PROMPT + (f"\n\n用户留言：{caption}" if caption else "")
     require_public_text(prompt)
+    if len(prompt.encode("utf-8")) > MODEL_INPUT_BYTES:
+        raise ModelBudgetExceeded("识图文本输入超过预算")
     inline_size = len(prompt.encode("utf-8")) + sum(len(base64.b64encode(image["raw"])) for image in images) + 1_000_000
     if sum(len(image["raw"]) for image in images) > MAX_INLINE_IMAGE_BYTES or inline_size >= 20_000_000:
         raise ValueError("images exceed Gemini inline request budget")
     parts = [prompt, *({"mime_type": image["mimeType"], "data": image["raw"]} for image in images)]
-    response = await asyncio.wait_for(asyncio.to_thread(model.generate_content, parts), timeout=30)
-    description = (response.text or "").strip()
+    response = await asyncio.wait_for(asyncio.to_thread(model.generate_content, parts,
+        generation_config={"max_output_tokens": 1024}, request_options={"timeout": 20, "retry": None}), timeout=20)
+    if any(getattr(candidate, "finish_reason", None) == 2 for candidate in getattr(response, "candidates", [])):
+        raise ModelBudgetExceeded("识图输出未完整结束")
+    raw = response.text or ""
+    validate_output(raw, VISION_OUTPUT_BYTES)
+    description = raw.strip()
     if not description:
         raise ValueError("vision model returned no description")
     return description

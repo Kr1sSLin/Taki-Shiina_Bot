@@ -51,6 +51,7 @@ from services.contracts import ChatCommand
 from services.chat_runtime import ChatFailed
 from services.foundation_store import PermissionDenied
 from services.privacy import redact_locations
+from services.input_budget import InputTooLong, validate_text
 
 # 错误码（PRD FR-3 要求“返回明确错误码”）
 CODE_OK = 0
@@ -269,6 +270,10 @@ class InteractionHandler:
             return InteractionSendResult(not refunded, user_id, item_id, request_id, duplicate=True, refunded=refunded,
                                          error_code=CODE_AI_FAILED_REFUNDED if refunded else CODE_OK,
                                          balance=await gamification_call(self.points_service.get_balance, user_id))
+        try:
+            validate_text(attachment)
+        except InputTooLong as error:
+            return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_INVALID_PARAM, message=str(error))
         try:
             config, item = await gamification_call(self.config_service.interaction_snapshot, item_id)
         except ConfigUnavailableError:
@@ -552,6 +557,10 @@ class InteractionHandler:
                                              refunded=operation["refundStatus"] == "refunded", operation=operation,
                                              balance=await gamification_call(self.points_service.get_balance, user_id))
         else:
+            try:
+                validate_text(attachment)
+            except InputTooLong as error:
+                return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_INVALID_PARAM, message=str(error))
             if charge:
                 return InteractionSendResult(False, user_id, item_id, request_id, error_code=CODE_CONFIG_UNAVAILABLE,
                                              message="原扣款缺少请求意图，需核账后恢复", duplicate=True,

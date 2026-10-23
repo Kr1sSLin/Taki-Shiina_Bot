@@ -10,6 +10,27 @@ from services.application_service import ChatApplicationService, HISTORY_SEPARAT
 
 
 class ApplicationTests(unittest.TestCase):
+    def test_legacy_photo_provider_has_input_output_and_sdk_retry_limits(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        from handlers.basic_handlers import create_handle_photo_handler
+        async def replay():
+            create = Mock(return_value=SimpleNamespace(text="合规图片回复", candidates=[]))
+            file = SimpleNamespace(file_size=100, download_to_drive=AsyncMock())
+            message = SimpleNamespace(caption="合成附言", photo=[SimpleNamespace(get_file=AsyncMock(return_value=file))], reply_text=AsyncMock())
+            update = SimpleNamespace(effective_chat=SimpleNamespace(id="synthetic"), message=message)
+            handler = create_handle_photo_handler("synthetic", {}, SimpleNamespace(models=SimpleNamespace(generate_content=create)), lambda text: text, lambda text: text, Mock())
+            with patch("handlers.basic_handlers.PIL.Image.open"), patch("handlers.basic_handlers.os.remove"), patch("handlers.basic_handlers.ALERT_ENABLED", False):
+                await handler(update, SimpleNamespace(bot=SimpleNamespace(send_chat_action=AsyncMock())))
+                self.assertEqual(create.call_args.kwargs["config"]["max_output_tokens"], 1024)
+                self.assertEqual(create.call_args.kwargs["config"]["http_options"]["retry_options"]["attempts"], 1)
+                message.reply_text.assert_awaited_with("合规图片回复")
+                message.caption = "中" * 8001
+                create.reset_mock()
+                await handler(update, SimpleNamespace(bot=SimpleNamespace(send_chat_action=AsyncMock())))
+                create.assert_not_called()
+        asyncio.run(replay())
+
     def test_context_preserves_protocol_windows_and_separator_policy(self):
         history = [{"role": "user", "content": str(i)} for i in range(25)]
         history.insert(22, {"role": "system", "content": HISTORY_SEPARATOR})

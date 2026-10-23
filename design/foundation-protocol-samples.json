@@ -198,6 +198,33 @@
       "retryable": true,
       "recoveryAction": "poll_status",
       "refundStatus": "none"
+    },
+    "inputTooLong": {
+      "type": "bot.error",
+      "requestId": "sample-too-long",
+      "traceId": "sample-trace",
+      "payload": {
+        "errorCode": "INPUT_TOO_LONG",
+        "message": "文字超过输入预算，请编辑后发送",
+        "requestIds": [
+          "sample-too-long"
+        ],
+        "timestamp": 1792627200000,
+        "retryable": false,
+        "recoveryAction": "edit_input"
+      }
     }
+  },
+  "inputBudget": {
+    "codepoints": 8000,
+    "utf8Bytes": 32768,
+    "textBodyBytes": 65536,
+    "turnSources": 8,
+    "turnCodepoints": 12000,
+    "turnUtf8Bytes": 49152,
+    "modelInputBytes": 98304,
+    "modelOutputTokens": 4096,
+    "modelOutputBytes": 16384,
+    "tokenCounting": "conservative UTF-8 JSON bytes; not exact tokens"
   }
 }

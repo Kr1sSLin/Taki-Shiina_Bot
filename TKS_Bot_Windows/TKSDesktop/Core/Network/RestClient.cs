@@ -572,7 +572,10 @@ public sealed class RestClient : IDisposable
             _logger.LogWarning(
                 "REST 返回错误状态 method={Method} path={Path} traceId={TraceId} status={Status} code={Code}",
                 method.Method, path, traceId, httpStatus, info.Code);
-            return ApiResult.Fail<T>(TksApiException.Http(httpStatus, info.Code, message, info.TraceId ?? traceId));
+            return new ApiResult<T>(TksApiException.Http(httpStatus, info.Code, message, info.TraceId ?? traceId).ToError())
+            {
+                FailureValue = string.IsNullOrWhiteSpace(attempt.Body) ? default : SuccessFromEnvelope<T>(attempt.Body, info.TraceId ?? traceId).Value,
+            };
         }
 
         // ⚠️ 信封语义下 `code` 缺失即**无法判定成功** —— 绝不退化为「状态码 200 就算成功」（陷阱 4）。
@@ -629,8 +632,11 @@ public sealed class RestClient : IDisposable
         try
         {
             using var document = JsonDocument.Parse(body);
-            if (document.RootElement.ValueKind != JsonValueKind.Object
-                || !document.RootElement.TryGetProperty("data", out var data)
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.Object)
+                root = detail;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("data", out var data)
                 || data.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
             {
                 return ApiResult.Success<T>(default!, traceId);

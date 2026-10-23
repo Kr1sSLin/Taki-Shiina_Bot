@@ -30,4 +30,22 @@ class BotErrorTimestampTest {
         assertEquals("poll_status", recovery.getAsJsonObject("processing").get("recoveryAction").asString)
     }
 
+    @Test
+    fun `input budget counts codepoints and preserves recovery decisions`() {
+        assertFalse(chatInputTooLong("😀".repeat(8000)))
+        org.junit.Assert.assertTrue(chatInputTooLong("😀".repeat(8001)))
+        assertFalse(chatInputTooLong("e\u0301".repeat(4000)))
+        org.junit.Assert.assertTrue(chatInputTooLong("e\u0301".repeat(4001)))
+        assertEquals("EDIT_INPUT", chatRecoveryCode("edit_input", "INPUT_TOO_LONG"))
+        assertEquals("POLL_STATUS", chatRecoveryCode("poll_status", "CHAT_RETRY"))
+        assertEquals("CHAT_RETRY", chatRecoveryCode(null, "CHAT_RETRY"))
+        assertEquals("RETRY_SAME_REQUEST", chatRecoveryCode("retry_same_request", "CHAT_RETRY"))
+        val root = generateSequence(File(System.getProperty("user.dir"))) { it.parentFile }
+            .first { File(it, "design/foundation-protocol-samples.json").exists() }
+        val recovery = JsonParser.parseString(File(root, "design/foundation-protocol-samples.json").readText()).asJsonObject.getAsJsonObject("recovery")
+        val frame = parser.parse(recovery.get("inputTooLong").toString()) as IncomingMessage.BotError
+        assertEquals("edit_input", frame.payload.recoveryAction)
+        assertFalse(frame.payload.retryable!!)
+    }
+
 }

@@ -103,6 +103,18 @@ class ReliableImageVisionTests(unittest.IsolatedAsyncioTestCase):
         return {"mimeType": "image/jpeg", "dataBase64": base64.b64encode(raw).decode("ascii"),
                 "sha256": hashlib.sha256(raw).hexdigest(), **changes}
 
+    async def test_oversize_vision_description_never_reaches_chat(self):
+        from services.input_budget import ModelBudgetExceeded, VISION_OUTPUT_BYTES
+        async def vision(images, caption):
+            return "中" * VISION_OUTPUT_BYTES
+        store = FakeStore()
+        try:
+            with self.assertRaises(ModelBudgetExceeded):
+                await self.generator(vision)(self.snapshot(images=[self.encoded()]), store)
+            self.assertEqual(self.calls, [])
+        finally:
+            store.temp.cleanup()
+
     async def test_original_exif_bytes_reach_vision_and_derived_coordinates_are_scrubbed(self):
         async def vision(images, caption):
             self.received.append((images, caption))

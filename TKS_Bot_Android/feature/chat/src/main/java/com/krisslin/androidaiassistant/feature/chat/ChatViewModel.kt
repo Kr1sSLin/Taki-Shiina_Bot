@@ -305,6 +305,10 @@ class ChatViewModel @Inject constructor(
         val requestId = UUID.randomUUID().toString()
         // O5：送礼时把输入框里的文字作为「附言」一起送出（成功后才清空，失败保留让用户可以照常发送）
         val attachment = _uiState.value.input.trim()
+        if (chatInputTooLong(attachment)) {
+            _uiState.update { it.copy(error = "文字最多 8000 个 Unicode 字符、32 KiB，请编辑后发送") }
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(botActivity = BotActivityStatus.SENDING, error = null) }
             val envelope = runCatching {
@@ -616,7 +620,7 @@ class ChatViewModel @Inject constructor(
             pendingRequestIds.remove(requestId)
             receivedFirstChunk.remove(requestId)
             chatRepository.markMessageError("pending_$requestId", payload.errorCode)
-            chatRepository.markMessageError(requestId, if (payload.recoveryAction == "resend_new_request") "RESEND_NEW_REQUEST" else payload.errorCode)
+            chatRepository.markMessageError(requestId, chatRecoveryCode(payload.recoveryAction, payload.errorCode))
         }
         _uiState.update { 
             it.copy(
@@ -626,6 +630,7 @@ class ChatViewModel @Inject constructor(
             ) 
         }
 
+        if (payload.recoveryAction == "poll_status") syncHistoryFromServer(force = true)
         botNotificationRepository.addError(
             errorCode = payload.errorCode,
             message = payload.message,
@@ -772,11 +777,17 @@ class ChatViewModel @Inject constructor(
     /**
      * 发送文本消息
      */
-    fun sendText() {
+    fun sendText() = sendTextWithId()
+
+    private fun sendTextWithId(originalRequestId: String? = null) {
         val currentState = _uiState.value
         val current = currentState.input.trim()
         val selectedImages = currentState.selectedImages
         if (current.isEmpty() && selectedImages.isEmpty()) return
+        if (chatInputTooLong(current)) {
+            _uiState.update { it.copy(error = "文字最多 8000 个 Unicode 字符、32 KiB，请编辑后发送") }
+            return
+        }
 
         // 检查连接状态
         if (_uiState.value.connectionStatus != ConnectionStatus.CONNECTED) {
@@ -784,7 +795,7 @@ class ChatViewModel @Inject constructor(
             return
         }
 
-        val requestId = UUID.randomUUID().toString()
+        val requestId = originalRequestId ?: UUID.randomUUID().toString()
         pendingRequestIds.add(requestId)
         _uiState.update { it.copy(input = "", selectedImages = emptyList(), botActivity = BotActivityStatus.SENDING, error = null) }
 
@@ -890,6 +901,10 @@ class ChatViewModel @Inject constructor(
             val entity = chatRepository.getMessages(sessionId).firstOrNull { it.messageId == messageId || it.messageId == messageId.removePrefix("pending_") }
                 ?: return@launch
             if (entity.role != MessageRole.USER) return@launch
+            if (entity.errorCode == "POLL_STATUS") {
+                syncHistoryFromServer(force = true)
+                return@launch
+            }
             val attachments = chatRepository.getAttachmentsByMessageId(entity.messageId).map {
                 ChatAttachmentUi(
                     id = it.attachmentId,
@@ -912,7 +927,8 @@ class ChatViewModel @Inject constructor(
             }
             if (restored.size != attachments.size) return@launch
             _uiState.update { it.copy(input = entity.content, selectedImages = restored) }
-            sendText()
+            if (entity.errorCode != "EDIT_INPUT")
+                sendTextWithId(if (entity.errorCode == "RETRY_SAME_REQUEST") entity.messageId else null)
         }
     }
 

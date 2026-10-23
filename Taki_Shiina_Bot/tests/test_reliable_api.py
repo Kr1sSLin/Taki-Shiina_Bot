@@ -134,6 +134,32 @@ class ReliableApiTests(unittest.IsolatedAsyncioTestCase):
         denied_detail = await http_api.memory_fact_detail("private-fact", self.request(), authorization="Bearer " + other)
         self.assertEqual(denied_detail.status_code, 403)
 
+    async def test_unicode_thresholds_and_body_budget_reject_without_business_effects(self):
+        for index, unit in enumerate(("中", "😀", "e\u0301")):
+            allowed = unit * (8000 // len(unit))
+            response = await self.http_chat(f"boundary-{index}", text=allowed)
+            self.assertEqual(response.status_code, 200)
+            await self.wait_for_jobs()
+            before = self.counts()
+            response = await self.http_chat(f"over-{index}", text=allowed + "中")
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(self.body(response)["data"]["recoveryAction"], "edit_input")
+            with patch.object(ws_api, "schedule_debounce"), patch.object(ws_api, "record_chat_activity") as activity:
+                socket = SyntheticSocket(self.ws_token, [{"type": "chat.message", "requestId": f"ws-over-{index}", "payload": {"content": allowed + "中"}}])
+                await ws_api.websocket_chat(socket)
+                self.assertEqual(socket.sent[-1]["payload"]["recoveryAction"], "edit_input")
+                self.assertEqual(socket.sent[-1]["payload"]["errorCode"], "INPUT_TOO_LONG")
+                activity.assert_not_called()
+            self.assertEqual(self.counts(), before)
+        request = self.request()
+        request.state.body_size = 65537
+        response = await http_api.chat(self.payload("body", text="合规正文"), request, authorization="Bearer " + self.token)
+        self.assertEqual(response.status_code, 400)
+        self.assertIsNone(self.store.request("authenticated-owner", "body"))
+        with patch("services.input_budget.TEXT_CODEPOINTS", 1):
+            replay = await self.http_chat("boundary-0", text="中" * 8000)
+            self.assertEqual(replay.status_code, 200)
+
     async def test_management_correction_api_scopes_owner_and_conflicts(self):
         self.store.put_fact("authenticated-owner", "correctable", Domain.USER_FACT,
                             {"text": "用户喜欢咖啡", "enabled": True}, expected_revision=0)

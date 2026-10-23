@@ -92,6 +92,24 @@ public sealed class NetworkRestClientEnvelopeTests
             () => "https://takishiinabot.top/api/v1/",
             NullLogger<RestClient>.Instance);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task HttpFailure_PreservesRecoveryDataThroughChatPort(bool nested)
+    {
+        var envelope = "{\"code\":40001,\"message\":\"edit input\",\"data\":{\"recoveryAction\":\"edit_input\",\"requestIds\":[\"original\"]},\"traceId\":\"synthetic-trace\"}";
+        var body = nested ? "{\"detail\":" + envelope + "}" : envelope;
+        var handler = new StubHttpMessageHandler((HttpStatusCode.BadRequest, body));
+        using var client = CreateClient(handler, new FakeTokenProvider());
+        var port = new RestPortAdapter(client);
+        var result = await port.SendChatAsync(new TKSDesktop.Contracts.Dtos.RestChatRequestDto { RequestId = "original", Message = "正文" });
+        Assert.False(result.Success);
+        Assert.Equal("40001", result.ErrorCode);
+        Assert.Equal("edit_input", result.Value?.RecoveryAction);
+        Assert.Equal(new[] { "original" }, result.Value?.RequestIds);
+        Assert.Equal(1, handler.RequestCount);
+    }
+
     /* ---------------- 陷阱 4：HTTP 200 + code != 0 是失败 -------------------- */
 
     [Fact]

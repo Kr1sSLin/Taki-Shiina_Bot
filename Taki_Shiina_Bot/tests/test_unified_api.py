@@ -61,6 +61,28 @@ class UnifiedApiTestCase(unittest.TestCase):
             self.assertEqual(body["data"]["recoveryAction"], "retry_same_request")
             self.assertNotIn("private path", response.text)
 
+    def test_budget_middleware_and_validation_preserve_safe_legacy_shape(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        runtime = SimpleNamespace(request=AsyncMock(return_value=None), submit=AsyncMock())
+        client = TestClient(unified_api.app)
+        with patch.object(unified_api.http_api, "_require_http_auth", return_value=SimpleNamespace(user_id="synthetic", device_id="synthetic")), \
+             patch.object(unified_api.http_api, "get_reliable_runtime", return_value=runtime):
+            body = b'{"requestId":"oversize-body","message":"ok","meta":{"padding":"' + b'x' * 65536 + b'"}}'
+            response = client.post("/api/v1/chat", content=iter((body[:100], body[100:])), headers={"Content-Type": "application/json"})
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json()["data"]["recoveryAction"], "edit_input")
+            runtime.submit.assert_not_called()
+            rejected = client.post("/api/v1/chat", json={"message": {"private": "must-not-echo"}})
+            self.assertEqual(rejected.status_code, 422)
+            self.assertIsInstance(rejected.json()["detail"], list)
+            self.assertNotIn("must-not-echo", rejected.text)
+            self.assertEqual(rejected.json()["data"]["recoveryAction"], "edit_input")
+        auth = client.post("/api/v1/chat", json={"message": "hello"})
+        self.assertEqual(auth.status_code, 401)
+        self.assertEqual(auth.json()["detail"]["code"], 40101)
+        self.assertEqual(auth.json()["detail"]["data"]["recoveryAction"], "refresh_then_retry")
+
     def test_key_routes_appear_exactly_once(self):
         paths = Counter()
         route_keys = Counter()

@@ -180,6 +180,14 @@ export function ChatPage(): JSX.Element {
   // FR-CHAT-11：重试用户消息 → 内容与图片回填输入框，由用户确认后重发
   const handleRetry = useCallback(
     (message: ChatMessage): void => {
+      if (message.errorCode === 'POLL_STATUS') {
+        void window.tks.sync.syncHistory(true).catch(() => undefined)
+        return
+      }
+      if (message.errorCode === 'RETRY_SAME_REQUEST') {
+        void window.tks.chat.retryMessage(message.messageId).catch(() => undefined)
+        return
+      }
       setDraftText(message.content)
       const attachments = message.attachments ?? []
       if (attachments.length > 0) {

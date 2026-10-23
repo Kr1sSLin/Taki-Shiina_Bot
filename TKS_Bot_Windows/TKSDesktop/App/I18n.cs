@@ -352,6 +352,7 @@ public static class I18n
         ["error.server.INVALID_JSON"] = "消息格式有误",
         ["error.server.UNKNOWN_TYPE"] = "不支持的消息类型",
         ["error.server.EMPTY_MESSAGE"] = "消息内容不能为空",
+        ["error.server.INPUT_TOO_LONG"] = "文字最多 8000 个 Unicode 字符、32 KiB，请编辑后发送",
         ["error.server.VISION_IMAGE_COUNT_EXCEEDED"] = "图片数量超出限制",
         ["error.server.VISION_INVALID_MIME"] = "图片格式不受支持",
         ["error.server.VISION_INVALID_BASE64"] = "图片数据损坏",

@@ -117,6 +117,8 @@ public sealed class GamificationService : IGamificationService, IDisposable
 
     public async Task<InteractionSendOutcome> SendInteractionAsync(string itemId, string requestId, string? text, CancellationToken ct = default)
     {
+        if (ProtocolConstants.ChatInputTooLong((text ?? string.Empty).Trim()))
+            return new(false, 40001, "error.server.INPUT_TOO_LONG", null, false, null, [], []);
         if (_delivery is not null) await _delivery.BeginAsync(requestId, itemId, text).ConfigureAwait(false);
         PortCall<InteractionSendDataDto> call;
         try

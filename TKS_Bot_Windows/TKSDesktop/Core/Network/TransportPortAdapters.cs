@@ -27,8 +27,12 @@ public sealed class RestPortAdapter : IRestPort, IHistoryImagePort, IMemoryEvent
         => ToPortCall(await _rest.GetHistoryImageAsync(requestId, index, cancellationToken).ConfigureAwait(false), static data => data);
 
     public async Task<PortCall<RestChatDataDto>> SendChatAsync(RestChatRequestDto request, CancellationToken cancellationToken = default)
-        => ToPortCall(await _rest.PostAsync<RestChatDataDto>("/chat", request,
-            ProtocolConstants.RestTimeoutMs, cancellationToken: cancellationToken).ConfigureAwait(false), static data => data);
+    {
+        var result = await _rest.PostAsync<RestChatDataDto>("/chat", request,
+            ProtocolConstants.RestTimeoutMs, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var call = ToPortCall(result, static data => data);
+        return call.Success ? call : call with { Value = result.FailureValue };
+    }
 
     public async Task<PortCall<IReadOnlyList<TimelineItemDto>>> GetChatHistoryAsync(
         long since,
