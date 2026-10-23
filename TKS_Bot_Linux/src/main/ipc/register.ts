@@ -109,13 +109,13 @@ export function registerIpcHandlers(services: Services): void {
   })
 
   handle<ChatMessage[]>(IPC.chatListMessages, async (opts) => {
-    const o = (opts ?? {}) as { limit?: number; beforeTimestamp?: number }
-    return services.chat.list({ limit: o.limit ?? 80, beforeTimestamp: o.beforeTimestamp })
+    const o = (opts ?? {}) as { limit?: number; beforeTimestamp?: number; beforeMessageId?: string }
+    return services.chat.list({ limit: o.limit ?? 80, beforeTimestamp: o.beforeTimestamp, beforeMessageId: o.beforeMessageId })
   })
 
   handle<ChatMessage[]>(IPC.chatLoadOlder, async (opts) => {
-    const o = (opts ?? {}) as { beforeTimestamp: number; limit: number }
-    return services.chat.list({ limit: o.limit ?? 50, beforeTimestamp: o.beforeTimestamp })
+    const o = (opts ?? {}) as { beforeTimestamp: number; limit: number; beforeMessageId?: string }
+    return services.chat.list({ limit: o.limit ?? 50, beforeTimestamp: o.beforeTimestamp, beforeMessageId: o.beforeMessageId })
   })
 
   handle<void>(IPC.chatDeleteMessage, async (messageId) => {

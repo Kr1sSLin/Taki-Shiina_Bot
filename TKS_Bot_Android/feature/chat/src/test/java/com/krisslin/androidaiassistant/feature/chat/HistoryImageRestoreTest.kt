@@ -7,9 +7,17 @@ import org.junit.Test
 
 class HistoryImageRestoreTest {
     @Test
+    fun `split bubbles retain parent authority identity`() {
+        val items = JsonParser.parseString("""[{"messageId":"parent","role":"bot","content":"one\ntwo","timestamp":42,"historySource":"sql"}]""").asJsonArray
+        val normalized = TimelineHistoryNormalizer.normalize(items)
+        assertEquals(listOf("parent", "parent"), normalized.map { it.sourceMessageId })
+        assertEquals(listOf("sql", "sql"), normalized.map { it.historySource })
+    }
+
+    @Test
     fun `timeline retains distinct download request id and original image count`() {
         val items = JsonParser.parseString(
-            """[{"messageId":"client-message","requestId":"server-request","role":"user","content":"[图片]","timestamp":42,"imageCount":2}]"""
+            """[{"messageId":"client-message","requestId":"server-request","role":"user","content":"[图片]","timestamp":42,"imageCount":2,"historySource":"sql"}]"""
         ).asJsonArray
 
         val normalized = TimelineHistoryNormalizer.normalize(items)
@@ -19,6 +27,7 @@ class HistoryImageRestoreTest {
         assertEquals("server-request", normalized.single().requestId)
         assertEquals(2, normalized.single().imageCount)
         assertEquals(42L, normalized.single().sourceTimestamp)
+        assertEquals("sql", normalized.single().historySource)
     }
 
     @Test

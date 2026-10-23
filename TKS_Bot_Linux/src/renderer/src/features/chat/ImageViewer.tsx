@@ -34,7 +34,8 @@ const ZOOM_STEP = 0.25
  * `main/desktop/protocol.ts` 约定的形状为 `tks-attachment://local<URI 编码后的绝对路径>`。
  */
 export function attachmentSrc(localPath: string): string {
-  return `tks-attachment://local${encodeURI(localPath)}`
+  const path = localPath.replace(/\\/g, '/')
+  return `tks-attachment://local${path.startsWith('/') ? '' : '/'}${path.split('/').map(encodeURIComponent).join('/')}`
 }
 
 export interface ImageViewerProps {

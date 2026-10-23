@@ -5,11 +5,18 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Upsert
+import com.krisslin.androidaiassistant.core.database.entity.HistorySyncStateEntity
 import com.krisslin.androidaiassistant.core.database.entity.ChatMessageEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ChatMessageDao {
+    @Query("SELECT value FROM history_sync_state WHERE `key` = :key")
+    suspend fun historyState(key: String): String?
+
+    @Upsert
+    suspend fun putHistoryState(state: HistorySyncStateEntity)
+
     // 注意：必须用 @Upsert（INSERT ... ON CONFLICT DO UPDATE）。
     // 若用 @Insert(REPLACE)，SQLite 会先 DELETE 旧行再 INSERT，
     // 触发 chat_attachments 的外键 CASCADE，把消息附件（图片）一并删掉。
@@ -19,10 +26,10 @@ interface ChatMessageDao {
     @Upsert
     suspend fun upsertAll(messages: List<ChatMessageEntity>)
 
-    @Query("SELECT * FROM (SELECT * FROM chat_messages WHERE session_id = :sessionId ORDER BY timestamp DESC LIMIT :limit) ORDER BY timestamp ASC")
+    @Query("SELECT * FROM (SELECT * FROM chat_messages WHERE session_id = :sessionId ORDER BY timestamp DESC, message_id DESC LIMIT :limit) ORDER BY timestamp ASC, message_id ASC")
     fun observeLatest(sessionId: String, limit: Int = 300): Flow<List<ChatMessageEntity>>
 
-    @Query("SELECT * FROM (SELECT * FROM chat_messages WHERE session_id = :sessionId ORDER BY timestamp DESC LIMIT :limit) ORDER BY timestamp ASC")
+    @Query("SELECT * FROM (SELECT * FROM chat_messages WHERE session_id = :sessionId ORDER BY timestamp DESC, message_id DESC LIMIT :limit) ORDER BY timestamp ASC, message_id ASC")
     suspend fun getLatest(sessionId: String, limit: Int = 300): List<ChatMessageEntity>
 
     @Query("SELECT * FROM chat_messages WHERE message_id = :messageId")

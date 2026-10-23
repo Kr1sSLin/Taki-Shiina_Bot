@@ -15,7 +15,7 @@
 import { randomUUID } from 'node:crypto'
 import type {
   ChatMessage,
-  ChatOperation,
+  ChatHistoryResponse,
   ChatReplyStreamPayload,
   TimerInstruction,
   TimelineItem,
@@ -64,6 +64,10 @@ import {
   getCursor
 } from '../database/repositories/message-repository'
 import { applyFactPage, upsertFact } from '../database/repositories/notification-repository'
+import { getHistoryState, setHistoryState, listHistoryState, deleteHistoryState } from '../database/repositories/message-repository'
+import { getDb } from '../database/db'
+import { getUserId } from '../auth/token-manager'
+import { TksApiError } from '@shared/errors'
 
 const log = createLogger('chat')
 
@@ -667,8 +671,8 @@ export class ChatService {
 
   /* ------------------------------------------------------------- 读取接口 */
 
-  async list(opts: { limit: number; beforeTimestamp?: number }): Promise<ChatMessage[]> {
-    return listMessages({ limit: opts.limit, beforeTimestamp: opts.beforeTimestamp })
+  async list(opts: { limit: number; beforeTimestamp?: number; beforeMessageId?: string }): Promise<ChatMessage[]> {
+    return listMessages({ limit: opts.limit, beforeTimestamp: opts.beforeTimestamp, beforeMessageId: opts.beforeMessageId })
   }
 
   deleteMessage(messageId: string): void {
@@ -693,8 +697,8 @@ export class ChatService {
   /**
    * 历史同步（FR-SYNC-1..6、FR-SYNC-8/9）。
    *
-   * - 增量：`since = 本地最大 timestamp`，`limit=300`（FR-SYNC-3）
-   * - 全量：`since = 0`（手动重连 / 首次登录 / 上次全量同步失败，FR-SYNC-4）
+   * - 新协议以不透明游标分页；全量从 start 重扫，保留已有消息。
+   * - 旧服务端只做一次有限同步，时间戳只用于该回退路径。
    * - 落库幂等：按 `messageId` 判重；Bot 消息同样按 `\n` 拆分（FR-SYNC-5）
    * - 失败必须写日志且 UI 可见（FR-SYNC-6）
    */
@@ -713,57 +717,91 @@ export class ChatService {
     const mode: 'incremental' | 'full' = full ? 'full' : 'incremental'
     const cursorBefore = getCursor('chat_history')
     const localMax = maxTimestamp()
-    /*
-     * FR-SYNC-3 说「以本地最大 timestamp 作为 since」，
-     * FR-CHAT-12 又要求「清空会话后把游标推到 now，防止历史被立刻补拉回灌」——
-     * 只取本地最大时间戳会让后者失效：清空后本地最大值为 0，于是 since=0，
-     * 下一次增量同步就把全部历史又拉回来（Android 端正是踩了这个坑）。
-     *
-     * 因此取**两者的较大值**：既保证不漏（游标可能落后于实际已落库的消息），
-     * 又保证清空后不会回灌（游标已被推进到 now）。
-     */
+    // 时间戳只用于旧服务端有限回退，新协议不以展示时间推进检查点。
     const since = full ? 0 : Math.max(localMax, cursorBefore)
     log.info('开始历史同步', { mode, since, cursorBefore, localMax, localCount: countMessages() })
 
     try {
-      const data = await this.deps.rest.request<{ items: TimelineItem[]; operations?: ChatOperation[] }>('chat/history', {
-        query: { since, limit: PROTOCOL.SYNC_LIMIT },
-        // 幂等 GET，连接层抖动时退避重试（问题 1 的直接缓解）
-        retries: 2
-      })
-      const items = data?.items ?? []
-      const { inserted, updated, touchedIds } = this.ingestTimeline(items)
-
-      for (const item of items) {
-        if (item.role !== 'user' || !item.requestId || !item.imageCount) continue
-        if (await restoreHistoryImages(this.deps.rest, item.messageId, item.requestId, item.imageCount)) {
-          touchedIds.push(item.messageId)
-        }
-      }
-      for (const operation of data?.operations ?? []) {
-        if (operation.status !== 'failed') continue
-        for (const source of operation.sources ?? []) {
-          if (!getMessage(source.messageId)) {
-            if (source.timestamp <= since) continue
-            this.ingestTimeline([source])
+      const scope = JSON.stringify([this.deps.rest.baseUrl, getUserId()])
+      const unchanged = (): boolean => scope === JSON.stringify([this.deps.rest.baseUrl, getUserId()])
+      let checkpoint = full ? 'start' : getHistoryState(scope) ?? 'start'
+      let inserted = 0, updated = 0
+      const touchedIds: string[] = []
+      let limited = false, blocked = false, resets = 0
+      do {
+        let data: ChatHistoryResponse
+        try {
+          data = await this.deps.rest.request<ChatHistoryResponse>('chat/history', {
+            query: { cursor: checkpoint, limit: PROTOCOL.SYNC_LIMIT }, retries: 2
+          })
+        } catch (error) {
+          if (error instanceof TksApiError && error.code === 40910 && resets++ === 0) {
+            checkpoint = 'start'
+            continue
           }
-          updateMessageStatus(source.messageId, 'error', 'RESEND_NEW_REQUEST')
-          if (source.requestId && source.imageCount) await restoreHistoryImages(this.deps.rest, source.messageId, source.requestId, source.imageCount)
-          touchedIds.push(source.messageId)
+          throw error
         }
-        for (const requestId of operation.requestIds) {
-          updateMessageStatus(requestId, 'error', 'RESEND_NEW_REQUEST')
-          deletePendingMessage(requestId)
-          this.clearStreaming(requestId)
-          touchedIds.push(requestId)
+        if (!unchanged()) throw new Error('History account changed')
+        limited = data.historySyncVersion !== 1
+        if (limited && since > 0) {
+          data = await this.deps.rest.request<ChatHistoryResponse>('chat/history', { query: { since, limit: PROTOCOL.SYNC_LIMIT }, retries: 2 })
+          if (!unchanged()) throw new Error('History account changed')
         }
-      }
+        if (!limited && (!data.nextCursor || !data.datasetGeneration || typeof data.hasMore !== 'boolean')) throw new Error('Invalid history checkpoint')
+        const items = data?.items ?? []
+        const queueImage = (item: TimelineItem): void => {
+          if (item.role === 'user' && item.requestId && item.imageCount) setHistoryState(`${scope}:image:${item.messageId}`,
+            JSON.stringify({ messageId: item.messageId, requestId: item.requestId, imageCount: item.imageCount }))
+        }
+        getDb().transaction(() => {
+          const page = this.ingestTimeline(items, scope)
+          inserted += page.inserted
+          updated += page.updated
+          touchedIds.push(...page.touchedIds)
+          for (const item of items) queueImage(item)
+          for (const operation of data?.operations ?? []) {
+            if (operation.status !== 'failed') continue
+            for (const source of operation.sources ?? []) {
+              if (!getMessage(source.messageId)) {
+                if (limited && source.timestamp <= since) continue
+                this.ingestTimeline([source])
+              }
+              updateMessageStatus(source.messageId, 'error', 'RESEND_NEW_REQUEST')
+              queueImage(source)
+              touchedIds.push(source.messageId)
+            }
+            for (const requestId of operation.requestIds) {
+              updateMessageStatus(requestId, 'error', 'RESEND_NEW_REQUEST')
+              deletePendingMessage(requestId)
+              this.clearStreaming(requestId)
+              touchedIds.push(requestId)
+            }
+          }
 
-      const maxTs = items.reduce((acc, it) => Math.max(acc, Number(it.timestamp) || 0), cursorBefore)
-      if (maxTs > 0) setCursor('chat_history', maxTs)
+          if (!unchanged()) throw new Error('History account changed')
+          if (limited) {
+            const maxTs = items.reduce((acc, it) => Math.max(acc, Number(it.timestamp) || 0), cursorBefore)
+            if (maxTs > 0) setCursor('chat_history', maxTs)
+          } else {
+            setHistoryState(scope, data.nextCursor!)
+            setHistoryState(`${scope}:generation`, data.datasetGeneration!)
+          }
+        })()
+        for (const job of listHistoryState(`${scope}:image:`)) {
+          if (!unchanged()) throw new Error('History account changed')
+          const item = JSON.parse(job.value) as TimelineItem
+          if (await restoreHistoryImages(this.deps.rest, item.messageId, item.requestId!, item.imageCount!, scope, unchanged)) touchedIds.push(item.messageId)
+          if (!unchanged()) throw new Error('History account changed')
+          deleteHistoryState(job.key)
+        }
+        if (limited) break
+        checkpoint = data.nextCursor!
+        blocked = data.blocked === true
+        if (blocked || !data.hasMore) break
+      } while (true)
 
-      log.info('历史同步完成', { mode, fetched: items.length, inserted, updated })
-      const result: SyncStatusEvent = { ok: true, mode, inserted, updated, errorI18nKey: null }
+      log.info('历史同步完成', { mode, inserted, updated, limited, blocked })
+      const result: SyncStatusEvent = { ok: !limited && !blocked, mode, inserted, updated, errorI18nKey: limited ? 'sync.limited' : blocked ? 'sync.waiting' : null }
       bus.send(IPC.evtSyncStatus, result)
       /*
        * 同步落库的新消息必须**带着消息本体**推给渲染端：
@@ -774,6 +812,7 @@ export class ChatService {
        */
       if (touchedIds.length > 0) this.emitMessages(touchedIds, [])
       this.deps.onAfterSync()
+      if (blocked) setTimeout(() => { if (unchanged()) void this.syncHistory(false) }, 2000)
       return result
     } catch (err) {
       // FR-SYNC-6：同步失败必须写入日志且在 UI 可见（Android 早期版本静默吞掉导致排查困难）
@@ -793,22 +832,25 @@ export class ChatService {
    * @returns inserted/updated 计数，以及本次实际写入（含更新）的消息 ID，
    *          供 `doSync` 推送 `evt:messagesUpdated`——渲染端只认带本体的消息事件。
    */
-  private ingestTimeline(items: TimelineItem[]): { inserted: number; updated: number; touchedIds: string[] } {
+  private ingestTimeline(items: TimelineItem[], scope?: string): { inserted: number; updated: number; touchedIds: string[] } {
     let inserted = 0
     let updated = 0
     const touchedIds: string[] = []
     for (const item of items) {
       if (!item?.messageId) continue
+      const authorityKey = `${scope}:sql:${item.messageId}`
+      if (scope && item.historySource === 'legacy' && getHistoryState(authorityKey)) continue
       // FR-SYNC-9：剥离 `【MM-DD HH:MM】` 前缀
       const content = stripHistoryTimestampPrefix(item.content ?? '')
-      const ts = Number(item.timestamp) || Date.now()
+      const ts = Number(item.timestamp) || 0
 
       if (item.role === 'bot') {
         const parts = splitBotContent(item.messageId, content, ts)
         for (const part of parts) {
-          if (isDelivered(part.messageId)) continue
+          if (isDelivered(part.messageId) && item.historySource !== 'sql') continue
           const created = upsertMessage({
             messageId: part.messageId,
+            authoritative: item.historySource === 'sql',
             sessionId: PROTOCOL.DEFAULT_SESSION_ID,
             role: 'bot',
             messageType: 'text',
@@ -827,6 +869,7 @@ export class ChatService {
         const hasImages = Number(item.imageCount) > 0
         const created = upsertMessage({
           messageId: item.messageId,
+          authoritative: item.historySource === 'sql',
           sessionId: PROTOCOL.DEFAULT_SESSION_ID,
           role: item.role === 'system' ? 'system' : 'user',
           messageType: hasImages ? 'image' : 'text',
@@ -840,6 +883,7 @@ export class ChatService {
         else if (created === 'updated') updated += 1
         if (created !== 'unchanged') touchedIds.push(item.messageId)
       }
+      if (scope && item.historySource === 'sql') setHistoryState(authorityKey, '1')
     }
     return { inserted, updated, touchedIds }
   }

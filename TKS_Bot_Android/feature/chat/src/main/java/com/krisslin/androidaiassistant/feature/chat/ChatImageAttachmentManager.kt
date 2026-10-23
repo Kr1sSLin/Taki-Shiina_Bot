@@ -44,9 +44,9 @@ internal class ChatImageAttachmentManager(
     private val historyRestoreMutex = Mutex()
 
     /** Queue absent originals in Room, then download them from the authenticated endpoint. */
-    suspend fun restoreHistoryImages(requestId: String, messageId: String, imageCount: Int) {
+    suspend fun restoreHistoryImages(requestId: String, messageId: String, imageCount: Int, download: Boolean = true) {
         if (requestId.isBlank() || messageId.isBlank() || imageCount !in 1..3) return
-        historyRestoreMutex.withLock {
+        suspend fun enqueue(): List<ChatAttachmentEntity> {
             val existing = chatRepository.getAttachmentsByMessageId(messageId)
             val localCount = existing.count { !it.attachmentId.startsWith("remote_") }
             val existingIds = existing.map { it.attachmentId }.toSet()
@@ -64,22 +64,26 @@ internal class ChatImageAttachmentManager(
                 )
             }
             chatRepository.saveMessageAttachments(missing)
-            for (pending in existing + missing) {
+            return existing + missing
+        }
+        if (!download) { enqueue(); return }
+        historyRestoreMutex.withLock {
+            for (pending in enqueue()) {
                 if (pending.uploadState == "pending_history") tryDownloadHistoryImage(pending)
             }
         }
     }
 
     /** Retry persisted misses even after the incremental timeline cursor has passed them. */
-    suspend fun retryPendingHistoryImages() {
+    suspend fun retryPendingHistoryImages(accepts: suspend (String) -> Boolean = { true }, stillCurrent: () -> Boolean = { true }) {
         historyRestoreMutex.withLock {
             for (pending in chatRepository.getPendingHistoryAttachments(sessionId)) {
-                tryDownloadHistoryImage(pending)
+                if (accepts(pending.messageId) && stillCurrent()) tryDownloadHistoryImage(pending, stillCurrent)
             }
         }
     }
 
-    private suspend fun tryDownloadHistoryImage(pending: ChatAttachmentEntity) {
+    private suspend fun tryDownloadHistoryImage(pending: ChatAttachmentEntity, stillCurrent: () -> Boolean = { true }) {
         runCatching {
             val segments = Uri.parse(pending.localUri).pathSegments
             if (segments.size != 2) throw IOException("Invalid pending image reference")
@@ -87,6 +91,7 @@ internal class ChatImageAttachmentManager(
             val index = segments[1].toIntOrNull()?.takeIf { it in 0..2 }
                 ?: throw IOException("Invalid image index")
             val response = chatApi.historyImage(requestId, index)
+            if (!stillCurrent()) { response.body()?.close(); response.errorBody()?.close(); return }
             if (!response.isSuccessful) {
                 response.errorBody()?.close()
                 throw IOException("Image download returned HTTP ${response.code()}")

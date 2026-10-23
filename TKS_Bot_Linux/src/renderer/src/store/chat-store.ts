@@ -66,7 +66,7 @@ function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]): ChatMes
     // 补拉后的新附件优先；仅在帧未携带附件时保留本地已有图片。
     map.set(m.messageId, m.attachments?.length ? m : prev?.attachments?.length ? { ...m, attachments: prev.attachments } : m)
   }
-  return [...map.values()].sort((a, b) => a.timestamp - b.timestamp)
+  return [...map.values()].sort((a, b) => a.timestamp - b.timestamp || (a.messageId < b.messageId ? -1 : a.messageId > b.messageId ? 1 : 0))
 }
 
 export const useChatStore = create<ChatState>()((set, get) => ({
@@ -99,7 +99,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     if (loadingOlder || !hasMore || oldestTimestamp === null) return
     set({ loadingOlder: true })
     try {
-      const older = await window.tks.chat.loadOlder({ beforeTimestamp: oldestTimestamp, limit: OLDER_PAGE_SIZE })
+      const older = await window.tks.chat.loadOlder({ beforeTimestamp: oldestTimestamp, beforeMessageId: messages[0]?.messageId, limit: OLDER_PAGE_SIZE })
       if (older.length === 0) {
         set({ hasMore: false })
         return

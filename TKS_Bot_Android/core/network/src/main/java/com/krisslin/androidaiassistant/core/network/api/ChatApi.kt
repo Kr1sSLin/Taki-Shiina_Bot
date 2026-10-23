@@ -23,7 +23,8 @@ interface ChatApi {
     suspend fun history(
         @Header("Authorization") authorization: String? = null,
         @Query("since") since: Long = 0,
-        @Query("limit") limit: Int = 300
+        @Query("limit") limit: Int = 300,
+        @Query("cursor") cursor: String? = null
     ): JsonObject
 
     /** The authenticated, original image bytes for a reliable user message. */

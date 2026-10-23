@@ -344,13 +344,28 @@ async def chat_history(
     since: int = 0,
     limit: int = 200,
     authorization: str | None = Header(default=None),
+    cursor: str | None = None,
 ):
     trace_id = request.state.trace_id
     auth = _require_http_auth(authorization, trace_id)
 
     try:
+        if cursor is not None and since != 0:
+            return JSONResponse(status_code=400, content=response_body(40001, "cursor 不能与非零 since 同时使用", None, trace_id))
         items = await _load_timeline_async()
         reliable = get_reliable_runtime()
+        if cursor is not None:
+            from services.reliable_chat_store import HistoryCursorReset
+            if reliable is None:
+                return JSONResponse(status_code=503, content=response_body(50301, "历史分页暂不可用", {"reason": "history_sync_unavailable"}, trace_id))
+            try:
+                page, pending = await asyncio.to_thread(reliable.store.history_page, auth.user_id, items, cursor=cursor, limit=limit)
+            except HistoryCursorReset:
+                return JSONResponse(status_code=409, content=response_body(40910, "历史检查点已失效，请保留本地记录并重新同步", {"reason": "cursor_reset_required"}, trace_id))
+            page["operations"] = await asyncio.to_thread(reliable.store.failed_operations, auth.user_id)
+            if pending:
+                return ControlledJSONResponse(response_body(0, "ok", page, trace_id), store=reliable.store, owner=auth.user_id, results=pending)
+            return response_body(0, "ok", page, trace_id)
         pending = []
         operations = []
         if reliable:

@@ -330,6 +330,11 @@ const MIGRATIONS: Migration[] = [
         );
       `)
     }
+  },
+  {
+    version: 7,
+    name: 'history-sync-checkpoints',
+    up: (db) => { db.exec('CREATE TABLE history_sync_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)') }
   }
 ]
 

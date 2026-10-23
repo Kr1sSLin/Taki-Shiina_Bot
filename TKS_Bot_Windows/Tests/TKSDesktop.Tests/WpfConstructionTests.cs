@@ -208,16 +208,17 @@ public sealed class WpfConstructionTests
                         panel.Arrange(new Rect(0, 0, 800, 800));
                         panel.UpdateLayout();
                     }
-                    var chatView = new ChatView();
+                    var chatView = new ChatView { DataContext = provider.GetRequiredService<ChatViewModel>(),
+                        Background = (System.Windows.Media.Brush)app.Resources["Tks.Brush.Background"] };
                     var historyList = (System.Windows.Controls.ItemsControl)chatView.FindName("MessageItems");
-                    historyList.ItemsSource = Enumerable.Range(0, 2000).Select(index =>
+                    historyList.ItemsSource = Enumerable.Range(0, 10050).Select(index =>
                         new MessageItemViewModel(new TKSDesktop.Core.Services.ChatMessageView(
-                            "virtual-" + index, "assistant", "text", "History row " + index, "sent", index,
+                            "virtual-" + index.ToString("D5", CultureInfo.InvariantCulture), "assistant", "text", "恢复的历史 " + index, "sent", index / 2,
                             null, null, null, false, false, []))).ToArray();
                     chatView.Measure(new Size(600, 400));
                     chatView.Arrange(new Rect(0, 0, 600, 400));
                     chatView.UpdateLayout();
-                    var realized = Enumerable.Range(0, 2000).Count(index => historyList.ItemContainerGenerator.ContainerFromIndex(index) is not null);
+                    var realized = Enumerable.Range(0, 10050).Count(index => historyList.ItemContainerGenerator.ContainerFromIndex(index) is not null);
                     Assert.InRange(realized, 1, 100);
                     var pendingVisuals = new Queue<DependencyObject>();
                     pendingVisuals.Enqueue(historyList);
@@ -229,11 +230,28 @@ public sealed class WpfConstructionTests
                             pendingVisuals.Enqueue(System.Windows.Media.VisualTreeHelper.GetChild(visual, child));
                     }
                     Assert.NotNull(virtualPanel);
-                    virtualPanel.BringIndexIntoViewPublic(1999);
+                    virtualPanel.BringIndexIntoViewPublic(10049);
                     chatView.UpdateLayout();
-                    Assert.NotNull(historyList.ItemContainerGenerator.ContainerFromIndex(1999));
+                    var historyScroll = (System.Windows.Controls.ScrollViewer)historyList.Template.FindName("MessageScrollViewer", historyList);
+                    historyScroll.ScrollToEnd();
+                    chatView.UpdateLayout();
+                    chatView.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+                    chatView.UpdateLayout();
+                    Assert.NotNull(historyList.ItemContainerGenerator.ContainerFromIndex(10049));
+                    var lastContainer = (FrameworkElement)historyList.ItemContainerGenerator.ContainerFromIndex(10049);
+                    var lastBounds = lastContainer.TransformToAncestor(historyList).TransformBounds(new Rect(lastContainer.RenderSize));
+                    Assert.True(lastBounds.Top < historyList.ActualHeight && lastBounds.Bottom > 0);
                     // Recycling cleanup is deferred; bounded realization matters, not immediate eviction of row 0.
-                    Assert.InRange(Enumerable.Range(0, 2000).Count(index => historyList.ItemContainerGenerator.ContainerFromIndex(index) is not null), 1, 100);
+                    Assert.InRange(Enumerable.Range(0, 10050).Count(index => historyList.ItemContainerGenerator.ContainerFromIndex(index) is not null), 1, 100);
+                    if (Environment.GetEnvironmentVariable("TKS_COMPOSER_PREVIEW_DIR") is { Length: > 0 } historyPreviewDir)
+                    {
+                        var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(600, 400, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                        bitmap.Render(chatView);
+                        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+                        using var output = File.Create(Path.Combine(historyPreviewDir, "p2-history-last-page.png"));
+                        encoder.Save(output);
+                    }
                     var messageTemplate = (DataTemplate)chatView.Resources["Tks.MessageTemplate"];
                     foreach (var role in new[] { "user", "assistant" })
                     {

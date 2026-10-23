@@ -2,6 +2,7 @@ package com.krisslin.androidaiassistant.core.database
 
 import androidx.room.Database
 import androidx.room.RoomDatabase
+import com.krisslin.androidaiassistant.core.database.entity.HistorySyncStateEntity
 import com.krisslin.androidaiassistant.core.database.dao.BotNotificationDao
 import com.krisslin.androidaiassistant.core.database.dao.ChatAttachmentDao
 import com.krisslin.androidaiassistant.core.database.dao.ChatMessageDao
@@ -25,9 +26,10 @@ import com.krisslin.androidaiassistant.core.database.entity.UserProgressEntity
         UserProgressEntity::class,
         MemorySyncCursorEntity::class,
         MemorySeenEventEntity::class,
-        MemoryPermissionOperationEntity::class
+        MemoryPermissionOperationEntity::class,
+        HistorySyncStateEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {

@@ -46,6 +46,8 @@ const FAIL_INTERACTION = process.env.FAIL_INTERACTION === '1'
 /* 内存状态                                                                    */
 /* -------------------------------------------------------------------------- */
 
+const historyCursors = new Map()
+const historyImages = new Map()
 const state = {
   /** accessToken → { userId, deviceId } */
   accessTokens: new Map(),
@@ -431,9 +433,30 @@ const server = createServer(async (req, res) => {
   }
 
   /* ------------------------------- 聊天历史 ---------------------------- */
+  const imageMatch = /^\/api\/v1\/chat\/images\/([^/]+)\/0$/.exec(path)
+  if (imageMatch && method === 'GET') {
+    const image = historyImages.get(imageMatch[1])
+    if (!image || image.owner !== auth.userId) return json(res, 404, envelope(null))
+    res.writeHead(200, { 'content-type': 'image/png' })
+    return res.end(image.bytes)
+  }
   if (path === '/api/v1/chat/history' && method === 'GET') {
     const since = Number(url.searchParams.get('since') ?? 0)
     const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') ?? 200), 500))
+    if (url.searchParams.has('cursor')) {
+      if (since !== 0) return json(res, 400, envelope(null, undefined, 40001, 'invalid cursor parameters'))
+      const rows = [...new Map(state.history.filter(x => x.userId === auth.userId).map(item => [item.messageId, item])).values()]
+      const cursor = url.searchParams.get('cursor')
+      const previous = cursor === 'start' ? { owner: auth.userId, position: 0, end: rows.length } : historyCursors.get(cursor)
+      if (!previous || previous.owner !== auth.userId) return json(res, 409, envelope({ reason: 'cursor_reset_required' }, undefined, 40910, 'reset'))
+      const end = previous.position === previous.end ? rows.length : previous.end
+      const position = Math.min(previous.position + limit, end)
+      const nextCursor = randomUUID()
+      historyCursors.set(nextCursor, { owner: auth.userId, position, end })
+      return json(res, 200, envelope({ historySyncVersion: 1, datasetGeneration: 'mock-history-v1',
+        items: rows.slice(previous.position, position).map(item => ({ ...item, historySource: 'sql' })),
+        nextCursor, hasMore: position < end, operations: state.operations }))
+    }
     const items = state.history.filter((x) => x.timestamp > since && x.userId === auth.userId).slice(-limit)
     return json(res, 200, envelope({ items, operations: state.operations }))
   }
@@ -941,10 +964,15 @@ const server = createServer(async (req, res) => {
     } else if (kind === 'unknown_frame') {
       // NFR-12：客户端必须忽略未知 type，不得抛错
       broadcast({ type: 'future.feature.event', payload: { whatever: true }, extraTopLevel: 1 })
+    } else if (kind === 'history_image') {
+      const requestId = 'p2-history-image'
+      historyImages.set(requestId, { owner: auth.userId, bytes: Buffer.from(body.data, 'base64') })
+      state.history.push({ messageId: requestId, requestId, imageCount: 1, userId: auth.userId,
+        role: 'user', content: '恢复后的历史原图', timestamp: nowMs() })
     } else if (kind === 'seed_history') {
       const n = Number(body.count ?? 12)
       for (let i = n; i > 0; i -= 1) {
-        const ts = nowMs() - i * 60000
+        const ts = body.timestamp ?? nowMs() - i * 60000
         state.history.push({ messageId: `seed_u_${i}`, userId: USER_ID, role: 'user', content: `历史用户消息 ${i}`, timestamp: ts })
         state.history.push({
           messageId: `seed_b_${i}`,

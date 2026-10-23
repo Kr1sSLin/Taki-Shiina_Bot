@@ -108,6 +108,7 @@ function buildUrl(base: string, path: string, query?: RequestOptions['query']): 
 }
 
 export class RestClient {
+  get baseUrl(): string { return this.baseUrlProvider().replace(/\/+$/, '') }
   private auth: AuthHeaderProvider
   private baseUrlProvider: () => string
 

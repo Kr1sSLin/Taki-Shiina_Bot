@@ -10,6 +10,7 @@ namespace TKSDesktop.Contracts.Dtos;
 /// <summary>服务端 timeline 记录（`GET /chat/history` 的 `items[]`）。</summary>
 public sealed class TimelineItemDto
 {
+    [JsonPropertyName("historySource")] public string? HistorySource { get; set; }
     [JsonPropertyName("messageId")]
     public string MessageId { get; set; } = string.Empty;
 
@@ -68,6 +69,12 @@ public sealed class TimelineItemDto
 /// <summary>`GET /chat/history` 响应 `data`。</summary>
 public sealed class ChatHistoryDataDto
 {
+    [JsonPropertyName("historySyncVersion")] public int? HistorySyncVersion { get; set; }
+    [JsonPropertyName("datasetGeneration")] public string? DatasetGeneration { get; set; }
+    [JsonPropertyName("nextCursor")] public string? NextCursor { get; set; }
+    [JsonPropertyName("hasMore")] public bool HasMore { get; set; }
+    [JsonPropertyName("blocked")] public bool Blocked { get; set; }
+    [JsonPropertyName("pollAfterMs")] public int PollAfterMs { get; set; }
     [JsonPropertyName("items")]
     public List<TimelineItemDto> Items { get; set; } = [];
 

@@ -84,13 +84,16 @@ export function restoreHistoryImages(
   rest: Pick<RestClient, 'downloadImage'>,
   messageId: string,
   requestId: string,
-  imageCount: number
+  imageCount: number,
+  scope = '',
+  stillCurrent: () => boolean = () => true
 ): Promise<boolean> {
-  const flight = historyRestoreFlights.get(messageId)
+  const key = `${scope}:${messageId}`
+  const flight = historyRestoreFlights.get(key)
   if (flight) return flight
-  const work = restoreHistoryImagesOnce(rest, messageId, requestId, imageCount)
-  historyRestoreFlights.set(messageId, work)
-  void work.finally(() => historyRestoreFlights.delete(messageId)).catch(() => {})
+  const work = restoreHistoryImagesOnce(rest, messageId, requestId, imageCount, stillCurrent)
+  historyRestoreFlights.set(key, work)
+  void work.finally(() => historyRestoreFlights.delete(key)).catch(() => {})
   return work
 }
 
@@ -98,7 +101,8 @@ async function restoreHistoryImagesOnce(
   rest: Pick<RestClient, 'downloadImage'>,
   messageId: string,
   requestId: string,
-  imageCount: number
+  imageCount: number,
+  stillCurrent: () => boolean
 ): Promise<boolean> {
   if (!messageId || !requestId || !Number.isInteger(imageCount) || imageCount < 1 || imageCount > PROTOCOL.MAX_IMAGE_COUNT) {
     return false
@@ -117,6 +121,7 @@ async function restoreHistoryImagesOnce(
   let restored = false
   for (let index = 0; index < imageCount; index += 1) {
     const { mimeType, bytes } = await rest.downloadImage(requestId, index)
+    if (!stillCurrent()) throw new Error('History image account changed')
     const valid = mimeType === 'image/png'
       ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
       : mimeType === 'image/jpeg' && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff

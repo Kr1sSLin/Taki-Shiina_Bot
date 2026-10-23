@@ -11,7 +11,9 @@ data class TimelineHistoryItem(
     val timestamp: Long,
     val sourceTimestamp: Long = timestamp,
     val requestId: String? = null,
-    val imageCount: Int = 0
+    val imageCount: Int = 0,
+    val historySource: String? = null,
+    val sourceMessageId: String = messageId
 )
 
 /** Pure parsing/normalization for incremental history reconciliation. */
@@ -34,7 +36,8 @@ object TimelineHistoryNormalizer {
                         content = content.ifBlank { "[图片]" },
                         timestamp = timestamp,
                         requestId = item.stringOrNull("requestId"),
-                        imageCount = imageCount
+                        imageCount = imageCount,
+                        historySource = item.stringOrNull("historySource")
                     )
                 )
             } else {
@@ -45,7 +48,9 @@ object TimelineHistoryNormalizer {
                             role = role,
                             content = segment.content,
                             timestamp = segment.timestamp,
-                            sourceTimestamp = timestamp
+                            sourceTimestamp = timestamp,
+                            historySource = item.stringOrNull("historySource"),
+                            sourceMessageId = messageId
                         )
                     )
                 }

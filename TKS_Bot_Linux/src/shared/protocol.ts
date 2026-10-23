@@ -74,6 +74,7 @@ export type ChatRole = 'user' | 'bot' | 'system'
 
 /** 服务端 timeline 记录（`http_api.py::chat_history` / `/chat/history`）。 */
 export interface TimelineItem {
+  historySource?: 'legacy' | 'sql'
   messageId: string
   /** Reliable image source ID; omitted on older timeline rows. */
   requestId?: string
@@ -86,6 +87,13 @@ export interface TimelineItem {
 
 export interface ChatHistoryResponse {
   items: TimelineItem[]
+  operations?: ChatOperation[]
+  historySyncVersion?: number
+  datasetGeneration?: string
+  nextCursor?: string
+  hasMore?: boolean
+  blocked?: boolean
+  pollAfterMs?: number
 }
 
 export interface UserFact {

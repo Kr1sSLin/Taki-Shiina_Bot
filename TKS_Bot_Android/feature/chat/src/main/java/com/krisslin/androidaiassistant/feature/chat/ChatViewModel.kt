@@ -166,7 +166,7 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             // 清理历史遗留的空 bot 消息（后端旧版空回复落库的脏数据）
             runCatching { chatRepository.deleteBlankBotMessages() }
-            chatRepository.observeMessagesWithAttachments(sessionId).collect { pairs ->
+            chatRepository.observeMessagesWithAttachments(sessionId, limit = Int.MAX_VALUE).collect { pairs ->
                 val uiMessages = pairs.map { (entity, attachments) ->
                     val remote = attachments.filter { it.attachmentId.startsWith("remote_") }
                     val downloaded = remote.filter { it.uploadState == "downloaded" }
@@ -968,7 +968,9 @@ class ChatViewModel @Inject constructor(
 
     private fun syncHistoryFromServer(force: Boolean = false) {
         viewModelScope.launch {
-            if (!timelineSynchronizer.syncHistory(force).success && force) {
+            val result = timelineSynchronizer.syncHistory(force)
+            result.notice?.let { notice -> _uiState.update { it.copy(error = notice) } }
+            if (!result.success && force) {
                 manualReconnectPendingFullSync = true
             }
         }

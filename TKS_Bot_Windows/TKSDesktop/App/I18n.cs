@@ -28,6 +28,8 @@ public static class I18n
         ["common.empty"] = "暂无数据",
         ["common.copied"] = "已复制",
         ["common.unknown"] = "未知",
+        ["sync.limited"] = "当前服务端仅支持有限历史同步",
+        ["sync.waiting"] = "历史同步等待回复可交付，将稍后继续",
         ["common.offlineData"] = "离线数据，最后更新于 {0}",
 
         /* ---- 登录 ---- */

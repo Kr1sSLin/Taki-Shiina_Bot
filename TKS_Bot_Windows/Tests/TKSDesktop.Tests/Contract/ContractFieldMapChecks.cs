@@ -31,8 +31,9 @@ internal static partial class ContractChecks
         yield return Dto("TimelineItemDto", typeof(TimelineItemDto),
             "messageId", "userId", "role", "content", "timestamp",
             "contentType", "itemId", "itemName", "itemIcon", "costPoints",
-            "interactionFailed", "messageKind", "greetingScenario", "modelProvider", "requestId", "imageCount");
-        yield return Dto("ChatHistoryDataDto", typeof(ChatHistoryDataDto), "items", "operations");
+            "interactionFailed", "messageKind", "greetingScenario", "modelProvider", "requestId", "imageCount", "historySource");
+        yield return Dto("ChatHistoryDataDto", typeof(ChatHistoryDataDto), "items", "operations",
+            "historySyncVersion", "datasetGeneration", "nextCursor", "hasMore", "blocked", "pollAfterMs");
         yield return Dto("ChatOperationDto", typeof(ChatOperationDto), "status", "requestIds", "sources", "failureCategory", "refundStatus", "retryable", "recoveryAction");
         yield return Dto("UserFactDto", typeof(UserFactDto), "factId", "userId", "fact", "timestamp",
             "eventId", "revision", "revisionId", "permissionVersion", "enabled", "stage",

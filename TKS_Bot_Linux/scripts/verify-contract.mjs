@@ -524,6 +524,21 @@ async function main() {
     historyItems[0] && Object.keys(historyItems[0])
   )
   check('role ∈ {user, bot}', historyItems.every((i) => i.role === 'user' || i.role === 'bot'), [...new Set(historyItems.map((i) => i.role))])
+  let historyCursor = 'start'
+  const pagedHistory = new Map()
+  for (let pageNumber = 0; pageNumber < 100; pageNumber++) {
+    const page = await req(`/api/v1/chat/history?cursor=${encodeURIComponent(historyCursor)}&limit=3`, { token })
+    const data = page.json?.data
+    if (data?.historySyncVersion !== 1 || !data.nextCursor) { check('P2：分页版本与检查点', false); break }
+    for (const item of data.items) pagedHistory.set(item.messageId, item.content)
+    historyCursor = data.nextCursor
+    if (!data.hasMore) break
+  }
+  const expectedHistory = new Map(historyItems.map(item => [item.messageId, item.content]))
+  check('P2：分页最终集合与现有历史内容一致', expectedHistory.size === pagedHistory.size &&
+    [...expectedHistory].every(([id, content]) => pagedHistory.get(id) === content))
+  const caughtUp = await req(`/api/v1/chat/history?cursor=${encodeURIComponent(historyCursor)}`, { token })
+  check('P2：追平后保留检查点，空增量不重放末尾页', caughtUp.json?.data?.hasMore === false && caughtUp.json.data.items.length === 0 && !!caughtUp.json.data.nextCursor)
 
   const facts = await req('/api/v1/memory/facts?since=0&limit=300', { token })
   check('GET /memory/facts 返回信封 + items[]', facts.json?.code === 0 && Array.isArray(facts.json?.data?.items), facts.json?.code)

@@ -104,6 +104,12 @@ public interface IMemoryEventPort
     Task<PortCall<MemoryFactsDataDto>> GetMemoryEventPageAsync(long cursor, int limit, CancellationToken cancellationToken = default);
 }
 
+public interface IHistoryCursorPort
+{
+    string? HistoryScope { get; }
+    Task<PortCall<ChatHistoryDataDto>> GetHistoryCursorPageAsync(string cursor, int limit, CancellationToken cancellationToken = default);
+}
+
 /// <summary>Authenticated original image bytes from a reliable chat source.</summary>
 public sealed record HistoryImageBytes(string MimeType, byte[] Bytes);
 

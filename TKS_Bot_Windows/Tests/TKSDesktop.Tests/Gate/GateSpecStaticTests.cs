@@ -937,7 +937,7 @@ public sealed class GateSpecStaticTests
             "V-W-S10 / section 9.1-9.8 violated: DatabaseSchema does not declare these tables: "
             + string.Join(", ", missing));
 
-        // Migration versions 1..6 must exist, be strictly increasing and contiguous from 1.
+        // 迁移版本须从 1 连续递增。
         var steps = (typeof(Core.Data.DatabaseSchema)
                 .GetProperty(nameof(Core.Data.DatabaseSchema.All))!
                 .GetValue(null) as System.Collections.IEnumerable)
@@ -946,9 +946,9 @@ public sealed class GateSpecStaticTests
             .ToArray();
 
         Assert.NotNull(steps);
-        Assert.Equal(6, steps!.Length);
-        Assert.Equal([1, 2, 3, 4, 5, 6], steps.Select(s => s.Version).ToArray());
-        Assert.Equal(6, Core.Data.DatabaseSchema.TargetVersion);
+        Assert.Equal(7, steps!.Length);
+        Assert.Equal([1, 2, 3, 4, 5, 6, 7], steps.Select(s => s.Version).ToArray());
+        Assert.Equal(7, Core.Data.DatabaseSchema.TargetVersion);
 
         // Section 9.9 freezes the migration names.
         string[] expectedNames =
@@ -959,6 +959,7 @@ public sealed class GateSpecStaticTests
             "reminder-dedupe-and-attachment-index",
             "chat-messages-trigram-index-for-cjk",
             "memory-event-cursor-and-permission-queue",
+            "history-sync-checkpoints",
         ];
         Assert.Equal(expectedNames, steps.Select(s => s.Name).ToArray());
 

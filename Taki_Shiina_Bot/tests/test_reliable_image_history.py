@@ -186,6 +186,123 @@ class ReliableImageHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(a["turn_id"], b["turn_id"])
         self.assertNotEqual(b["turn_id"], c["turn_id"])
 
+    async def test_cursor_scans_10050_rows_with_index_replay_and_incremental_append(self):
+        key = self.cipher.index("owner", self.owner_a)
+        expected = {}
+        with self.store._transaction() as conn:
+            for index in range(10050):
+                item = {"messageId": f"history-{index:05}", "userId": self.owner_a, "role": "user",
+                        "content": f"synthetic {index}", "timestamp": index // 2}
+                expected[item["messageId"]] = item
+                conn.execute("INSERT INTO chat_messages(id,owner,turn_id,body) VALUES (?,?,?,?)",
+                             (item["messageId"], key, self.receipt["turn_id"], self.cipher.encrypt(Domain.SOURCE_MESSAGE, key, item["messageId"], item)))
+            plan = conn.execute("EXPLAIN QUERY PLAN SELECT * FROM chat_messages WHERE owner=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?", (key, 0, 10050, 500)).fetchall()
+            self.assertTrue(any("chat_messages_owner" in row["detail"] for row in plan))
+        cursor, actual, pages = "start", {}, 0
+        while True:
+            response = await self.client.get("/api/v1/chat/history", params={"cursor": cursor, "limit": 500}, headers=self.headers_a)
+            self.assertEqual(response.status_code, 200)
+            page = response.json()["data"]
+            self.assertEqual(page["historySyncVersion"], 1)
+            if pages == 0:
+                replay = await self.client.get("/api/v1/chat/history", params={"cursor": cursor, "limit": 500}, headers=self.headers_a)
+                self.assertEqual(replay.json()["data"]["items"], page["items"])
+                with self.store._transaction() as conn:
+                    item = {"messageId": "during-scan", "userId": self.owner_a, "role": "user", "content": "new during scan", "timestamp": 0}
+                    conn.execute("INSERT INTO chat_messages(id,owner,turn_id,body) VALUES (?,?,?,?)", (item["messageId"], key, self.receipt["turn_id"], self.cipher.encrypt(Domain.SOURCE_MESSAGE, key, item["messageId"], item)))
+            actual.update({item["messageId"]: {k: v for k, v in item.items() if k != "historySource"} for item in page["items"]})
+            pages += 1
+            cursor = page["nextCursor"]
+            if not page["hasMore"]: break
+            self.assertLess(pages, 30)
+        self.assertEqual(actual, expected)
+        self.assertEqual(pages, 21)
+        with self.store._transaction() as conn:
+            item = {"messageId": "late", "userId": self.owner_a, "role": "user", "content": "late", "timestamp": 1}
+            conn.execute("INSERT INTO chat_messages(id,owner,turn_id,body) VALUES (?,?,?,?)", ("late", key, self.receipt["turn_id"], self.cipher.encrypt(Domain.SOURCE_MESSAGE, key, "late", item)))
+        self.store = ReliableChatStore(self.path, self.cipher)
+        added = await self.client.get("/api/v1/chat/history", params={"cursor": cursor}, headers=self.headers_a)
+        self.assertEqual([item["messageId"] for item in added.json()["data"]["items"]], ["during-scan", "late"])
+        old = await self.client.get("/api/v1/chat/history?limit=2", headers=self.headers_a)
+        self.assertNotIn("historySyncVersion", old.json()["data"])
+        self.assertEqual(len(old.json()["data"]["items"]), 2)
+
+    async def test_cursor_legacy_version_sql_authority_owner_tampering_and_restore_reset(self):
+        job = self.store.claim(kinds={"chat"})
+        snapshot = self.store.begin_turn(job)
+        self.store.commit_reply(job, snapshot, {"reply": "SQL authoritative"})
+        sql_items = self.store.history(self.owner_a)
+        legacy = [{**sql_items[0], "content": "old duplicate"},
+                  {"messageId": "legacy", "userId": self.owner_a, "role": "user", "content": "old", "timestamp": 9999999999999}]
+        with patch.object(http_api, "_load_timeline_async", AsyncMock(return_value=legacy)):
+            first = (await self.client.get("/api/v1/chat/history?cursor=start&limit=1", headers=self.headers_a)).json()["data"]
+            self.assertEqual([item["messageId"] for item in first["items"]], ["legacy"])
+            cursor = first["nextCursor"]
+            for bad, headers in ((cursor, self.headers_b), (cursor[:-4] + "abcd", self.headers_a), ("x" * 5000, self.headers_a)):
+                denied = await self.client.get("/api/v1/chat/history", params={"cursor": bad}, headers=headers)
+                self.assertEqual((denied.status_code, denied.json()["data"]["reason"]), (409, "cursor_reset_required"))
+                self.assertNotIn("SQL authoritative", denied.text)
+            invalid = await self.client.get("/api/v1/chat/history?cursor=start&since=1", headers=self.headers_a)
+            self.assertEqual(invalid.status_code, 400)
+            second = (await self.client.get("/api/v1/chat/history", params={"cursor": cursor}, headers=self.headers_a)).json()["data"]
+            self.assertEqual(second["items"][0]["content"], sql_items[0]["content"])
+            legacy[:] = legacy[-1:]
+            changed = await self.client.get("/api/v1/chat/history", params={"cursor": second["nextCursor"]}, headers=self.headers_a)
+            self.assertEqual(changed.status_code, 409)
+            restarted = (await self.client.get("/api/v1/chat/history?cursor=start", headers=self.headers_a)).json()["data"]
+            self.store.mark_restored()
+            self.store.verify_restored_permissions(self.store.change_head())
+            restored = await self.client.get("/api/v1/chat/history", params={"cursor": restarted["nextCursor"]}, headers=self.headers_a)
+            self.assertEqual(restored.status_code, 409)
+
+    async def test_cursor_blocks_low_seq_until_deliverable_without_marking_later_reply(self):
+        job = self.store.claim(kinds={"chat"})
+        snapshot = self.store.begin_turn(job)
+        self.store.commit_reply(job, snapshot, {"reply": "first delivery"})
+        original_check = self.store._check_reply_delivery
+        with patch.object(self.store, "_check_reply_delivery", side_effect=PermissionDenied("synthetic permission wait")):
+            response = await self.client.get("/api/v1/chat/history?cursor=start", headers=self.headers_a)
+        page = response.json()["data"]
+        self.assertTrue(page["blocked"])
+        self.assertTrue(page["hasMore"])
+        self.assertGreaterEqual(page["pollAfterMs"], 1000)
+        self.assertEqual([item["role"] for item in page["items"]], ["user"])
+        with self.store._transaction(write=False) as conn:
+            _, body = self.store._turn(conn, self.receipt["turn_id"])
+            self.assertNotIn("dispatched_at", body)
+        resumed = await self.client.get("/api/v1/chat/history", params={"cursor": page["nextCursor"]}, headers=self.headers_a)
+        self.assertEqual(resumed.status_code, 200)
+        self.assertEqual([item["role"] for item in resumed.json()["data"]["items"]], ["bot"])
+        self.assertFalse(resumed.json()["data"]["hasMore"])
+        with self.store._transaction(write=False) as conn:
+            _, body = self.store._turn(conn, self.receipt["turn_id"])
+            self.assertIn("dispatched_at", body)
+        self.assertEqual(self.store._check_reply_delivery, original_check)
+
+    async def test_cursor_permission_change_before_transport_does_not_publish_or_skip_reply(self):
+        self.store.put_fact(self.owner_a, "display-gate", Domain.USER_FACT, {"text": "synthetic fact", "enabled": True}, expected_revision=0)
+        job = self.store.claim(kinds={"chat"})
+        snapshot = self.store.begin_turn(job)
+        self.store.commit_reply(job, snapshot, {"reply": "must not leave owner fence"})
+        original = http_api.ControlledJSONResponse.__call__
+
+        async def change_before_transport(response, scope, receive, send):
+            self.store.set_permission(self.owner_a, "display-gate", enabled=False, expected_revision=1)
+            await original(response, scope, receive, send)
+
+        with patch.object(http_api.ControlledJSONResponse, "__call__", change_before_transport):
+            response = await self.client.get("/api/v1/chat/history?cursor=start", headers=self.headers_a)
+        self.assertEqual(response.status_code, 503)
+        self.assertIsNone(response.json()["data"])
+        self.assertNotIn("must not leave owner fence", response.text)
+        with self.store._transaction(write=False) as conn:
+            _, body = self.store._turn(conn, self.receipt["turn_id"])
+            self.assertNotIn("dispatched_at", body)
+        replay = await self.client.get("/api/v1/chat/history?cursor=start", headers=self.headers_a)
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual([item["role"] for item in replay.json()["data"]["items"]], ["user"])
+        self.assertFalse(replay.json()["data"]["hasMore"])
+
 
 if __name__ == "__main__":
     unittest.main()

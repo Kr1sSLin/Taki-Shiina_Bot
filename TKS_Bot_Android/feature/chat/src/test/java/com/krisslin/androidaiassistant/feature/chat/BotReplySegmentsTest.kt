@@ -92,7 +92,7 @@ class BotReplySegmentsTest {
         assertEquals(
             listOf(
                 TimelineHistoryItem("before", "user", "first", 1L),
-                TimelineHistoryItem("after_0", "bot", "last", 4L)
+                TimelineHistoryItem("after_0", "bot", "last", 4L, sourceMessageId = "after")
             ),
             normalized
         )

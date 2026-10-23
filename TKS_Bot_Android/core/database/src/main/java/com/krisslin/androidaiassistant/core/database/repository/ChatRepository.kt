@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import javax.inject.Inject
 import javax.inject.Singleton
+import androidx.room.withTransaction
+import com.krisslin.androidaiassistant.core.database.AppDatabase
+import com.krisslin.androidaiassistant.core.database.entity.HistorySyncStateEntity
 
 /**
  * 聊天消息状态
@@ -60,8 +63,14 @@ object MessageRole {
 @Singleton
 class ChatRepository @Inject constructor(
     private val chatMessageDao: ChatMessageDao,
-    private val chatAttachmentDao: ChatAttachmentDao
+    private val chatAttachmentDao: ChatAttachmentDao,
+    private val database: AppDatabase
 ) {
+    suspend fun historyState(key: String): String? = chatMessageDao.historyState(key)
+
+    suspend fun putHistoryState(key: String, value: String) = chatMessageDao.putHistoryState(HistorySyncStateEntity(key, value))
+
+    suspend fun <T> historyTransaction(block: suspend () -> T): T = database.withTransaction { block() }
     /**
      * 观察指定会话的消息（按时间升序）
      */
@@ -176,7 +185,8 @@ class ChatRepository @Inject constructor(
         content: String,
         timestamp: Long,
         contentType: String = ContentType.TEXT,
-        modelProvider: String = ModelProvider.DEEPSEEK
+        modelProvider: String = ModelProvider.DEEPSEEK,
+        authoritative: Boolean = false
     ): SyncOutcome {
         // 服务端确认过的最终状态：用户消息=已发送，bot 消息=已接收
         val syncedStatus =
@@ -203,13 +213,14 @@ class ChatRepository @Inject constructor(
         if (existing.status == MessageStatus.STREAMING) return SyncOutcome.UNCHANGED
 
         // 本地内容为空才用服务端内容补齐；否则保留本地（bot 气泡是拆分后的片段）
-        val healedContent = if (existing.content.isBlank()) content else existing.content
+        val healedContent = if (authoritative || existing.content.isBlank()) content else existing.content
         val healed = existing.copy(
             status = syncedStatus,
             errorCode = null,
             content = healedContent,
-            contentType = if (contentType != ContentType.TEXT) contentType else existing.contentType,
-            modelProvider = if (modelProvider != ModelProvider.DEEPSEEK) modelProvider else existing.modelProvider
+            timestamp = if (authoritative) timestamp else existing.timestamp,
+            contentType = if (authoritative || contentType != ContentType.TEXT) contentType else existing.contentType,
+            modelProvider = if (authoritative || modelProvider != ModelProvider.DEEPSEEK) modelProvider else existing.modelProvider
         )
         if (healed == existing) return SyncOutcome.UNCHANGED
 

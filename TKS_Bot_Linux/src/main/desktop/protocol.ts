@@ -72,6 +72,7 @@ export function registerAttachmentHandler(): void {
       const url = new URL(request.url)
       // `tks-attachment://local/home/x/a.png` → host='local', pathname='/home/x/a.png'
       decoded = decodeURIComponent(url.pathname)
+      if (process.platform === 'win32' && /^\/[a-z]:\//i.test(decoded)) decoded = decoded.slice(1)
     } catch {
       return new Response('bad request', { status: 400 })
     }
@@ -115,5 +116,5 @@ export function registerAttachmentHandler(): void {
  * 与 `docs/RENDERER_CONTRACT.md` 中约定的格式保持一致。
  */
 export function toAttachmentUrl(localPath: string): string {
-  return `${ATTACHMENT_SCHEME}://local${encodeURI(localPath)}`
+  return `${ATTACHMENT_SCHEME}://local${pathToFileURL(localPath).pathname}`
 }

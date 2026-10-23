@@ -7,11 +7,20 @@ using TKSDesktop.Core.Services.Ports;
 namespace TKSDesktop.Core.Network;
 
 /// <summary>将 REST 客户端接入同步服务窄端口。</summary>
-public sealed class RestPortAdapter : IRestPort, IHistoryImagePort, IMemoryEventPort
+public sealed class RestPortAdapter : IRestPort, IHistoryImagePort, IMemoryEventPort, IHistoryCursorPort
 {
     private readonly RestClient _rest;
 
-    public RestPortAdapter(RestClient rest) => _rest = rest;
+    private readonly Core.Auth.TokenManager? _tokens;
+    public RestPortAdapter(RestClient rest, Core.Auth.TokenManager? tokens = null) { _rest = rest; _tokens = tokens; }
+
+    public string? HistoryScope => _tokens?.UserId is { } owner
+        ? System.Text.Json.JsonSerializer.Serialize(new[] { _rest.ApiBaseUrl.TrimEnd('/'), owner }) : null;
+
+    public async Task<PortCall<ChatHistoryDataDto>> GetHistoryCursorPageAsync(string cursor, int limit, CancellationToken cancellationToken = default)
+        => ToPortCall(await _rest.GetAsync<ChatHistoryDataDto>("/chat/history",
+            new Dictionary<string, string?> { ["cursor"] = cursor, ["limit"] = limit.ToString(CultureInfo.InvariantCulture) },
+            ProtocolConstants.RestTimeoutMs, cancellationToken: cancellationToken).ConfigureAwait(false), static data => data);
 
     public async Task<PortCall<HistoryImageBytes>> GetHistoryImageAsync(
         string requestId, int index, CancellationToken cancellationToken = default)

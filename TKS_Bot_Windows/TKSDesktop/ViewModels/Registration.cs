@@ -162,13 +162,7 @@ internal sealed class RepositoryBackedHistoryReader : ILocalHistoryReader
         try
         {
             var repository = _provider.GetRequiredService<MessageRepository>();
-            var take = Math.Clamp(limit + Math.Max(0, skipFromEnd), 1, 1000);
-            var rows = await repository.ListRecentAsync(take, null, ct).ConfigureAwait(false);
-
-            // ListRecentAsync 返回**升序**的最近 take 条：从尾部（最新端）往前跳 skipFromEnd 条即更早一页。
-            var page = skipFromEnd <= 0
-                ? rows
-                : rows.Take(Math.Max(0, rows.Count - skipFromEnd)).ToList();
+            var page = await repository.ListRecentAsync(limit, null, ct, Math.Max(0, skipFromEnd)).ConfigureAwait(false);
 
             var views = new List<ChatMessageView>(page.Count);
 

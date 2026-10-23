@@ -963,7 +963,7 @@ async function run(): Promise<number> {
    * 消息只进 SQLite、界面永远看不到，必须重启程序才出现。
    * selftest 不创建窗口，这里临时替换 bus.send 捕获广播载荷再还原。
    */
-  const seedCount = 5
+  const seedCount = 3350
   await fetch(apiBaseUrl.replace(/\/api\/v1\/?$/, '') + '/__test__/trigger', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${services.auth.getAccessToken() ?? ''}` },
@@ -985,6 +985,11 @@ async function run(): Promise<number> {
   interceptingBus.send = originalBusSend
 
   const pushedBodies = capturedMessagesUpdated.flatMap((event) => event.messages)
+  check('P2：多页恢复 10050 条拆分后消息，唯一 ID 与内容齐全',
+    Array.from({ length: seedCount }, (_, index) => index + 1).every(index =>
+      msgRepo.getMessage(`seed_u_${index}`)?.content === `历史用户消息 ${index}` &&
+      msgRepo.getMessage(`seed_b_${index}_0`)?.content === `历史回复 ${index} 第一行` &&
+      msgRepo.getMessage(`seed_b_${index}_1`)?.content === `历史回复 ${index} 第二行`))
   check('FR-SYNC：同步落库的新消息必须带本体推送 evt:messagesUpdated（而非空事件）',
     seededSync.ok === true &&
       pushedBodies.length >= seedCount * 3 &&
@@ -1211,6 +1216,12 @@ async function run(): Promise<number> {
   } } as Parameters<typeof restoreHistoryImages>[0]
   const imageRestored = await restoreHistoryImages(imageRest, historyImageMessageId, 'remote-source-id', 1)
   const historyAttachment = msgRepo.listAttachmentsByMessage(historyImageMessageId)[0]
+  const { toAttachmentUrl } = await import('./desktop/protocol')
+  const { fileURLToPath } = await import('node:url')
+  const encodedAttachment = new URL(toAttachmentUrl(historyAttachment.localPath + '#?.png'))
+  check('附件协议保留本机绝对路径与文件名特殊字符',
+    fileURLToPath(new URL(encodedAttachment.pathname, 'file://')) === historyAttachment.localPath + '#?.png' &&
+    !encodedAttachment.hash && !encodedAttachment.search)
   const imageRestoredAgain = await restoreHistoryImages(imageRest, historyImageMessageId, 'remote-source-id', 1)
   check('历史原图补拉保留原始字节、可通过现有附件记录展示且全量重拉幂等',
     imageRestored && !imageRestoredAgain && imageDownloads === 1 &&

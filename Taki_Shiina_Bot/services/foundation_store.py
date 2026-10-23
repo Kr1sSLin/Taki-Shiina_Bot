@@ -332,11 +332,14 @@ class FoundationStore:
         os.close(fd)
         source = self._connect()
         target = sqlite3.connect(partial)
+        target.row_factory = sqlite3.Row
         try:
             try:
                 source.backup(target)
                 # Backups start closed for model use, even when opened directly.
-                self._set_meta(target, {"schema": 1, "permissions_ready": False})
+                meta = self._meta(target)
+                meta.update(permissions_ready=False, history_generation=new_id())
+                self._set_meta(target, meta)
                 target.commit()
             finally:
                 target.close()
@@ -352,6 +355,7 @@ class FoundationStore:
         with self._transaction() as conn:
             meta = self._meta(conn)
             meta["permissions_ready"] = False
+            meta["history_generation"] = new_id()
             self._set_meta(conn, meta)
 
     def verify_restored_permissions(self, authoritative_sequence: int):

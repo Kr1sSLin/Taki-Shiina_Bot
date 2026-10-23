@@ -132,6 +132,7 @@ export interface UpsertMessageInput {
   status: MessageStatus
   timestamp: number
   errorCode?: string | null
+  authoritative?: boolean
 }
 
 /** `upsertMessage` 的结果。区分「新建」「就地更新」「无变化」三态。 */
@@ -147,16 +148,19 @@ export type UpsertOutcome = 'inserted' | 'updated' | 'unchanged'
 export function upsertMessage(input: UpsertMessageInput): UpsertOutcome {
   const db = getDb()
   const existing = db
-    .prepare('SELECT message_id, status, content FROM chat_messages WHERE message_id = ?')
-    .get(input.messageId) as { message_id: string; status: string; content: string } | undefined
+    .prepare('SELECT * FROM chat_messages WHERE message_id = ?')
+    .get(input.messageId) as MessageRow | undefined
 
   if (existing) {
     // 已经是终态且内容一致 → 不写库（幂等，避免 trigger 抖动）
-    if (existing.status === input.status && existing.content === input.content) return 'unchanged'
+    if (existing.status === input.status && existing.content === input.content && (!input.authoritative ||
+        (existing.timestamp === input.timestamp && existing.content_type === (input.contentType ?? 'text') &&
+         existing.message_type === (input.messageType ?? 'text') && existing.model_provider === (input.modelProvider ?? null) &&
+         existing.error_code === (input.errorCode ?? null)))) return 'unchanged'
     db.prepare(
       `UPDATE chat_messages
           SET status = ?, content = ?, error_code = ?, model_provider = ?,
-              content_type = ?, message_type = ?
+              content_type = ?, message_type = ?, timestamp = ?
         WHERE message_id = ?`
     ).run(
       input.status,
@@ -165,6 +169,7 @@ export function upsertMessage(input: UpsertMessageInput): UpsertOutcome {
       input.modelProvider ?? null,
       input.contentType ?? 'text',
       input.messageType ?? 'text',
+      input.authoritative ? input.timestamp : existing.timestamp,
       input.messageId
     )
     return 'updated'
@@ -282,31 +287,32 @@ interface ListOptions {
   sessionId?: string
   limit: number
   beforeTimestamp?: number
+  beforeMessageId?: string
 }
 
 export function listMessages(opts: ListOptions): ChatMessage[] {
   const db = getDb()
   const sessionId = opts.sessionId ?? PROTOCOL.DEFAULT_SESSION_ID
   // FR-SYNC-8：分隔标记不渲染为普通气泡，查询层直接过滤
-  const rows = opts.beforeTimestamp
+  const rows = opts.beforeTimestamp !== undefined
     ? (db
         .prepare(
           `SELECT * FROM chat_messages
             WHERE session_id = ?
-              AND timestamp < ?
+              AND (timestamp < ? OR (timestamp = ? AND message_id < ?))
               AND TRIM(content) <> ''
               AND content <> ?
-            ORDER BY timestamp DESC
+            ORDER BY timestamp DESC, message_id DESC
             LIMIT ?`
         )
-        .all(sessionId, opts.beforeTimestamp, PROTOCOL.HISTORY_SEPARATOR, opts.limit) as MessageRow[])
+        .all(sessionId, opts.beforeTimestamp, opts.beforeTimestamp, opts.beforeMessageId ?? '', PROTOCOL.HISTORY_SEPARATOR, opts.limit) as MessageRow[])
     : (db
         .prepare(
           `SELECT * FROM chat_messages
             WHERE session_id = ?
               AND TRIM(content) <> ''
               AND content <> ?
-            ORDER BY timestamp DESC
+            ORDER BY timestamp DESC, message_id DESC
             LIMIT ?`
         )
         .all(sessionId, PROTOCOL.HISTORY_SEPARATOR, opts.limit) as MessageRow[])
@@ -380,7 +386,7 @@ export function searchMessages(keyword: string, limit = 100): ChatMessage[] {
       .prepare(
         `SELECT * FROM chat_messages
           WHERE content LIKE ? ESCAPE '\\'
-          ORDER BY timestamp DESC LIMIT ?`
+          ORDER BY timestamp DESC, message_id DESC LIMIT ?`
       )
       .all(`%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`, safeLimit) as MessageRow[]
 
@@ -458,6 +464,22 @@ export function setCursor(key: string, value: number): void {
     `INSERT INTO sync_cursors (key, value) VALUES (?, ?)
      ON CONFLICT (key) DO UPDATE SET value = excluded.value`
   ).run(key, value)
+}
+
+export function getHistoryState(key: string): string | null {
+  return (getDb().prepare('SELECT value FROM history_sync_state WHERE key=?').get(key) as { value: string } | undefined)?.value ?? null
+}
+
+export function setHistoryState(key: string, value: string): void {
+  getDb().prepare('INSERT INTO history_sync_state VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value)
+}
+
+export function listHistoryState(prefix: string): Array<{ key: string; value: string }> {
+  return getDb().prepare('SELECT key,value FROM history_sync_state WHERE substr(key,1,?)=?').all(prefix.length, prefix) as Array<{ key: string; value: string }>
+}
+
+export function deleteHistoryState(key: string): void {
+  getDb().prepare('DELETE FROM history_sync_state WHERE key=?').run(key)
 }
 
 /* -------------------------------------------------------------------------- */

@@ -12,11 +12,7 @@ namespace TKSDesktop.Core.Services.Sync;
 /// 历史与记忆同步（PRD FR-W-SYNC-1..11 / 陷阱 10）。
 ///
 /// <list type="bullet">
-///   <item><b>增量</b>（FR-W-SYNC-3）：<c>since = max(本地最大 timestamp, 游标)</c>，
-///         <c>limit = <see cref="ProtocolConstants.SyncLimit"/></c>（300）。
-///         ⚠️ 只取本地最大时间戳是错的：清空会话后本地最大值为 0，
-///         下一次增量同步会把全部历史回灌（这正是 Android 端踩过的坑，故必须取两者的较大值）；</item>
-///   <item><b>全量</b>（FR-W-SYNC-4）：<c>since = 0</c>；</item>
+///   <item>新服务端以不透明游标分页；全量从 start 幂等重扫。旧服务端保留有限时间戳同步并提示。</item>
 ///   <item><b>落库幂等</b>（FR-W-SYNC-5）：按 <c>messageId</c> 判重，Bot 消息**复用**
 ///         <see cref="MessageSplitter"/> 得到 <c>{{messageId}}_{{index}}</c> 主键；</item>
 ///   <item><b>不截断</b>（FR-W-SYNC-10）：服务端上限 300 只是提示，本地**不得**截断；</item>
@@ -284,53 +280,101 @@ public sealed class SyncService : ISyncService, IHistoryImageRestorer, IDisposab
 
             _logger.LogInformation("开始历史同步 mode={Mode} since={Since}（本地最大 {LocalMax}，游标 {Cursor}）", full ? "full" : "incremental", since, localMax, cursor);
 
-            var call = await _rest
-                .GetChatHistoryPageAsync(since, ProtocolConstants.SyncLimit, ct)
-                .ConfigureAwait(false);
-
-            if (!call.Success || call.Value is null)
-            {
-                await ReportFailureAsync(stage, call.ErrorCode, call.I18nKey, ct).ConfigureAwait(false);
-                return 0;
-            }
-
-            var items = call.Value.Items;
+            var transport = _rest as IHistoryCursorPort;
+            var checkpoints = _repository as IHistoryCheckpointPort;
+            var scope = transport?.HistoryScope;
+            if (transport is not null && scope is null) throw new InvalidOperationException("History sync requires authentication");
+            void CheckAccount() { if (transport is not null && transport.HistoryScope != scope) throw new InvalidOperationException("History account changed"); }
+            var checkpoint = full || checkpoints is null || scope is null ? "start"
+                : await checkpoints.GetHistoryStateAsync(scope, ct).ConfigureAwait(false) ?? "start";
             var written = 0;
-            var maxTimestamp = since;
-
-            foreach (var item in items)
+            var resets = 0;
+            while (true)
             {
-                written += await IngestTimelineItemAsync(item, ct).ConfigureAwait(false);
-                await RestoreHistoryImagesAsync(item, ct).ConfigureAwait(false);
-                maxTimestamp = Math.Max(maxTimestamp, item.Timestamp);
-            }
-
-            foreach (var operation in call.Value.Operations.Where(value => value.Status == "failed"))
-            {
-                foreach (var source in operation.Sources)
+                CheckAccount();
+                var call = transport is not null && checkpoints is not null
+                    ? await transport.GetHistoryCursorPageAsync(checkpoint, ProtocolConstants.SyncLimit, ct).ConfigureAwait(false)
+                    : await _rest.GetChatHistoryPageAsync(since, ProtocolConstants.SyncLimit, ct).ConfigureAwait(false);
+                CheckAccount();
+                if (!call.Success || call.Value is null)
                 {
-                    if (await _repository.GetMessageAsync(source.MessageId, ct).ConfigureAwait(false) is null)
+                    if (call.ErrorCode == "40910" && resets++ == 0) { checkpoint = "start"; continue; }
+                    await ReportFailureAsync(stage, call.ErrorCode, call.I18nKey, ct).ConfigureAwait(false);
+                    return written;
+                }
+                var limited = call.Value.HistorySyncVersion != 1;
+                if (limited && transport is not null && since > 0)
+                {
+                    call = await _rest.GetChatHistoryPageAsync(since, ProtocolConstants.SyncLimit, ct).ConfigureAwait(false);
+                    CheckAccount();
+                    if (!call.Success || call.Value is null) { await ReportFailureAsync(stage, call.ErrorCode, call.I18nKey, ct).ConfigureAwait(false); return written; }
+                }
+                if (!limited && (string.IsNullOrEmpty(call.Value.NextCursor) || string.IsNullOrEmpty(call.Value.DatasetGeneration)))
+                    throw new InvalidDataException("Missing history checkpoint");
+                var items = call.Value.Items;
+                var maxTimestamp = since;
+
+                foreach (var item in items)
+                {
+                    CheckAccount();
+                    var authorityKey = $"{scope}:sql:{item.MessageId}";
+                    if (scope is not null && checkpoints is not null && item.HistorySource == "legacy"
+                        && await checkpoints.GetHistoryStateAsync(authorityKey, ct).ConfigureAwait(false) is not null) continue;
+                    written += await IngestTimelineItemAsync(item, ct).ConfigureAwait(false);
+                    await RestoreHistoryImagesAsync(item, ct, () => transport is null || transport.HistoryScope == scope).ConfigureAwait(false);
+                    CheckAccount();
+                    if (scope is not null && checkpoints is not null && item.HistorySource == "sql")
+                        await checkpoints.SetHistoryStateAsync(authorityKey, "1", ct).ConfigureAwait(false);
+                    maxTimestamp = Math.Max(maxTimestamp, item.Timestamp);
+                }
+
+                foreach (var operation in call.Value.Operations.Where(value => value.Status == "failed"))
+                {
+                    foreach (var source in operation.Sources)
                     {
-                        if (source.Timestamp <= since) continue;
-                        written += await IngestTimelineItemAsync(source, ct).ConfigureAwait(false);
+                        CheckAccount();
+                        if (await _repository.GetMessageAsync(source.MessageId, ct).ConfigureAwait(false) is null)
+                        {
+                            if (limited && source.Timestamp <= since) continue;
+                            written += await IngestTimelineItemAsync(source, ct).ConfigureAwait(false);
+                        }
+                        await _repository.UpdateMessageStatusAsync(source.MessageId, ProtocolConstants.StatusError, "RESEND_NEW_REQUEST", ct).ConfigureAwait(false);
+                        await RestoreHistoryImagesAsync(source, ct, () => transport is null || transport.HistoryScope == scope).ConfigureAwait(false);
                     }
-                    await _repository.UpdateMessageStatusAsync(source.MessageId, ProtocolConstants.StatusError, "RESEND_NEW_REQUEST", ct).ConfigureAwait(false);
-                    await RestoreHistoryImagesAsync(source, ct).ConfigureAwait(false);
+                    foreach (var requestId in operation.RequestIds)
+                    {
+                        await _repository.UpdateMessageStatusAsync(requestId, ProtocolConstants.StatusError, "RESEND_NEW_REQUEST", ct).ConfigureAwait(false);
+                        _ = await _repository.DeleteMessageAsync("pending_" + requestId, ct).ConfigureAwait(false);
+                    }
                 }
-                foreach (var requestId in operation.RequestIds)
+
+                // ⚠️ FR-W-SYNC-10：本地**不得**按 300 截断；服务端条数上限只是提示。
+                CheckAccount();
+                if (limited)
                 {
-                    await _repository.UpdateMessageStatusAsync(requestId, ProtocolConstants.StatusError, "RESEND_NEW_REQUEST", ct).ConfigureAwait(false);
-                    _ = await _repository.DeleteMessageAsync("pending_" + requestId, ct).ConfigureAwait(false);
+                    if (maxTimestamp > 0 && maxTimestamp != cursor)
+                        await _repository.SetCursorAsync(ProtocolConstants.CursorKeyChat, maxTimestamp, ct).ConfigureAwait(false);
+                    await ReportFailureAsync(stage, null, "sync.limited", ct).ConfigureAwait(false);
+                    break;
                 }
+                // 现有异步端口逐条提交；检查点最后写，崩溃只能重放。
+                if (checkpoints is not null && scope is not null)
+                {
+                    await checkpoints.SetHistoryStateAsync(scope, call.Value.NextCursor!, ct).ConfigureAwait(false);
+                    await checkpoints.SetHistoryStateAsync($"{scope}:generation", call.Value.DatasetGeneration!, ct).ConfigureAwait(false);
+                }
+                checkpoint = call.Value.NextCursor!;
+                if (call.Value.Blocked)
+                {
+                    await ReportFailureAsync(stage, null, "sync.waiting", ct).ConfigureAwait(false);
+                    await _dispatcher.InvokeAsync(() => ChatSynchronized?.Invoke(this, EventArgs.Empty)).ConfigureAwait(false);
+                    await Task.Delay(Math.Clamp(call.Value.PollAfterMs, 1000, 30000), ct).ConfigureAwait(false);
+                    continue;
+                }
+                if (!call.Value.HasMore) break;
             }
 
-            // ⚠️ FR-W-SYNC-10：本地**不得**按 300 截断；服务端条数上限只是提示。
-            if (maxTimestamp > 0 && maxTimestamp != cursor)
-            {
-                await _repository.SetCursorAsync(ProtocolConstants.CursorKeyChat, maxTimestamp, ct).ConfigureAwait(false);
-            }
-
-            _logger.LogInformation("历史同步完成 mode={Mode} fetched={Fetched} written={Written} cursor={Cursor}", full ? "full" : "incremental", items.Count, written, maxTimestamp);
+            _logger.LogInformation("历史同步完成 mode={Mode} written={Written}", full ? "full" : "incremental", written);
 
             await _dispatcher.InvokeAsync(() => ChatSynchronized?.Invoke(this, EventArgs.Empty)).ConfigureAwait(false);
 
@@ -401,7 +445,7 @@ public sealed class SyncService : ISyncService, IHistoryImageRestorer, IDisposab
             foreach (var segment in segments)
             {
                 // FR-W-INT-12 / EDGE-W-21：三路到达去重（WS / 降级 REST / 历史补拉）。
-                if (await _repository.IsDeliveredAsync(segment.MessageId, ct).ConfigureAwait(false))
+                if (item.HistorySource != "sql" && await _repository.IsDeliveredAsync(segment.MessageId, ct).ConfigureAwait(false))
                 {
                     continue;
                 }
@@ -413,7 +457,7 @@ public sealed class SyncService : ISyncService, IHistoryImageRestorer, IDisposab
                     segment.Content,
                     ProtocolConstants.StatusReceived,
                     segment.Timestamp,
-                    ModelProvider: item.ModelProvider);
+                    ModelProvider: item.ModelProvider) { Authoritative = item.HistorySource == "sql" };
 
                 var outcome = await _repository.UpsertMessageAsync(record, ct).ConfigureAwait(false);
                 await _repository.MarkDeliveredAsync([segment.MessageId], ct).ConfigureAwait(false);
@@ -436,7 +480,7 @@ public sealed class SyncService : ISyncService, IHistoryImageRestorer, IDisposab
             ProtocolConstants.StatusSent,
             timestamp,
             ModelProvider: item.ModelProvider,
-            MessageType: item.ImageCount > 0 ? "image" : "text");
+            MessageType: item.ImageCount > 0 ? "image" : "text") { Authoritative = item.HistorySource == "sql" };
 
         var userOutcome = await _repository.UpsertMessageAsync(userRecord, ct).ConfigureAwait(false);
         return userOutcome == MessageWriteOutcome.Unchanged ? 0 : 1;
@@ -469,7 +513,7 @@ public sealed class SyncService : ISyncService, IHistoryImageRestorer, IDisposab
     }
 
     /// <summary>Restore exact original bytes after the user row exists, then bind through the normal attachment table.</summary>
-    private async Task RestoreHistoryImagesAsync(TimelineItemDto item, CancellationToken ct)
+    private async Task RestoreHistoryImagesAsync(TimelineItemDto item, CancellationToken ct, Func<bool>? stillCurrent = null)
     {
         if (item.Role != "user" || string.IsNullOrWhiteSpace(item.RequestId) || item.ImageCount == 0)
         {
@@ -510,6 +554,7 @@ public sealed class SyncService : ISyncService, IHistoryImageRestorer, IDisposab
             {
                 throw new InvalidOperationException($"history image download failed at index {index}");
             }
+            if (stillCurrent?.Invoke() == false) throw new InvalidOperationException("History image account changed");
             var bytes = image.Value.Bytes;
             var mime = image.Value.MimeType;
             var valid = mime switch

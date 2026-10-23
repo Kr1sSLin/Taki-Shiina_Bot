@@ -323,8 +323,8 @@ export interface TksApi {
   chat: {
     send(input: { requestId: string; content: string; attachmentIds: string[] }): Promise<void>
     sendViaRest(input: { requestId: string; content: string }): Promise<{ reply: string; message: ChatMessage[] }>
-    listMessages(opts: { limit: number; beforeTimestamp?: number }): Promise<ChatMessage[]>
-    loadOlder(opts: { beforeTimestamp: number; limit: number }): Promise<ChatMessage[]>
+    listMessages(opts: { limit: number; beforeTimestamp?: number; beforeMessageId?: string }): Promise<ChatMessage[]>
+    loadOlder(opts: { beforeTimestamp: number; limit: number; beforeMessageId?: string }): Promise<ChatMessage[]>
     deleteMessage(messageId: string): Promise<void>
     /** FR-CHAT-12：返回清空条数与推进后的同步游标。 */
     clearConversation(): Promise<{ deleted: number; cursor: number }>

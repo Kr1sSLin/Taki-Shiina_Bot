@@ -3,6 +3,7 @@ import base64
 import binascii
 from dataclasses import asdict
 import hashlib
+import json
 import os
 
 from secure_storage import DataCorruptionError
@@ -18,6 +19,10 @@ from services.public_policy import PUBLIC_POLICY_VERSION, PROMPT_VERSIONS
 from services.reply_check import reply_digest, DraftBudgetExceeded
 
 
+class HistoryCursorReset(ValueError):
+    pass
+
+
 class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
     def __init__(self, *args, require_checks=False, **kwargs):
         # Production assembly enables this also for pre-upgrade outbox rows.
@@ -29,6 +34,10 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
             conn.execute("CREATE TABLE IF NOT EXISTS chat_messages (seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,owner TEXT NOT NULL,turn_id TEXT NOT NULL,body BLOB NOT NULL)")
             conn.execute("CREATE INDEX IF NOT EXISTS chat_messages_owner ON chat_messages(owner,seq)")
             conn.execute("CREATE TABLE IF NOT EXISTS chat_owners (owner TEXT PRIMARY KEY,body BLOB NOT NULL)")
+            meta = self._meta(conn)
+            if "history_generation" not in meta:
+                meta["history_generation"] = new_id()
+                self._set_meta(conn, meta)
 
     def _turn(self, conn, turn_id):
         row = conn.execute("SELECT * FROM chat_turns WHERE id=?", (turn_id,)).fetchone()
@@ -445,6 +454,71 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
                             pending.append(body["result"])
                 items.append(item)
             return items, pending
+
+    def history_page(self, owner, legacy, *, cursor="start", limit=200):
+        key = self.cipher.index("owner", owner)
+        legacy = list({str(item["messageId"]): item for item in legacy if str(item.get("userId", "")) == owner}.values())
+        version = self.cipher.index("history-json", json.dumps(legacy, sort_keys=True, ensure_ascii=False))
+        with self._transaction(write=False) as conn:
+            self._require_ready(conn)
+            generation = self._meta(conn)["history_generation"]
+            head = conn.execute("SELECT seq FROM chat_messages WHERE owner=? ORDER BY seq DESC LIMIT 1", (key,)).fetchone()
+            head = head[0] if head else 0
+            if cursor == "start":
+                state = {"v": 1, "generation": generation, "legacy": version, "phase": "legacy", "position": 0, "seq": 0, "end": head}
+            else:
+                try:
+                    if len(cursor) > 4096:
+                        raise ValueError("cursor too long")
+                    state = self.cipher.decrypt(Domain.DERIVED, key, "history-cursor", base64.b64decode(cursor, altchars=b"-_", validate=True))
+                    if (state["v"] != 1 or state["generation"] != generation or state["legacy"] != version
+                            or state["phase"] not in ("legacy", "sql") or not 0 <= state["position"] <= len(legacy)
+                            or not 0 <= state["seq"] <= state["end"] <= head):
+                        raise ValueError("cursor no longer matches dataset")
+                except Exception as error:
+                    raise HistoryCursorReset("cursor_reset_required") from error
+                if state["phase"] == "sql" and state["seq"] == state["end"]:
+                    state["end"] = head
+            items, pending, blocked = [], [], False
+            limit = max(1, min(limit, 500))
+            if state["phase"] == "legacy":
+                # 数组位置仅在完整性校验过的同一 JSON 版本内有效。
+                while state["position"] < len(legacy) and len(items) < limit:
+                    item = legacy[state["position"]]
+                    state["position"] += 1
+                    source_id = self.cipher.index("source-row", key, item["messageId"])
+                    if conn.execute("SELECT 1 FROM chat_messages WHERE owner=? AND id IN (?,?)", (key, item["messageId"], source_id)).fetchone():
+                        continue
+                    items.append({**item, "historySource": "legacy"})
+                if state["position"] == len(legacy):
+                    state["phase"] = "sql"
+            if state["phase"] == "sql" and len(items) < limit:
+                rows = conn.execute("SELECT * FROM chat_messages WHERE owner=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?", (key, state["seq"], state["end"], limit-len(items))).fetchall()
+                for row in rows:
+                    item = self.cipher.decrypt(Domain.SOURCE_MESSAGE, key, row["id"], row["body"])
+                    if item["role"] == "bot":
+                        turn, body = self._turn(conn, row["turn_id"])
+                        if body.get("revoked") or turn["status"] in ("cancelled", "failed"):
+                            state["seq"] = row["seq"]
+                            continue
+                        if not body.get("dispatched_at"):
+                            try:
+                                self._check_reply_delivery(conn, turn, body)
+                            except (VersionConflict, PermissionDenied):
+                                blocked = True
+                                break
+                            pending.append(body["result"])
+                    items.append({**item, "historySource": "sql"})
+                    state["seq"] = row["seq"]
+                # 撤销可能删除尾部行；扫描到空区间也要结束本次快照。
+                if not blocked and not conn.execute("SELECT 1 FROM chat_messages WHERE owner=? AND seq>? AND seq<=? LIMIT 1", (key, state["seq"], state["end"])).fetchone():
+                    state["seq"] = state["end"]
+            next_cursor = base64.urlsafe_b64encode(self.cipher.encrypt(Domain.DERIVED, key, "history-cursor", state)).decode()
+            has_more = state["phase"] == "legacy" or state["seq"] < state["end"]
+            blocked = blocked or (has_more and not items)
+            return {"historySyncVersion": 1, "datasetGeneration": generation, "items": items, "nextCursor": next_cursor,
+                    "hasMore": has_more, "blocked": blocked,
+                    "pollAfterMs": 2000 if blocked else 0}, pending
 
     def read_image(self, owner: str, request_id: str, index: int):
         """Return (MIME, exact raw bytes), or None for an inaccessible image.
