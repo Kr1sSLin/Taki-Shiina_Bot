@@ -11,17 +11,16 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 _base_dir = os.path.dirname(os.path.abspath(__file__))
-if _base_dir not in sys.path:
-    sys.path.insert(0, _base_dir)
+for path in (_base_dir, os.path.dirname(_base_dir)):
+    if path not in sys.path:
+        sys.path.insert(0, path)
+sys.modules.setdefault("unified_api", sys.modules[__name__])
+sys.modules.setdefault("Taki_Shiina_Bot.unified_api", sys.modules[__name__])
 load_dotenv(os.path.join(_base_dir, ".env"))
 
-# Import the legacy applications once. Their route functions keep using the same
-# module-global services, so unified mode does not duplicate business logic/state.
-try:  # project-directory execution (python unified_api.py)
-    import http_api
-    import ws_api
-except ImportError:  # package execution (uvicorn Taki_Shiina_Bot.unified_api:app)
-    from Taki_Shiina_Bot import http_api, ws_api  # type: ignore
+# 兼容入口仍负责装配；统一入口复用相同对象。
+import http_api
+import ws_api
 
 
 def configure_unified_runtime() -> None:
@@ -31,12 +30,8 @@ def configure_unified_runtime() -> None:
 
 configure_unified_runtime()
 
-try:
-    from Taki_Shiina_Bot.api.v1.auth import router as auth_router
-    from Taki_Shiina_Bot.core.config import settings
-except ImportError:  # pragma: no cover - project directory on sys.path only
-    from api.v1.auth import router as auth_router
-    from core.config import settings
+from Taki_Shiina_Bot.api.v1.auth import router as auth_router
+from Taki_Shiina_Bot.core.config import settings
 
 app = FastAPI(title="TakiShiina Bot Unified API")
 http_api.install_http_errors(app)
@@ -104,8 +99,7 @@ _mount_unique(
     include=lambda path, _route: path in {"/ws/chat", "/internal/scene/refresh"},
 )
 
-# Mount ws_api lifecycle hooks exactly once. This retains security validation and
-# starts its four scheduler families once; http_api has no background schedulers.
+# 仅挂接一次 WS 生命周期；可靠任务和积分任务仍由原运行时持有。
 app.router.add_event_handler("startup", ws_api.validate_security_config)
 app.router.add_event_handler("startup", ws_api.on_startup)
 app.router.add_event_handler("shutdown", ws_api.stop_reliable_runtime)
@@ -132,4 +126,4 @@ if __name__ == "__main__":
 
     host = os.getenv("BOT_UNIFIED_HOST", "127.0.0.1")
     port = int(os.getenv("BOT_UNIFIED_PORT", "8000"))
-    uvicorn.run("unified_api:app", host=host, port=port, reload=False, ws_max_size=ws_api.VISION_WS_MAX_SIZE, ws_max_queue=4)
+    uvicorn.run(app, host=host, port=port, reload=False, ws_max_size=ws_api.VISION_WS_MAX_SIZE, ws_max_queue=4)

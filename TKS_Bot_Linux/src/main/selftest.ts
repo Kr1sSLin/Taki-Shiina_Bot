@@ -1299,7 +1299,25 @@ async function run(): Promise<number> {
       msgRepo.getMessage(historyImageMessageId)?.attachments?.length === 1)
 
   /* -------------------------------- 日志 ------------------------------ */
-  const recoverySamples = JSON.parse(readFileSync(join(process.cwd(), '../design/foundation-protocol-samples.json'), 'utf8')).recovery
+  const protocolSamples = JSON.parse(readFileSync(join(process.cwd(), '../design/foundation-protocol-samples.json'), 'utf8'))
+  const recoverySamples = protocolSamples.recovery
+  const requestBeforeSample = services.rest.request
+  const downloadBeforeSample = services.rest.downloadImage
+  try {
+    services.rest.request = async <T>(path: string, options = {}) => path === 'chat/history'
+      ? ({ ...protocolSamples.historySync.pageData, hasMore: false } as T)
+      : requestBeforeSample.call(services.rest, path, options) as Promise<T>
+    services.rest.downloadImage = async () => ({ mimeType: 'image/png', bytes: TINY_PNG })
+    const synced = await services.chat.syncHistory(true)
+    const image = msgRepo.getMessage('client-message')
+    check('P6：共享分页样例经真实同步器落库、恢复图片并保留终态批次',
+      synced.ok && image?.attachments?.length === 2 &&
+      recoverySamples.terminalError.payload.requestIds.every((id: string) => msgRepo.getMessage(id)?.status === 'error'))
+  } finally {
+    services.rest.request = requestBeforeSample
+    services.rest.downloadImage = downloadBeforeSample
+  }
+  await services.chat.syncHistory(true)
   const failedOperation = recoverySamples.historyData.operations[0]
   for (const source of failedOperation.sources) {
     msgRepo.upsertMessage({ messageId: source.messageId, sessionId: 'default_session', role: 'user',

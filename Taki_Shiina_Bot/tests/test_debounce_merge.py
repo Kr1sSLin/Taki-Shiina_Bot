@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+import logging
 from datetime import datetime, timedelta, timezone
 
 from gamification_fixture import setup_crypto_env  # noqa: F401  (夹具已处理 sys.path)
@@ -14,6 +15,7 @@ from services.debounce_merge import (
     buffered_request_ids,
     collect_pending_after_quiet_window,
     merge_buffered_texts,
+    WebSocketSessions,
 )
 
 USER = "u1"
@@ -121,6 +123,29 @@ class CollectPendingTestCase(unittest.TestCase):
         ]
         self.assertEqual(merge_buffered_texts(items), "今天好累啊 陪我一会儿")
         self.assertEqual(buffered_request_ids(items), ["c1", "c2", "c3"])
+
+    def test_worker_is_single_owner_and_shutdown_drains_accepted_text(self):
+        async def exercise():
+            sessions = WebSocketSessions(logging.getLogger(__name__))
+            batches = []
+            async def process(owner):
+                batches.extend(sessions.buffer.pop(owner, []))
+            sessions.buffer[USER] = [{"requestId": "accepted", "content": "保留文字"}]
+            sessions.last_message_at[USER] = datetime.now(timezone.utc)
+            sessions.ensure_worker(USER, process, lambda _: 20, 600)
+            worker = sessions.jobs[USER]
+            sessions.ensure_worker(USER, process, lambda _: 20, 600)
+            self.assertIs(sessions.jobs[USER], worker)
+            sessions.events[USER].set()
+            await asyncio.sleep(0)
+            sessions.schedule_tail(USER, 20)
+            await asyncio.wait_for(sessions.stop(), 1)
+            self.assertEqual(batches, [{"requestId": "accepted", "content": "保留文字"}])
+            self.assertTrue(worker.done())
+            for mapping in (sessions.jobs, sessions.events, sessions.buffer, sessions.last_message_at):
+                self.assertEqual(mapping, {})
+            self.assertFalse(sessions.tail_tasks)
+        asyncio.run(exercise())
 
 
 if __name__ == "__main__":

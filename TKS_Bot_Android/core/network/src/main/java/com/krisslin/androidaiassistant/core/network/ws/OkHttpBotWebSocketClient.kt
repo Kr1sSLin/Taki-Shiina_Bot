@@ -115,7 +115,7 @@ class OkHttpBotWebSocketClient @Inject constructor(
         }
         val timestamp = maxOf(System.currentTimeMillis(), (pendingPings.lastOrNull() ?: 0) + 1)
         pendingPings.addLast(timestamp)
-        if (!webSocket.send("""{"type":"ping","timestamp":$timestamp}""")) {
+        if (!webSocket.send("""{"type":"ping","payload":{"timestamp":$timestamp}}""")) {
             failConnection(webSocket)
             return false
         }

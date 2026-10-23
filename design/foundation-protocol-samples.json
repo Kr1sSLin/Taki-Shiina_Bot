@@ -226,5 +226,97 @@
     "modelOutputTokens": 4096,
     "modelOutputBytes": 16384,
     "tokenCounting": "conservative UTF-8 JSON bytes; not exact tokens"
+  },
+  "heartbeat": {
+    "ping": {
+      "type": "ping",
+      "payload": {
+        "timestamp": 123
+      }
+    },
+    "legacyPing": {
+      "type": "ping",
+      "timestamp": 123
+    },
+    "pong": {
+      "type": "pong",
+      "timestamp": 456,
+      "pingTimestamp": 123
+    },
+    "legacyPong": {
+      "type": "pong",
+      "timestamp": 456
+    }
+  },
+  "historySync": {
+    "pageData": {
+      "historySyncVersion": 1,
+      "datasetGeneration": "sample-generation",
+      "nextCursor": "opaque-synthetic-checkpoint",
+      "hasMore": true,
+      "blocked": false,
+      "pollAfterMs": 0,
+      "items": [
+        {
+          "messageId": "client-message",
+          "requestId": "server-request",
+          "userId": "sample-owner",
+          "role": "user",
+          "content": "[图片]",
+          "timestamp": 42,
+          "imageCount": 2,
+          "historySource": "sql",
+          "contentType": "image"
+        }
+      ],
+      "operations": [
+        {
+          "status": "failed",
+          "requestIds": [
+            "sample-text",
+            "sample-gift"
+          ],
+          "failureCategory": "generation",
+          "refundStatus": "refunded",
+          "retryable": false,
+          "recoveryAction": "resend_new_request",
+          "sources": [
+            {
+              "messageId": "sample-text",
+              "requestId": "sample-text",
+              "role": "user",
+              "content": "保留的文字",
+              "timestamp": 1792627200000,
+              "imageCount": 0,
+              "contentType": "text"
+            },
+            {
+              "messageId": "sample-gift",
+              "requestId": "sample-gift",
+              "role": "user",
+              "content": "☕ 咖啡",
+              "timestamp": 1792627200001,
+              "imageCount": 0,
+              "contentType": "interaction"
+            }
+          ]
+        }
+      ]
+    },
+    "legacyData": {
+      "items": [],
+      "operations": []
+    },
+    "blockedData": {
+      "historySyncVersion": 1,
+      "datasetGeneration": "sample-generation",
+      "nextCursor": "opaque-synthetic-checkpoint",
+      "hasMore": true,
+      "blocked": true,
+      "pollAfterMs": 2000,
+      "items": [],
+      "operations": []
+    },
+    "cursorSemantics": "Opaque owner-bound encrypted checkpoint; sample checkpoint is illustrative, not a server-valid cursor. Persist only after page rows and operations commit. Invalid/expired/generation mismatch: 40910 -> restart from start; no historySyncVersion: limited legacy sync, preserve checkpoint."
   }
 }

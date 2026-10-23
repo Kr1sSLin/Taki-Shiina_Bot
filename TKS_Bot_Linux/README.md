@@ -234,15 +234,15 @@ preload ── window.tks = { auth, connection, chat, images, sync, history,
 | 陷阱 | 处理位置 |
 | --- | --- |
 | `chat.message` 的 `requestId` 读**顶层**字段（不是 `payload`） | `core/chat/chat-service.ts::send` |
-| `pong` 是顶层 `{type,timestamp}`，**没有** `payload` 包装 | `core/network/ws-client.ts::handleFrame` |
+| 新 ping 使用 `payload.timestamp`；pong 仍为顶层 `timestamp`，可选 `pingTimestamp` 匹配当前连接 | `core/network/ws-client.ts::handleFrame` |
 | `http_api` 鉴权失败是 `{"detail":{"code":40101}}`，`code` 不在顶层 | `shared/errors.ts::extractApiErrorCode` |
 | 积分路由业务失败是 **HTTP 200 + `code != 0`**，不能只看 `response.ok` | `core/network/rest-client.ts::unwrap` |
 | `/level/config`、`/points/history`、`/points/makeup-card*` 是 **snake_case** | `shared/protocol.ts` 逐字段手写 DTO（FR-PROTO-1） |
 | WS 无效 token 先 `accept` 再发 `auth.expired`，随后以 **4001** 关闭 | `core/network/ws-client.ts::isAuthFailure` |
-| 互动接口最长约 40s，nginx `proxy_read_timeout=60s` → 客户端超时须 **>60s** | `PROTOCOL.INTERACTION_TIMEOUT_MS = 90s` |
+| 新互动总生成预算 60s、单次 20s；旧请求快照兼容；服务端外层等待 125s | `PROTOCOL.INTERACTION_TIMEOUT_MS = 90s`；超时查询原操作，代理建议 150s，见[当前合同](../design/backend-entrypoints.md) |
 | `INSERT OR REPLACE` 会因外键 CASCADE **删掉附件行** | `message-repository.ts` 全部改用 `UPDATE`（FR-DB-1） |
 | 互动回复三路到达（WS 推送 / HTTP `reply` / 历史补拉）需按 `messageId` 去重 | `delivered_bot_messages` 表（FR-INT-12 / EDGE-L21） |
-| 增量同步 `since` 必须取 `max(本地最大时间戳, 游标)`——只取前者会让「清空会话」后历史立刻回灌 | `chat-service.ts::doSync`（FR-SYNC-3 + FR-CHAT-12） |
+| 新历史 `cursor=start` → 保存不透明 `nextCursor`；仅旧服务端有限回退使用 `since`，不推进新检查点 | `chat-service.ts::doSync`，见[协议与升级顺序](../design/backend-entrypoints.md) |
 | 非法全局快捷键必须报错，不得静默回落默认值 | `shortcuts.ts::update`（FR-SET-7） |
 | 「先发文字、防抖未到就点礼物」→ 服务端摘走缓冲，须用 `mergedRequestIds` 置为已送达 | `chat-service.ts::applyMergedRequestIds`（EDGE-L22） |
 | `iconUrl` 恒为空串，必须回退 emoji 再回退占位图 | 互动菜单（FR-INT-9 / EDGE-L23） |

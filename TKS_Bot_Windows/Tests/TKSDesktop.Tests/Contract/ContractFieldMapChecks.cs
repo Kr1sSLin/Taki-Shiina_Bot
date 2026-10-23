@@ -44,7 +44,7 @@ internal static partial class ContractChecks
         yield return Dto("RestChatRequestDto", typeof(RestChatRequestDto),
             "requestId", "conversationId", "message", "stream", "traceId");
         yield return Dto("RestChatDataDto", typeof(RestChatDataDto),
-            "conversationId", "reply", "messageId", "model", "debounceWindowSec", "timerInstruction");
+            "conversationId", "reply", "messageId", "model", "debounceWindowSec", "timerInstruction", "recoveryAction", "requestIds");
         yield return Dto("TimerInstructionDto", typeof(TimerInstructionDto), "target", "text");
 
         // ---- section 5.3.1 client to server frames ----

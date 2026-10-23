@@ -641,37 +641,45 @@ class InteractionHandler:
             # Disconnecting a waiter does not revoke a paid, accepted operation.
             raise
         except Exception as error:
-            self.logger.warning("interaction operation failed (%s)", type(error).__name__)
-            # 确认挂接可能已提交后才报错，始终重新读取原请求映射。
-            recovered = await runtime.request(user_id, request_id)
-            turn_id = recovered["turn_id"] if recovered else None
-            durable = await runtime.cancel(user_id, turn_id) if turn_id else None
+            durable = await self._recover_reliable(runtime, user_id, item, request_id, result, error)
             if durable is None:
-                charge = await gamification_call(self.points_service.find_ledger_entry, user_id, f"item_send:{user_id}:{request_id}")
-                if charge is not None:
-                    result.refunded = await self._refund_charge(user_id, item, request_id, abs(int(charge["change_amount"])))
-                result.ok = False
-                storage_failure = isinstance(error, FileLockTimeoutError) or not isinstance(error, (ChatFailed, TimeoutError)) or getattr(error, "category", "") == "storage"
-                result.error_code = CODE_STORAGE_FAILED_REFUNDED if storage_failure else CODE_AI_FAILED_REFUNDED
-                result.message = "互动失败，积分已退回" if result.refunded else ("消息保存失败，未扣积分" if charge is None else "互动失败，请联系管理员核对积分")
-                result.balance = await gamification_call(self.points_service.get_balance, user_id)
-                result.fallback_text = DEFAULT_FALLBACK_TEXT if result.refunded else None
-                if recovered:
-                    result.operation = await runtime.record_interaction_failure(user_id, request_id, "storage" if storage_failure else "generation",
-                                                                                "refunded" if result.refunded else "pending" if charge else "none", result.error_code)
-                    result.merged_request_ids = [identity for identity in result.operation["requestIds"] if identity != request_id]
-                await self._push(user_id, {"type": "chat.typing", "payload": {"typing": False}})
-                await self._push(user_id, {"type": "bot.error", "requestId": request_id,
-                                            "payload": {"errorCode": result._error_code_text(), "message": result.message,
-                                                        **(result.operation or {"requestIds": [request_id]})}})
                 return result
-        # The SQL result and required outbox are already committed. No fallible
-        # mirror writes or direct reply pushes may turn this into a refund.
+        return await self._complete_reliable(user_id, metadata, result, durable)
+
+    async def _recover_reliable(self, runtime, user_id, item, request_id, result, error):
+        self.logger.warning("interaction operation failed (%s)", type(error).__name__)
+        # 确认挂接可能已提交后才报错，始终重新读取原请求映射。
+        recovered = await runtime.request(user_id, request_id)
+        turn_id = recovered["turn_id"] if recovered else None
+        durable = await runtime.cancel(user_id, turn_id) if turn_id else None
+        if durable is not None:
+            return durable
+        charge = await gamification_call(self.points_service.find_ledger_entry, user_id, f"item_send:{user_id}:{request_id}")
+        if charge is not None:
+            result.refunded = await self._refund_charge(user_id, item, request_id, abs(int(charge["change_amount"])))
+        result.ok = False
+        storage_failure = isinstance(error, FileLockTimeoutError) or not isinstance(error, (ChatFailed, TimeoutError)) or getattr(error, "category", "") == "storage"
+        result.error_code = CODE_STORAGE_FAILED_REFUNDED if storage_failure else CODE_AI_FAILED_REFUNDED
+        result.message = "互动失败，积分已退回" if result.refunded else ("消息保存失败，未扣积分" if charge is None else "互动失败，请联系管理员核对积分")
+        result.balance = await gamification_call(self.points_service.get_balance, user_id)
+        result.fallback_text = DEFAULT_FALLBACK_TEXT if result.refunded else None
+        if recovered:
+            result.operation = await runtime.record_interaction_failure(user_id, request_id, "storage" if storage_failure else "generation",
+                                                                        "refunded" if result.refunded else "pending" if charge else "none", result.error_code)
+            result.merged_request_ids = [identity for identity in result.operation["requestIds"] if identity != request_id]
+        await self._push(user_id, {"type": "chat.typing", "payload": {"typing": False}})
+        await self._push(user_id, {"type": "bot.error", "requestId": request_id,
+                                    "payload": {"errorCode": result._error_code_text(), "message": result.message,
+                                                **(result.operation or {"requestIds": [request_id]})}})
+        return None
+
+    async def _complete_reliable(self, user_id, metadata, result, durable):
+        # 结果与 outbox 已提交，奖励补偿不能再把成功结果转成退款。
         result.reply = durable["reply"]
         result.message_id = durable["messageId"]
         result.timer_instruction = durable.get("timerInstruction")
         result.attempts = durable.get("attempts", 1)
-        result.merged_request_ids = [identity for identity in durable.get("requestIds", []) if identity != request_id]
+        result.merged_request_ids = [identity for identity in durable.get("requestIds", []) if identity != result.request_id]
         try:
             await self._record_success_activity(user_id, metadata.get("business_date"), result)
         except Exception as error:

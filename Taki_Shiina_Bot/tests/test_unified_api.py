@@ -1,4 +1,4 @@
-"""Unified API composition tests; no lifespan means schedulers never run."""
+"""统一入口装配与隔离的生命周期回归。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,11 @@ import os
 import sys
 import unittest
 import tempfile
+import asyncio
+import importlib
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from collections import Counter
 
@@ -140,6 +145,73 @@ class UnifiedApiTestCase(unittest.TestCase):
         for name in shared:
             with self.subTest(name=name):
                 self.assertIs(getattr(unified_api.http_api, name), getattr(unified_api.ws_api, name))
+        for name in ("http_api", "ws_api", "unified_api"):
+            self.assertIs(importlib.import_module(name), importlib.import_module(f"Taki_Shiina_Bot.{name}"))
+        sessions = unified_api.ws_api.ws_sessions
+        for name, attribute in (("ACTIVE_CONNECTIONS", "connections"), ("message_buffer", "buffer"),
+                                ("debounce_jobs", "jobs"), ("message_events", "events"),
+                                ("last_message_at", "last_message_at"), ("is_processing", "processing"),
+                                ("pending_flush", "pending_flush")):
+            self.assertIs(getattr(unified_api.ws_api, name), getattr(sessions, attribute))
+
+    def test_supported_entrypoints_in_fresh_processes(self):
+        for directory, first in ((REPO_ROOT, "Taki_Shiina_Bot.unified_api"),
+                                 (REPO_ROOT, "Taki_Shiina_Bot.ws_api"),
+                                 (REPO_ROOT, "Taki_Shiina_Bot.http_api"),
+                                 (PACKAGE_ROOT, "unified_api"), (PACKAGE_ROOT, "ws_api"), (PACKAGE_ROOT, "http_api")):
+            with self.subTest(directory=directory, first=first):
+                source = f'''
+import importlib, os, runpy, sys
+runpy.run_path({str(Path(CURRENT_DIR) / 'conftest.py')!r})
+sys.path[:] = [p for p in sys.path if p not in ({REPO_ROOT!r}, {PACKAGE_ROOT!r})]
+sys.path.insert(0, os.getcwd())
+importlib.import_module({first!r})
+u = importlib.import_module("unified_api")
+for name in ("http_api", "ws_api", "unified_api"):
+    assert importlib.import_module(name) is importlib.import_module("Taki_Shiina_Bot." + name)
+    assert getattr(importlib.import_module("Taki_Shiina_Bot"), name) is importlib.import_module(name)
+assert u.http_api.state is u.ws_api.state
+assert importlib.import_module("Taki_Shiina_Bot.main").app
+'''
+                result = subprocess.run([sys.executable, "-c", source], cwd=directory, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_lifecycle_starts_once_stops_and_restarts(self):
+        from unittest.mock import AsyncMock, Mock
+        from services.debounce_merge import WebSocketSessions
+
+        async def exercise():
+            module = unified_api.ws_api
+            runtime = SimpleNamespace(start=Mock(), stop=AsyncMock())
+            started, finished = asyncio.Event(), asyncio.Event()
+            async def scheduler():
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    finished.set()
+            sessions = WebSocketSessions(module.logger)
+            run = AsyncMock(side_effect=scheduler)
+            with patch.object(module, "get_reliable_runtime", return_value=runtime), \
+                 patch.object(module.points_jobs, "run_forever", run), \
+                 patch.object(module, "ws_sessions", sessions), patch.object(module, "_points_task", None):
+                await module.on_startup()
+                await started.wait()
+                task = module._points_task
+                await module.on_startup()
+                self.assertIs(task, module._points_task)
+                self.assertEqual(run.call_count, 1)
+                await module.stop_reliable_runtime()
+                self.assertTrue(finished.is_set())
+                self.assertTrue(task.done())
+                runtime.stop.assert_awaited_once()
+                started.clear()
+                await module.on_startup()
+                await started.wait()
+                self.assertIsNot(task, module._points_task)
+                await module.stop_reliable_runtime()
+                self.assertEqual(run.call_count, 2)
+        asyncio.run(exercise())
 
     def test_interleaved_http_ws_history_saves_do_not_overwrite(self):
         from services.history_store import HistoryStore

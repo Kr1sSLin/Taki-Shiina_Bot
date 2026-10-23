@@ -1,3 +1,9 @@
+import sys
+
+# 项目目录和包入口共用同一模块，不能重复创建仓储与任务。
+sys.modules.setdefault("http_api", sys.modules[__name__])
+sys.modules.setdefault("Taki_Shiina_Bot.http_api", sys.modules[__name__])
+
 from services.public_policy import public_messages, checked_completion
 import asyncio
 import os
@@ -846,4 +852,4 @@ if __name__ == "__main__":
 
     host = os.getenv("BOT_HTTP_HOST", "127.0.0.1")
     port = int(os.getenv("BOT_HTTP_PORT", "8000"))
-    uvicorn.run("http_api:app", host=host, port=port, reload=False)
+    uvicorn.run(app, host=host, port=port, reload=False)

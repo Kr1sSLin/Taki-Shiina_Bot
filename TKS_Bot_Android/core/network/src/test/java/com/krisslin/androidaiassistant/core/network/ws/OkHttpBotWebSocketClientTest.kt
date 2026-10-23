@@ -41,7 +41,7 @@ class OkHttpBotWebSocketClientTest {
             val current = listener(client, 0)
             val old = listener(client, -1)
             assertTrue(client.heartbeatTick(socket))
-            val ping = JsonParser.parseString(socket.frames.last()).asJsonObject.get("timestamp").asLong
+            val ping = JsonParser.parseString(socket.frames.last()).asJsonObject.getAsJsonObject("payload").get("timestamp").asLong
             current.onMessage(socket, """{"type":"pong","pingTimestamp":$ping}""")
             repeat(3) { assertTrue(client.heartbeatTick(socket)) }
             old.onMessage(Socket(), """{"type":"pong"}""")

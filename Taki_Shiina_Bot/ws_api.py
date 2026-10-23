@@ -2,20 +2,21 @@
 WebSocket API for TakiShiina Bot
 实现防抖合并、断线继续处理、在线实时推送
 """
+import sys
+
+# 项目目录和包入口共用同一模块，不能重复创建仓储与任务。
+sys.modules.setdefault("ws_api", sys.modules[__name__])
+sys.modules.setdefault("Taki_Shiina_Bot.ws_api", sys.modules[__name__])
+
 from services.public_policy import public_messages, public_text, checked_completion, require_public_text
 
 import asyncio
-import base64
-import binascii
-import hashlib
 import json
 import logging
-import math
 import os
 import random
 import uuid
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
 
 import httpx
 from dotenv import load_dotenv
@@ -23,7 +24,6 @@ from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocke
 from fastapi.responses import JSONResponse
 import google.generativeai as genai
 from openai import AsyncOpenAI
-from PIL import Image, UnidentifiedImageError
 
 from auth_utils import AuthContext, DeviceEntry, parse_device_tokens, resolve_auth_context
 from app_constants import EMOTIONAL_TRIGGERS, LORE_TRIGGERS, USER_MEMO
@@ -64,7 +64,8 @@ from api.v1.points import router as points_router
 from handlers.interaction_handler import InteractionHandler
 from jobs.points_jobs import PointsJobs
 from services.gamification_service import GamificationService
-from services.debounce_merge import build_user_timeline_items, collect_pending_after_quiet_window
+from services.debounce_merge import WebSocketSessions, build_user_timeline_items, collect_pending_after_quiet_window
+from services.ws_transport import validate_frame as _validate_frame, parse_images
 from services.points_events import (
     level_changed_event,
     makeup_card_changed_event,
@@ -170,13 +171,16 @@ app = FastAPI(title="TakiShiina Bot WebSocket API")
 install_http_errors(app)
 app.add_exception_handler(FileLockTimeoutError, storage_busy_response)
 
-ACTIVE_CONNECTIONS: dict[str, set[WebSocket]] = {}
-message_buffer: dict[str, list[dict]] = {}
-debounce_jobs: dict[str, asyncio.Task] = {}
-message_events: dict[str, asyncio.Event] = {}
-last_message_at: dict[str, datetime] = {}
-is_processing: dict[str, bool] = {}
-pending_flush: dict[str, bool] = {}
+ws_sessions = WebSocketSessions(logger)
+# 保留旧模块的访问入口，所有映射仍由同一个会话对象持有。
+ACTIVE_CONNECTIONS = ws_sessions.connections
+message_buffer = ws_sessions.buffer
+debounce_jobs = ws_sessions.jobs
+message_events = ws_sessions.events
+last_message_at = ws_sessions.last_message_at
+is_processing = ws_sessions.processing
+pending_flush = ws_sessions.pending_flush
+_points_task = None
 
 WORKER_IDLE_TIMEOUT = 600  # 秒：worker 无任何新消息超过该时长则自退出,避免断线后泄漏
 
@@ -441,28 +445,6 @@ async def send_error(
         await websocket.send_text(json.dumps(frame, ensure_ascii=False))
     else:
         await broadcast_json(user_id, frame)
-
-
-def _validate_frame(message):
-    if not isinstance(message, dict) or not isinstance(message.get("type"), str) or not message["type"]:
-        raise ValueError("invalid frame type")
-    if "payload" in message and not isinstance(message["payload"], dict):
-        raise ValueError("invalid payload")
-    if "requestId" in message and (not isinstance(message["requestId"], str) or not message["requestId"].strip()):
-        raise ValueError("invalid request identity")
-    payload = message.get("payload", {})
-    if "clientMessageId" in payload and (not isinstance(payload["clientMessageId"], str) or not payload["clientMessageId"].strip()):
-        raise ValueError("invalid client identity")
-    if message["type"] == "chat.message" and "content" in payload and payload["content"] is not None and not isinstance(payload["content"], str):
-        raise ValueError("invalid content type")
-    if message["type"] != "ping":
-        return None
-    timestamps = [obj["timestamp"] for obj in (message, payload) if "timestamp" in obj]
-    if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in timestamps):
-        raise ValueError("invalid ping timestamp")
-    if len(timestamps) == 2 and timestamps[0] != timestamps[1]:
-        raise ValueError("conflicting ping timestamps")
-    return timestamps[0] if timestamps else None
 
 
 # ================= 互动礼物 · 积分机制 · 等级体系 接入 =================
@@ -846,113 +828,28 @@ async def _process_buffered_messages(user_id: str):
         # 处理期间有新消息到达，给一小段尾批窗口再触发下一轮合并。
         need_tail_flush = pending_flush.pop(user_id, False) or bool(message_buffer.get(user_id))
         if need_tail_flush:
-            asyncio.create_task(_tail_flush_wakeup(user_id))
+            ws_sessions.schedule_tail(user_id, TAIL_DEBOUNCE)
 
 
 async def _tail_flush_wakeup(user_id: str):
-    await asyncio.sleep(TAIL_DEBOUNCE)
-    event = message_events.get(user_id)
-    if event:
-        event.set()
+    await ws_sessions.tail_wakeup(user_id, TAIL_DEBOUNCE)
 
 
 def _ensure_user_worker(user_id: str):
-    old_worker = debounce_jobs.get(user_id)
-    if old_worker and not old_worker.done():
-        return
-
-    message_events.setdefault(user_id, asyncio.Event())
-
-    async def _worker():
-        while True:
-            event = message_events[user_id]
-            try:
-                await asyncio.wait_for(event.wait(), timeout=WORKER_IDLE_TIMEOUT)
-            except asyncio.TimeoutError:
-                # 长时间无消息：worker 自退出并清理状态,避免连接断开后协程泄漏
-                logger.info(f"[防抖] worker 空闲超时退出: user={user_id}")
-                debounce_jobs.pop(user_id, None)
-                message_events.pop(user_id, None)
-                last_message_at.pop(user_id, None)
-                is_processing.pop(user_id, None)
-                pending_flush.pop(user_id, None)
-                message_buffer.pop(user_id, None)
-                return
-            event.clear()
-
-            # 等待“静默窗口”：在窗口内若收到新消息则重置等待。
-            while True:
-                last_at = last_message_at.get(user_id)
-                if not last_at:
-                    break
-                window = calc_debounce_window(user_id)
-                elapsed = (datetime.now(timezone.utc) - last_at).total_seconds()
-                remaining = window - elapsed
-                if remaining <= 0:
-                    break
-
-                try:
-                    await asyncio.wait_for(event.wait(), timeout=remaining)
-                    event.clear()
-                    continue
-                except asyncio.TimeoutError:
-                    break
-
-            if is_processing.get(user_id):
-                pending_flush[user_id] = True
-                continue
-
-            await process_buffered_messages(user_id)
-
-    debounce_jobs[user_id] = asyncio.create_task(_worker())
-    logger.info(f"[防抖] 启动用户 worker: user={user_id}")
+    ws_sessions.ensure_worker(user_id, process_buffered_messages, calc_debounce_window, WORKER_IDLE_TIMEOUT)
 
 
 def schedule_debounce(user_id: str):
     _ensure_user_worker(user_id)
     message_events[user_id].set()
-    buffered_count = len(message_buffer.get(user_id, []))
-    logger.info(
-        f"[防抖] 收到消息，等待静默窗口: user={user_id}, window={calc_debounce_window(user_id)}s, buffered={buffered_count}"
-    )
-
+    logger.info("[防抖] 收到消息，等待静默窗口: user=%s, window=%ss, buffered=%s",
+                user_id, calc_debounce_window(user_id), len(message_buffer.get(user_id, [])))
 
 
 def _parse_ws_images(raw_images):
-    parsed_images = []
-    total_image_bytes = 0
-    if len(raw_images) > VISION_MAX_IMAGE_COUNT:
-        raise ValueError("VISION_IMAGE_COUNT_EXCEEDED", f"单次最多 {VISION_MAX_IMAGE_COUNT} 张图片")
-    for idx, item in enumerate(raw_images):
-        if not isinstance(item, dict):
-            raise ValueError("VISION_INVALID_MIME", f"第 {idx + 1} 张图片格式无效")
-        raw_mime_type = item.get("mimeType", "")
-        mime_type = raw_mime_type.strip().lower() if isinstance(raw_mime_type, str) else ""
-        data_base64 = (item or {}).get("dataBase64", "")
-        if mime_type not in VISION_ALLOWED_MIME:
-            raise ValueError("VISION_INVALID_MIME", f"第 {idx + 1} 张图片格式不支持")
-        if not isinstance(data_base64, str) or len(data_base64) > ((VISION_MAX_IMAGE_MB * 1024 * 1024 + 2) // 3) * 4 + 4:
-            raise ValueError("VISION_IMAGE_TOO_LARGE", f"第 {idx + 1} 张图片超过 {VISION_MAX_IMAGE_MB}MB")
-        try:
-            raw = base64.b64decode(data_base64, validate=True)
-        except (ValueError, binascii.Error):
-            raise ValueError("VISION_INVALID_BASE64", f"第 {idx + 1} 张图片解析失败")
-        if len(raw) > VISION_MAX_IMAGE_MB * 1024 * 1024:
-            raise ValueError("VISION_IMAGE_TOO_LARGE", f"第 {idx + 1} 张图片超过 {VISION_MAX_IMAGE_MB}MB")
-        if not raw:
-            raise ValueError("VISION_INVALID_BASE64", f"第 {idx + 1} 张图片为空")
-        total_image_bytes += len(raw)
-        if total_image_bytes > MAX_INLINE_IMAGE_BYTES:
-            raise ValueError("VISION_IMAGE_TOO_LARGE", "本轮图片总量超过识图模型的请求上限")
-        try:
-            with Image.open(BytesIO(raw)) as decoded:
-                if Image.MIME.get(decoded.format) != mime_type or decoded.width * decoded.height > 50_000_000:
-                    raise ValueError("image format or dimensions are invalid")
-                decoded.verify()
-        except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
-            raise ValueError("VISION_INVALID_MIME", f"第 {idx + 1} 张图片格式无效")
-        parsed_images.append({"mimeType": mime_type, "raw": raw, "dataBase64": base64.b64encode(raw).decode("ascii"), "sha256": hashlib.sha256(raw).hexdigest()})
-    return parsed_images
+    return parse_images(raw_images, max_count=VISION_MAX_IMAGE_COUNT,
+                        max_image_mb=VISION_MAX_IMAGE_MB, max_total_bytes=MAX_INLINE_IMAGE_BYTES,
+                        allowed_mime=VISION_ALLOWED_MIME)
 
 
 @app.websocket("/ws/chat")
@@ -1388,21 +1285,25 @@ async def _delayed_greeting(user_id: str, scenario_type: str, delay_seconds: int
 
 @app.on_event("startup")
 async def on_startup():
+    global _points_task
+    ws_sessions.stopping = False
     install_privacy_logging()
     reliable = get_reliable_runtime() if os.getenv("FOUNDATION_ENABLED", "1") == "1" else None
     if reliable:
         reliable.start()
-    # 积分/等级定时任务：断签扫描与提前提醒、月度补签卡发放、纪念日奖励（PRD §3.2 jobs/）
-    asyncio.create_task(points_jobs.run_forever())
-    # 心情整点刷新（S1）：让「立希当前状态」真正每小时变化
-    logger.info("[启动] 定时问候调度器已启动")
-    logger.info("[启动] 历史分隔调度器已启动")
-    logger.info("[启动] 积分/等级定时任务已启动")
-    logger.info("[启动] 心情整点刷新任务已启动")
+    if _points_task is None or _points_task.done():
+        _points_task = asyncio.create_task(points_jobs.run_forever(), name="points-jobs")
+        logger.info("[启动] 积分/等级定时任务已启动")
 
 
 @app.on_event("shutdown")
 async def stop_reliable_runtime():
+    global _points_task
+    if _points_task is not None:
+        _points_task.cancel()
+        await asyncio.gather(_points_task, return_exceptions=True)
+        _points_task = None
+    await ws_sessions.stop()
     reliable = get_reliable_runtime() if os.getenv("FOUNDATION_ENABLED", "1") == "1" else None
     if reliable:
         await reliable.stop()
@@ -1467,4 +1368,4 @@ if __name__ == "__main__":
 
     host = os.getenv("BOT_WS_HOST", "127.0.0.1")
     port = int(os.getenv("BOT_WS_PORT", "8001"))
-    uvicorn.run("ws_api:app", host=host, port=port, reload=False, ws_max_size=VISION_WS_MAX_SIZE, ws_max_queue=4)
+    uvicorn.run(app, host=host, port=port, reload=False, ws_max_size=VISION_WS_MAX_SIZE, ws_max_queue=4)

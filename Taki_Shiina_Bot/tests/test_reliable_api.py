@@ -437,7 +437,7 @@ class ReliableApiTests(unittest.IsolatedAsyncioTestCase):
         socket = SyntheticSocket(self.ws_token, [{"type": "chat.message", "requestId": "oversized-pixels", "payload": {"images": [
             {"mimeType": "image/jpeg", "dataBase64": base64.b64encode(b"synthetic bytes").decode()}
         ]}}])
-        with patch.object(ws_api, "GEMINI_API_KEY", "synthetic-key"), patch.object(ws_api.Image, "open", side_effect=Image.DecompressionBombError("too many pixels")):
+        with patch.object(ws_api, "GEMINI_API_KEY", "synthetic-key"), patch("services.ws_transport.Image.open", side_effect=Image.DecompressionBombError("too many pixels")):
             await ws_api.websocket_chat(socket)
         self.assertEqual(self.counts()["requests"], 0)
         errors = [frame for frame in socket.sent if frame["type"] == "bot.error"]

@@ -32,6 +32,22 @@ public sealed class NetworkFrameContractTests
         var history = JsonSerializer.Deserialize<Contracts.Dtos.ChatHistoryDataDto>(recovery.GetProperty("historyData").GetRawText(), WsFrameParser.Options)!;
         Assert.Equal("refunded", history.Operations.Single().RefundStatus);
         Assert.Equal("保留的文字", history.Operations.Single().Sources[0].Content);
+        var sync = document.RootElement.GetProperty("historySync");
+        var page = JsonSerializer.Deserialize<Contracts.Dtos.ChatHistoryDataDto>(sync.GetProperty("pageData").GetRawText(), WsFrameParser.Options)!;
+        Assert.Equal(1, page.HistorySyncVersion);
+        Assert.Equal("sample-generation", page.DatasetGeneration);
+        Assert.Equal("opaque-synthetic-checkpoint", page.NextCursor);
+        Assert.True(page.HasMore);
+        Assert.Equal("server-request", page.Items.Single().RequestId);
+        Assert.Equal(2, page.Items.Single().ImageCount);
+        Assert.Equal("sql", page.Items.Single().HistorySource);
+        Assert.Equal("resend_new_request", page.Operations.Single().RecoveryAction);
+        var legacy = JsonSerializer.Deserialize<Contracts.Dtos.ChatHistoryDataDto>(sync.GetProperty("legacyData").GetRawText(), WsFrameParser.Options)!;
+        Assert.Null(legacy.HistorySyncVersion);
+        Assert.Null(legacy.NextCursor);
+        var blocked = JsonSerializer.Deserialize<Contracts.Dtos.ChatHistoryDataDto>(sync.GetProperty("blockedData").GetRawText(), WsFrameParser.Options)!;
+        Assert.True(blocked.Blocked);
+        Assert.Equal(2000, blocked.PollAfterMs);
     }
 
     [Fact]

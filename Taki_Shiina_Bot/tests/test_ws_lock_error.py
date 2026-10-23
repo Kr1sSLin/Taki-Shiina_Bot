@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 import threading
 import time
 import unittest
@@ -78,8 +79,9 @@ class WsFrameTests(unittest.IsolatedAsyncioTestCase):
         return result
 
     async def test_ping_is_connection_local_and_preserves_legacy_shapes(self):
-        for frame, echo in (({"type": "ping", "timestamp": 123}, 123),
-                            ({"type": "ping", "payload": {"timestamp": 456}}, 456),
+        samples = json.loads((Path(__file__).resolve().parents[2] / "design/foundation-protocol-samples.json").read_text(encoding="utf-8"))["heartbeat"]
+        for frame, echo in ((samples["legacyPing"], 123),
+                            (samples["ping"], 123),
                             ({"type": "ping", "timestamp": 0, "payload": {"timestamp": 0}}, 0),
                             ({"type": "ping"}, None)):
             with self.subTest(frame=frame):

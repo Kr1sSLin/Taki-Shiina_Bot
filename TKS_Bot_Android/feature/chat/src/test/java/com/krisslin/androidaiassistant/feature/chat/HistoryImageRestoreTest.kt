@@ -4,6 +4,7 @@ import com.google.gson.JsonParser
 import com.krisslin.androidaiassistant.core.database.repository.ContentType
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.io.File
 
 class HistoryImageRestoreTest {
     @Test
@@ -16,9 +17,13 @@ class HistoryImageRestoreTest {
 
     @Test
     fun `timeline retains distinct download request id and original image count`() {
-        val items = JsonParser.parseString(
-            """[{"messageId":"client-message","requestId":"server-request","role":"user","content":"[图片]","timestamp":42,"imageCount":2,"historySource":"sql"}]"""
-        ).asJsonArray
+        val root = generateSequence(File(System.getProperty("user.dir")!!)) { it.parentFile }
+            .first { File(it, "design/foundation-protocol-samples.json").exists() }
+        val page = JsonParser.parseString(File(root, "design/foundation-protocol-samples.json").readText())
+            .asJsonObject.getAsJsonObject("historySync").getAsJsonObject("pageData")
+        assertEquals(1, page.get("historySyncVersion").asInt)
+        assertEquals("opaque-synthetic-checkpoint", page.get("nextCursor").asString)
+        val items = page.getAsJsonArray("items")
 
         val normalized = TimelineHistoryNormalizer.normalize(items)
 

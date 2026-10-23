@@ -19,6 +19,90 @@ from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 
+class WebSocketSessions:
+    def __init__(self, logger):
+        self.logger = logger
+        self.connections = {}
+        self.buffer = {}
+        self.jobs = {}
+        self.events = {}
+        self.last_message_at = {}
+        self.processing = {}
+        self.pending_flush = {}
+        self.tail_tasks = set()
+        self.stopping = False
+
+    def ensure_worker(self, user_id, process, window_seconds, idle_timeout):
+        previous = self.jobs.get(user_id)
+        if previous and not previous.done():
+            return
+        self.events.setdefault(user_id, asyncio.Event())
+        self.jobs[user_id] = asyncio.create_task(self._worker(user_id, process, window_seconds, idle_timeout))
+        self.logger.info("[防抖] 启动用户 worker: user=%s", user_id)
+
+    async def _worker(self, user_id, process, window_seconds, idle_timeout):
+        event = self.events[user_id]
+        try:
+            while True:
+                if self.stopping:
+                    if not self.buffer.get(user_id):
+                        return
+                    await process(user_id)
+                    continue
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=idle_timeout)
+                except asyncio.TimeoutError:
+                    self.logger.info("[防抖] worker 空闲超时退出: user=%s", user_id)
+                    return
+                event.clear()
+                while not self.stopping:
+                    last_at = self.last_message_at.get(user_id)
+                    if not last_at:
+                        break
+                    remaining = window_seconds(user_id) - (datetime.now(timezone.utc) - last_at).total_seconds()
+                    if remaining <= 0:
+                        break
+                    try:
+                        await asyncio.wait_for(event.wait(), timeout=remaining)
+                        event.clear()
+                    except asyncio.TimeoutError:
+                        break
+                if self.processing.get(user_id):
+                    self.pending_flush[user_id] = True
+                    continue
+                await process(user_id)
+        finally:
+            self.jobs.pop(user_id, None)
+            if not self.buffer.get(user_id):
+                for mapping in (self.events, self.last_message_at, self.processing, self.pending_flush, self.buffer):
+                    mapping.pop(user_id, None)
+
+    async def tail_wakeup(self, user_id, delay):
+        await asyncio.sleep(delay)
+        event = self.events.get(user_id)
+        if event:
+            event.set()
+
+    def schedule_tail(self, user_id, delay):
+        if self.stopping:
+            return
+        task = asyncio.create_task(self.tail_wakeup(user_id, delay))
+        self.tail_tasks.add(task)
+        task.add_done_callback(self.tail_tasks.discard)
+
+    async def stop(self):
+        self.stopping = True
+        for event in self.events.values():
+            event.set()
+        # 已接收的旧入口文字也先处理完，不能靠取消 worker 丢弃缓冲。
+        await asyncio.gather(*list(self.jobs.values()), return_exceptions=True)
+        tails = list(self.tail_tasks)
+        for task in tails:
+            task.cancel()
+        await asyncio.gather(*tails, return_exceptions=True)
+        self.tail_tasks.clear()
+
+
 async def collect_pending_after_quiet_window(
     user_id: str,
     *,
