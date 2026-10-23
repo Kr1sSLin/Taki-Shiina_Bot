@@ -72,7 +72,8 @@ def eligible(data, now, *, domain="user_fact", lore_version=None):
 
 def relevance(query, text):
     """Small deterministic lexical rank; no model is given ineligible bodies."""
-    query, text = normalized(query).replace("用户", ""), normalized(text).replace("用户", "")
+    # 同义归一仅用于排序，不改变事实身份、证据和权限目标匹配。
+    query, text = (normalized(value).replace("用户", "").replace("画画", "绘画") for value in (query, text))
     if not query or not text:
         return 0
     if query in text or text in query:

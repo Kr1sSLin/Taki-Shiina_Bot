@@ -12,7 +12,7 @@ from services.domain_cipher import DomainCipher
 from services.foundation_store import VersionConflict
 from services.reliable_chat_store import ReliableChatStore
 from services.text_generation import TextGenerator
-from services.memory_policy import timestamp
+from services.memory_policy import normalized, relevance, timestamp
 from controlled_model_fixture import checker_response
 
 
@@ -64,19 +64,22 @@ class MemoryGenerationTests(unittest.IsolatedAsyncioTestCase):
         cases = [
             ("exact", "咖啡", {}, True),
             ("shared_synonym", "咖啡我爱喝", {}, True),
-            ("lexical_miss", "画画", {"text": "用户喜欢绘画"}, False),
+            ("lexical_miss", "画画", {"text": "用户喜欢绘画"}, True),
+            ("reverse_synonym", "绘画", {"text": "用户喜欢画画"}, True),
+            ("negated_synonym", "画画", {"text": "用户不喜欢绘画"}, True),
+            ("unrelated", "游泳", {"text": "用户喜欢绘画"}, False),
             ("negation", "咖啡", {"text": "用户不喜欢咖啡"}, True),
-            ("subject", "咖啡", {"subject": "friend"}, False),
-            ("other_owner", "咖啡", {}, False),
-            ("disabled", "咖啡", {}, False),
+            ("subject", "画画", {"text": "用户喜欢绘画", "subject": "friend"}, False),
+            ("other_owner", "画画", {"text": "用户喜欢绘画"}, False),
+            ("disabled", "画画", {"text": "用户喜欢绘画"}, False),
             ("restored", "茶", {}, True),
             ("corrected", "茶", {}, True),
-            ("expired_plan", "咖啡", {"text": "用户昨天计划喝咖啡", "temporal_type": "plan", "temporal_validity": ended}, False),
-            ("expired_state", "咖啡", {"text": "用户昨天想喝咖啡", "temporal_type": "current_state", "temporal_validity": ended}, False),
+            ("expired_plan", "画画", {"text": "用户昨天计划绘画", "temporal_type": "plan", "temporal_validity": ended}, False),
+            ("expired_state", "画画", {"text": "用户昨天想绘画", "temporal_type": "current_state", "temporal_validity": ended}, False),
             ("past_event", "咖啡", {"text": "用户昨天喝过咖啡", "temporal_type": "past_event", "temporal_validity": ended}, True),
-            ("retention", "咖啡", {"text": "用户昨天喝过咖啡", "temporal_type": "past_event", "temporal_validity": ended, "retention_until": now}, False),
-            ("future_plan", "咖啡", {"text": "用户明天计划喝咖啡", "temporal_type": "plan", "temporal_validity": {"from": now + 1, "until": now + 86400}}, False),
-            ("incomplete", "咖啡", {}, False),
+            ("retention", "画画", {"text": "用户昨天绘画", "temporal_type": "past_event", "temporal_validity": ended, "retention_until": now}, False),
+            ("future_plan", "画画", {"text": "用户明天计划绘画", "temporal_type": "plan", "temporal_validity": {"from": now + 1, "until": now + 86400}}, False),
+            ("incomplete", "画画", {"text": "用户喜欢绘画"}, False),
         ]
         for identity, query, changes, selected in cases:
             with self.subTest(case=identity):
@@ -98,7 +101,6 @@ class MemoryGenerationTests(unittest.IsolatedAsyncioTestCase):
                 retrieved = self.store.select_memories("owner", query)
                 self.assertEqual([ref["fact_id"] for ref in retrieved], ["fact"] if selected or identity == "incomplete" else [])
                 if identity == "lexical_miss":
-                    # 资格成立但词面没有重合：保留为召回漏检，不把空结果计作质量通过。
                     self.assertEqual(self.store.read_fact(owner, "fact", for_model=True)["data"]["text"], "用户喜欢绘画")
                 self.calls.clear()
                 self.store.accept([ChatCommand("owner", "request", "client", "device", query)])
@@ -118,11 +120,20 @@ class MemoryGenerationTests(unittest.IsolatedAsyncioTestCase):
                 if identity in ("corrected", "restored"):
                     self.assertNotIn("用户喜欢咖啡", str(self.calls))
                     self.assertEqual(context["formal_memories"][0]["text"], "用户喜欢茶")
+                elif selected:
+                    self.assertEqual(context["formal_memories"][0]["text"], data["text"])
                 elif not selected:
                     self.assertNotIn(data["text"], str(self.calls))
                 self.assertEqual(len(self.calls), 2)
                 self.store.commit_reply(job, snapshot, result)
                 self.assertEqual(self.store.read_fact(owner, "fact")["data"]["weight"], 7 if selected else 6)
+
+    def test_synonym_rank_does_not_merge_identity_or_lose_topic(self):
+        self.assertNotEqual(normalized("用户喜欢画画"), normalized("用户喜欢绘画"))
+        self.assertGreater(relevance("喜欢画画", "用户喜欢绘画"), relevance("喜欢画画", "用户喜欢咖啡"))
+        for query in ("游泳", "花花", "绘声绘色"):
+            with self.subTest(query=query):
+                self.assertEqual(relevance(query, "用户喜欢绘画"), 0)
 
     async def test_disable_while_model_runs_fences_actual_generated_reply(self):
         async def disable(**kwargs):
