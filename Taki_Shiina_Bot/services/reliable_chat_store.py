@@ -599,7 +599,7 @@ class ReliableChatStore(ProactiveMixin, DailyEventMixin, MemoryStore):
         if not body.get("dispatched_at") and body.get("time_state") != self._time_state():
             raise PermissionDenied("reply date changed before first dispatch")
         epoch, _ = self._permission_snapshot(conn, row["owner"])
-        if epoch != body.get("permission_epoch"):
+        if not body.get("dispatched_at") and epoch != body.get("permission_epoch"):
             raise PermissionDenied("undelivered reply permission changed")
         if self._lore_head(conn, row["owner"]) != body.get("lore_version"):
             raise PermissionDenied("official source version changed before delivery")

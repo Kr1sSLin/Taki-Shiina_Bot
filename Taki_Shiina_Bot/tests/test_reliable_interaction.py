@@ -99,6 +99,12 @@ class ReliableInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.rig.timeline, [])
         self.assertEqual(self.rig.history_store.save_count, 0)
         self.assertEqual(len(self.store.history(TEST_USER)), 2)
+        turn_id = self.store.request(TEST_USER, "gift-1")["turn_id"]
+        self.store.mark_dispatched(TEST_USER, self.store.turn_result(TEST_USER, turn_id)["result"])
+        await asyncio.to_thread(self.store.put_fact, TEST_USER, "unused-fact", Domain.USER_FACT,
+                                {"text": "用户喜欢绘画", "enabled": True}, expected_revision=0, targets=())
+        await asyncio.to_thread(self.store.set_permission, TEST_USER, "unused-fact", enabled=False,
+                                expected_revision=1, targets=())
         self.rig.handler._recent_results.clear()
         # Changes after acceptance cannot alter the original template/item snapshot.
         items = self.rig.gamification.config.get_config()["interaction_items"]

@@ -102,6 +102,8 @@ class ControlledChatTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(PUBLIC_POLICY, policy)
             self.assertLessEqual(json_bytes(call), MODEL_INPUT_BYTES)
             self.assertEqual(call["max_tokens"], MODEL_OUTPUT_TOKENS)
+            if "task=reply_check\n" in policy:
+                self.assertEqual(call["extra_body"], {"thinking": {"type": "disabled"}})
         self.assertIn("task=chat_rewrite", self.calls[2]["messages"][0]["content"])
 
     async def test_legacy_stream_is_bounded_before_any_chunk_is_exposed(self):
@@ -214,13 +216,15 @@ class ControlledChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.frames, [])
 
     async def test_checker_cannot_approve_with_missing_dimension_or_unknown_evidence(self):
-        for mutation in ("dimension", "unknown_source", "unsupported_usage", "invented_quote"):
+        for mutation in ("dimension", "unknown_source", "empty_source", "unsupported_usage", "invented_quote"):
             with self.subTest(mutation=mutation):
                 verdict = self.verdict()
                 if mutation == "dimension":
                     verdict["checks"].pop("negation")
                 elif mutation == "unknown_source":
                     verdict["claims"] = [{"text": "哪场？", "source_ids": ["not-permitted"]}]
+                elif mutation == "empty_source":
+                    verdict["claims"] = [{"text": "哪场？", "source_ids": []}]
                 elif mutation == "unsupported_usage":
                     verdict["used_memory_ids"] = ["absent"]
                 else:
@@ -365,6 +369,16 @@ class ControlledChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(result["reply"].encode(), b"".join(frame.get("body", b"") for frame in frames))
         self.assertEqual(frames[0]["status"], 503)
         self.assertEqual(self.store.read_fact("owner", "coffee")["data"]["weight"], 6)
+
+    async def test_dispatched_reply_still_checks_used_memory_permission(self):
+        self.fact()
+        job, snapshot = self.begin(self.command(text="咖啡"))
+        self.store.prepare_memories(snapshot, "咖啡")
+        result = self.store.commit_reply(job, snapshot, {"reply": "我记得你喜欢咖啡。"})
+        self.store.mark_dispatched("owner", result)
+        self.store.set_permission("owner", "coffee", enabled=False, expected_revision=2)
+        with self.assertRaises(VersionConflict):
+            self.store.turn_result("owner", snapshot["turn_id"])
 
     async def test_network_send_and_permission_change_have_process_safe_order(self):
         self.fact()

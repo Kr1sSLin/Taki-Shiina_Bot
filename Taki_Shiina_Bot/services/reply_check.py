@@ -52,7 +52,8 @@ major_events（不得新创重大事件；只在给定官方来源版本范围�
 必须返回JSON对象：approved 布尔值，checks 为上述七项各自的布尔值，violations 为失败规则名数组，
 used_memory_ids 为回复真正使用的正式记忆fact_id数组（不包含仅检索到而未使用的项），
 claims 为所有事实断言数组，每项含 text（回复原句逐字片段）、source_ids（实际支持断言的来源ID数组）。
-寒暄/问句可无断言。用户经历只能来自 current_input 或 formal_memories；官方与原创日常不得互相充当依据。
+寒暄、问句、建议和主观态度不列入 claims，不以空 source_ids 占位。approved=true 时每项 source_ids 必须非空。
+事实断言缺少依据必须拒绝，不得省略该断言或编造来源来通过。用户经历只能来自 current_input 或 formal_memories；官方与原创日常不得互相充当依据。
 interaction_events 是本轮已接受的虚拟礼物，source_id 对应 current_input：简短收下、领情可由该来源支持；不代表现实送餐、见面或已共同吃饭。普通问句与口味偏好不构成已发生的共同经历。
 原创日常只能引用 character_daily 的 event 当前修订：检查 status、outcome、occurred_at、scheduled_at、character_date。
 计划不能说完成；未买不能说买了或挂包上了；旧进行状态只说明记录时在做，不能自动说此刻仍在做。
@@ -64,6 +65,7 @@ interaction_events 是本轮已接受的虚拟礼物，source_id 对应 current_
                 messages=public_messages([{"role": "system", "content": rules}, {"role": "user", "content": json.dumps({"context": context, "result": result}, ensure_ascii=False)}], "reply_check"),
                 temperature=0,
                 response_format={"type": "json_object"},
+                extra_body={"thinking": {"type": "disabled"}},
             ))
         except (VersionConflict, PermissionDenied):
             raise
