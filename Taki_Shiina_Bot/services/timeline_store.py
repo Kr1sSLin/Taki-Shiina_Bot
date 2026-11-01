@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from secure_storage import SecureJsonStore
+from services.async_storage import store_call
 from services.file_lock import FileLockTimeoutError, acquire_file_lock, release_file_lock
 
 
@@ -90,4 +91,4 @@ class TimelineStore:
 
     async def append_async(self, items: list[dict[str, Any]]) -> None:
         """Run the complete blocking append transaction on a worker thread."""
-        await asyncio.to_thread(self.append, items)
+        await store_call(self.append, items)

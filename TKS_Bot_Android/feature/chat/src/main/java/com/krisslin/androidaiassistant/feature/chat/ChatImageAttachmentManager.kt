@@ -5,13 +5,24 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
+import android.util.Log
 import com.krisslin.androidaiassistant.core.database.entity.ChatAttachmentEntity
 import com.krisslin.androidaiassistant.core.database.repository.ChatRepository
 import com.krisslin.androidaiassistant.core.database.repository.ContentType
 import com.krisslin.androidaiassistant.core.database.repository.MessageRole
 import com.krisslin.androidaiassistant.core.database.repository.MessageStatus
+import com.krisslin.androidaiassistant.core.network.api.ChatApi
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
 import java.util.UUID
 
 internal data class OutgoingImage(val ui: ChatAttachmentUi, val dataBase64: String)
@@ -22,11 +33,131 @@ internal data class AttachmentResult<T>(val value: T? = null, val error: String?
 internal class ChatImageAttachmentManager(
     private val context: Context,
     private val chatRepository: ChatRepository,
-    private val sessionId: String
+    private val sessionId: String,
+    private val chatApi: ChatApi
 ) {
     companion object {
         private const val MAX_IMAGE_BYTES = 20 * 1024 * 1024
         const val MAX_IMAGE_TIPS = "图片超过 20MB 限制"
+    }
+
+    private val historyRestoreMutex = Mutex()
+
+    /** Queue absent originals in Room, then download them from the authenticated endpoint. */
+    suspend fun restoreHistoryImages(requestId: String, messageId: String, imageCount: Int, download: Boolean = true) {
+        if (requestId.isBlank() || messageId.isBlank() || imageCount !in 1..3) return
+        suspend fun enqueue(): List<ChatAttachmentEntity> {
+            val existing = chatRepository.getAttachmentsByMessageId(messageId)
+            val localCount = existing.count { !it.attachmentId.startsWith("remote_") }
+            val existingIds = existing.map { it.attachmentId }.toSet()
+            val remoteIndices = (0 until imageCount).filter { historyAttachmentId(messageId, it) in existingIds }.toSet()
+            val missing = HistoryImageRestorePolicy.missingIndices(imageCount, localCount == imageCount, remoteIndices).map { index ->
+                ChatAttachmentEntity(
+                    attachmentId = historyAttachmentId(messageId, index),
+                    messageId = messageId,
+                    sessionId = sessionId,
+                    mimeType = "",
+                    localUri = "pending-history:///${Uri.encode(requestId)}/$index",
+                    fileSize = 0,
+                    uploadState = "pending_history",
+                    timestamp = System.currentTimeMillis()
+                )
+            }
+            chatRepository.saveMessageAttachments(missing)
+            return existing + missing
+        }
+        if (!download) { enqueue(); return }
+        historyRestoreMutex.withLock {
+            for (pending in enqueue()) {
+                if (pending.uploadState == "pending_history") tryDownloadHistoryImage(pending)
+            }
+        }
+    }
+
+    /** Retry persisted misses even after the incremental timeline cursor has passed them. */
+    suspend fun retryPendingHistoryImages(accepts: suspend (String) -> Boolean = { true }, stillCurrent: () -> Boolean = { true }) {
+        historyRestoreMutex.withLock {
+            for (pending in chatRepository.getPendingHistoryAttachments(sessionId)) {
+                if (accepts(pending.messageId) && stillCurrent()) tryDownloadHistoryImage(pending, stillCurrent)
+            }
+        }
+    }
+
+    private suspend fun tryDownloadHistoryImage(pending: ChatAttachmentEntity, stillCurrent: () -> Boolean = { true }) {
+        runCatching {
+            val segments = Uri.parse(pending.localUri).pathSegments
+            if (segments.size != 2) throw IOException("Invalid pending image reference")
+            val requestId = segments[0]
+            val index = segments[1].toIntOrNull()?.takeIf { it in 0..2 }
+                ?: throw IOException("Invalid image index")
+            val response = chatApi.historyImage(requestId, index)
+            if (!stillCurrent()) { response.body()?.close(); response.errorBody()?.close(); return }
+            if (!response.isSuccessful) {
+                response.errorBody()?.close()
+                throw IOException("Image download returned HTTP ${response.code()}")
+            }
+            val body = response.body() ?: throw IOException("Empty image response")
+            val (mimeType, bytes) = body.use {
+                val mime = it.contentType()?.let { type -> "${type.type}/${type.subtype}" }
+                    ?: throw IOException("Missing image MIME")
+                if (mime != "image/jpeg" && mime != "image/png") throw IOException("Unsupported image MIME")
+                if (it.contentLength() > MAX_IMAGE_BYTES) throw IOException("Image exceeds 20MB")
+                val output = ByteArrayOutputStream()
+                it.byteStream().use { stream ->
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        val read = stream.read(buffer)
+                        if (read < 0) break
+                        if (output.size() + read > MAX_IMAGE_BYTES) throw IOException("Image exceeds 20MB")
+                        output.write(buffer, 0, read)
+                    }
+                }
+                mime to output.toByteArray()
+            }
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || bounds.outMimeType != mimeType) {
+                throw IOException("Invalid image payload")
+            }
+            val dir = File(context.filesDir, "chat_attachments/history").apply { mkdirs() }
+            val extension = if (mimeType == "image/png") "png" else "jpg"
+            val target = File(dir, "history_${java.util.UUID.randomUUID()}.$extension")
+            val temp = File.createTempFile("history_", ".$extension", dir)
+            try {
+                FileOutputStream(temp).use { output ->
+                    output.write(bytes)
+                    output.fd.sync()
+                }
+                try {
+                    Files.move(temp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                } catch (_: AtomicMoveNotSupportedException) {
+                    Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                }
+            } finally {
+                temp.delete()
+            }
+            chatRepository.saveMessageAttachments(
+                listOf(
+                    pending.copy(
+                        mimeType = mimeType,
+                        localUri = Uri.fromFile(target).toString(),
+                        fileSize = bytes.size.toLong(),
+                        width = bounds.outWidth,
+                        height = bounds.outHeight,
+                        uploadState = "downloaded"
+                    )
+                )
+            )
+        }.onFailure { error ->
+            if (error is CancellationException) throw error
+            Log.w("ChatImageAttachments", "history image download failed")
+        }
+    }
+
+    private fun historyAttachmentId(messageId: String, index: Int): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("$messageId:$index".toByteArray(Charsets.UTF_8))
+        return "remote_${digest.joinToString("") { "%02x".format(it) }}"
     }
 
     suspend fun prepare(text: String, selectedImages: List<ChatAttachmentUi>): AttachmentResult<OutgoingPayload> {

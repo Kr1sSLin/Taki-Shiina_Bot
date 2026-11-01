@@ -1,6 +1,9 @@
 import asyncio
 import os
 import traceback
+from services.public_policy import public_text, require_public_text
+from services.input_budget import MODEL_INPUT_BYTES, VISION_OUTPUT_BYTES, InputTooLong, ModelBudgetExceeded, validate_text, validate_output
+from services.vision_limits import MAX_INLINE_IMAGE_BYTES
 
 import PIL.Image
 
@@ -58,7 +61,10 @@ def create_handle_photo_handler(
                     recent_context += f"{msg['role']}: {msg['content']}\n"
 
             caption = update.message.caption or ""
+            validate_text(caption)
             photo_file = await update.message.photo[-1].get_file()
+            if photo_file.file_size > MAX_INLINE_IMAGE_BYTES:
+                raise InputTooLong("图片超过识图预算")
             file_path = "temp_user_photo.jpg"
             await photo_file.download_to_drive(file_path)
 
@@ -67,7 +73,7 @@ def create_handle_photo_handler(
             os.remove(file_path)
 
             vision_prompt = (
-                f"你是椎名立希。用户发了图，说：'{caption}'。"
+                public_text("image_reply") + "\n" + f"你是椎名立希。用户发了图，说：'{caption}'。"
                 f"语境：{recent_context}。请以立希口吻回复。"
             )
 
@@ -75,11 +81,18 @@ def create_handle_photo_handler(
                 await update.message.reply_text("看不清。")
                 return
 
-            response = await asyncio.to_thread(
+            require_public_text(vision_prompt)
+            if len(vision_prompt.encode("utf-8")) > MODEL_INPUT_BYTES:
+                raise ModelBudgetExceeded("识图输入超过预算")
+            response = await asyncio.wait_for(asyncio.to_thread(
                 genai_client.models.generate_content,
                 model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
                 contents=[vision_prompt, img],
-            )
+                config={"max_output_tokens": 1024, "http_options": {"timeout": 20000, "retry_options": {"attempts": 1}}},
+            ), timeout=20)
+            if any(getattr(candidate, "finish_reason", None) == "MAX_TOKENS" for candidate in getattr(response, "candidates", [])):
+                raise ModelBudgetExceeded("识图输出未完整结束")
+            validate_output(response.text or "", VISION_OUTPUT_BYTES)
 
             filtered_reply = sanitize_taki_reply(response.text)
             await update.message.reply_text(inject_emojis(filtered_reply))

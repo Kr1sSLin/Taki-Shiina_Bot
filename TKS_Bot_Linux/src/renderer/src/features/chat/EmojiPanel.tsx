@@ -84,7 +84,13 @@ export function EmojiPanel({ onPick }: EmojiPanelProps): JSX.Element {
                 title={emoji}
                 onClick={() => onPick(emoji)}
               >
-                {emoji}
+                <img
+                  src={`./emoji/${Array.from(emoji).filter((char) => char.codePointAt(0) !== 0xfe0f).map((char) => char.codePointAt(0)!.toString(16)).join('-')}.png`}
+                  alt=""
+                  width={24}
+                  height={24}
+                  draggable={false}
+                />
               </button>
             ))}
           </div>

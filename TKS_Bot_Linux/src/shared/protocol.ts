@@ -74,7 +74,11 @@ export type ChatRole = 'user' | 'bot' | 'system'
 
 /** 服务端 timeline 记录（`http_api.py::chat_history` / `/chat/history`）。 */
 export interface TimelineItem {
+  historySource?: 'legacy' | 'sql'
   messageId: string
+  /** Reliable image source ID; omitted on older timeline rows. */
+  requestId?: string
+  imageCount?: number
   userId: string
   role: ChatRole
   content: string
@@ -83,6 +87,13 @@ export interface TimelineItem {
 
 export interface ChatHistoryResponse {
   items: TimelineItem[]
+  operations?: ChatOperation[]
+  historySyncVersion?: number
+  datasetGeneration?: string
+  nextCursor?: string
+  hasMore?: boolean
+  blocked?: boolean
+  pollAfterMs?: number
 }
 
 export interface UserFact {
@@ -90,10 +101,52 @@ export interface UserFact {
   userId: string
   fact: string
   timestamp: number
+  revision?: number
+  revisionId?: string | null
+  permissionVersion?: number
+  modelPermission?: 'allowed' | 'blocked'
+  stage?: 'candidate' | 'formal'
+  truthStatus?: 'pending' | 'accepted' | 'disputed' | 'rejected'
+  revisionStatus?: 'active' | 'superseded' | 'retracted'
+  score?: number
+  sourceMessageId?: string | null
+  firstRecordedAt?: number | null
+  temporalValidity?: Record<string, unknown> | null
+  action?: string
+  eventId?: string
+  sequence?: number
 }
 
 export interface MemoryFactsResponse {
   items: UserFact[]
+}
+
+export interface MemoryDetail {
+  factId: string
+  domain: string
+  content: string
+  revision: number
+  revisionId: string
+  permissionVersion: number
+  modelPermission: 'allowed' | 'blocked'
+  stage: string
+  truthStatus: string
+  score: number
+  sources: Array<{ sourceMessageId: string; fragment: string }>
+  temporalValidity: Record<string, unknown> | null
+}
+
+export interface QueuedMemoryPermission {
+  operationId: string
+  factId: string
+  enabled: boolean
+  expectedRevision: number
+  state: 'pending' | 'conflict'
+}
+
+export interface ProactiveStatus {
+  enabled: boolean
+  [key: string]: unknown
 }
 
 export interface CityResponse {
@@ -221,6 +274,20 @@ export interface BotErrorPayload {
   message: string
   requestIds: string[]
   timestamp: number
+  retryable?: boolean
+  recoveryAction?: string
+  refundStatus?: string
+  failureCategory?: string
+}
+
+export interface ChatOperation {
+  status: string
+  requestIds: string[]
+  retryable?: boolean
+  recoveryAction?: string
+  refundStatus?: string
+  failureCategory?: string
+  sources?: TimelineItem[]
 }
 
 /* ---- 积分 / 等级 / 补签卡 WS 事件（§11.1，共 5 个） ---- */
@@ -293,6 +360,7 @@ export interface WsEchoFrame {
   type: 'chat.message.echo'
   requestId: string
   payload: {
+    clientMessageId?: string
     content: string
     imageCount: number
     timestamp: number

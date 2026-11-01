@@ -1,5 +1,11 @@
 namespace TKSDesktop.Core.Services.Ports;
 
+public interface IHistoryCheckpointPort
+{
+    Task<string?> GetHistoryStateAsync(string key, CancellationToken ct = default);
+    Task SetHistoryStateAsync(string key, string value, CancellationToken ct = default);
+}
+
 /// <summary>
 /// 消息写入结果：区分「新建」「就地更新」「无变化」三态。
 /// **必须**区分 <c>Updated</c> 与 <c>Unchanged</c>：历史同步把一条 <c>error</c> 消息修复成 <c>sent</c>
@@ -15,6 +21,12 @@ public enum MessageWriteOutcome
 
     /// <summary>已存在且给定字段无变化。</summary>
     Unchanged,
+}
+
+/// <summary>Transactional memory event projection.</summary>
+public interface IMemoryEventRepositoryPort
+{
+    Task<int> ApplyFactPageAsync(TKSDesktop.Contracts.Dtos.MemoryFactsDataDto page, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -39,6 +51,7 @@ public sealed record ChatMessageRecord(
     string? ModelProvider = null,
     string? MessageType = null)
 {
+    public bool Authoritative { get; init; }
     /// <summary>
     /// 附件绝对路径集合（默认空集合，调用方无需 null 检查）。
     /// 仅在本端自己产生的消息（乐观发送、流式落库）由调用方直接填充，

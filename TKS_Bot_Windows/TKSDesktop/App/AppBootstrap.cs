@@ -24,7 +24,7 @@ namespace TKSDesktop.App;
 public static class AppBootstrap
 {
     /// <summary>进程级组合根（供自检与启动流程共用）。</summary>
-    public static ServiceProvider BuildServiceProvider(CliOptions options, AppPaths paths)
+    public static ServiceProvider BuildServiceProvider(CliOptions options, AppPaths paths, SingleInstanceGuard? instanceGuard = null)
     {
         var services = new ServiceCollection();
 
@@ -96,7 +96,8 @@ public static class AppBootstrap
         TKSDesktop.Core.Services.Registration.AddDomainServices(services);
         TKSDesktop.ViewModels.Registration.AddViewModels(services);
         services.AddSingleton<DesktopRuntime>();
-        services.AddSingleton<SingleInstanceGuard>();
+        if (instanceGuard is null) services.AddSingleton<SingleInstanceGuard>();
+        else services.AddSingleton(instanceGuard);
 
         return services.BuildServiceProvider(new ServiceProviderOptions
         {
@@ -111,6 +112,17 @@ public static class AppBootstrap
     /// </summary>
     public static int Run(System.Windows.Application app, CliOptions options)
     {
+        // Duplicate launches only send a wake-up request. They must not construct
+        // the runtime or open shared state before discovering the existing owner.
+        using var singleInstance = new SingleInstanceGuard();
+        if (!singleInstance.TryAcquire())
+        {
+            var activation = options.Notification;
+            _ = singleInstance.NotifyExistingInstanceAsync(new ActivateRequest(
+                ActivateRequest.ActionActivate, activation?.Action, activation?.MessageId)).GetAwaiter().GetResult();
+            return 0;
+        }
+
         var paths = new AppPaths();
         // 便携版不可写时必须明确报错，不得静默回退到 %APPDATA%（§14.4）
         if (paths.ValidatePortableWritable() is { } portableError)
@@ -125,7 +137,7 @@ public static class AppBootstrap
 
         paths.EnsureDirectories();
 
-        var provider = BuildServiceProvider(options, paths);
+        var provider = BuildServiceProvider(options, paths, singleInstance);
         var logger = provider.GetRequiredService<ILoggerFactory>().CreateLogger("App.Bootstrap");
         logger.LogInformation("启动 {Product} {Version}（portable={Portable}, hidden={Hidden}）",
             AppVersion.ProductName, AppVersion.Informational, paths.IsPortable, options.Hidden);
@@ -138,35 +150,33 @@ public static class AppBootstrap
 
         provider.GetRequiredService<SettingsStore>().Load();
 
-        var singleInstance = provider.GetRequiredService<SingleInstanceGuard>();
-        if (!singleInstance.TryAcquire())
-        {
-            var activation = options.Notification;
-            _ = singleInstance.NotifyExistingInstanceAsync(new ActivateRequest(
-                ActivateRequest.ActionActivate, activation?.Action, activation?.MessageId)).GetAwaiter().GetResult();
-            provider.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            return 0;
-        }
-
         singleInstance.ActivateRequested += (_, request) =>
             provider.GetRequiredService<IUiDispatcher>().Invoke(() =>
             {
-                if (provider.GetRequiredService<Core.Services.IAuthService>().State == Core.Services.AuthState.Authenticated
-                    && WindowFactory.MainHandle is { } main)
+                logger.LogInformation("收到重复启动唤回请求");
+                try
                 {
-                    if (!string.IsNullOrWhiteSpace(request.MessageId))
+                    if (provider.GetRequiredService<Core.Services.IAuthService>().State == Core.Services.AuthState.Authenticated
+                        && WindowFactory.MainHandle is { } main)
                     {
-                        main.ScrollToMessage(request.MessageId);
+                        if (!string.IsNullOrWhiteSpace(request.MessageId))
+                        {
+                            main.ScrollToMessage(request.MessageId);
+                        }
+                        else
+                        {
+                            main.ActivateAndFocus();
+                        }
                     }
                     else
                     {
-                        main.ActivateAndFocus();
+                        WindowFactory.PendingMessageId = request.MessageId;
+                        WindowFactory.ShowLogin(provider, noticeKey: null);
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    WindowFactory.PendingMessageId = request.MessageId;
-                    WindowFactory.LoginHandle?.Show(null);
+                    logger.LogError(ex, "窗口唤回失败");
                 }
             });
         singleInstance.StartListening();

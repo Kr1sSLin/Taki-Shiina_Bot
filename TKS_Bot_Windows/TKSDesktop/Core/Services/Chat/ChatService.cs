@@ -69,6 +69,8 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
     private readonly ILogger<ChatService> _logger;
     private readonly IAuthService? _auth;
     private readonly IAttachmentPort? _attachments;
+    private readonly IHistoryImageRestorer? _imageRestorer;
+    private readonly IMediaService? _media;
     private readonly TimeProvider _timeProvider;
 
     private readonly StreamingAccumulator _streaming;
@@ -108,7 +110,9 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         TimeProvider? timeProvider = null,
         IAuthService? authService = null,
         IAttachmentPort? attachmentPort = null,
-        IRestPort? rest = null)
+        IRestPort? rest = null,
+        IHistoryImageRestorer? imageRestorer = null,
+        IMediaService? media = null)
     {
         ArgumentNullException.ThrowIfNull(repository);
         ArgumentNullException.ThrowIfNull(wss);
@@ -126,6 +130,8 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         _logger = logger;
         _auth = authService;
         _attachments = attachmentPort;
+        _imageRestorer = imageRestorer;
+        _media = media;
         _timeProvider = timeProvider ?? TimeProvider.System;
 
         _streaming = new StreamingAccumulator(_timeProvider);
@@ -199,6 +205,8 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         }
 
         var content = (text ?? string.Empty).Trim();
+        if (ProtocolConstants.ChatInputTooLong(content))
+            return new SendResult(false, "INPUT_TOO_LONG", "error.server.INPUT_TOO_LONG");
         if (content.Length == 0 && attachments.Count == 0)
         {
             // 文本为空且无附件 → 本地先拒绝，避免服务端 EMPTY_MESSAGE 往返。
@@ -240,6 +248,8 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         }
 
         var row = BuildUserRecord(requestId, text.Trim(), false, ProtocolConstants.StatusSending, null);
+        if (ProtocolConstants.ChatInputTooLong(text.Trim()))
+            return new(false, "INPUT_TOO_LONG", "error.server.INPUT_TOO_LONG");
         await _repository.UpsertMessageAsync(row).ConfigureAwait(false);
         await RaiseMessageChangedAsync(ToView(row)).ConfigureAwait(false);
         var result = await _rest.SendChatAsync(new RestChatRequestDto
@@ -250,8 +260,9 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
             Stream = false,
         }).ConfigureAwait(false);
         var status = result.Success ? ProtocolConstants.StatusSent : ProtocolConstants.StatusError;
-        await _repository.UpdateMessageStatusAsync(requestId, status, result.ErrorCode).ConfigureAwait(false);
-        await RaiseMessageChangedAsync(ToView(row with { Status = status, ErrorCode = result.ErrorCode })).ConfigureAwait(false);
+        var errorCode = ProtocolConstants.ChatRecoveryCode(result.Value?.RecoveryAction, result.ErrorCode ?? "SEND_FAILED");
+        await _repository.UpdateMessageStatusAsync(requestId, status, result.Success ? null : errorCode).ConfigureAwait(false);
+        await RaiseMessageChangedAsync(ToView(row with { Status = status, ErrorCode = result.Success ? null : errorCode })).ConfigureAwait(false);
         if (!result.Success || result.Value is null)
         {
             return new(false, result.ErrorCode, result.I18nKey);
@@ -295,6 +306,21 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         {
             await RaiseNoticeAsync(NoticeNotConnected).ConfigureAwait(false);
             return new SendResult(false, null, NoticeNotConnected);
+        }
+
+        if (row.ErrorCode is "EDIT_INPUT" or "POLL_STATUS")
+            return new SendResult(false, row.ErrorCode, "error.server.INPUT_TOO_LONG");
+        if (row.ErrorCode == "RESEND_NEW_REQUEST")
+        {
+            var drafts = new List<AttachmentDraft>();
+            foreach (var path in row.AttachmentPaths)
+            {
+                if (_media is null) return new SendResult(false, null, ErrorCatalog.UnknownI18nKey);
+                var imported = await _media.AddFromFileAsync(path).ConfigureAwait(false);
+                if (!imported.Success || imported.Draft is null) return new SendResult(false, null, imported.ErrorI18nKey);
+                drafts.Add(imported.Draft);
+            }
+            return await SendAsync(Guid.NewGuid().ToString("N"), row.Content, drafts).ConfigureAwait(false);
         }
 
         await _repository
@@ -454,27 +480,30 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
             return;
         }
 
-        var existing = await _repository.GetMessageAsync(requestId).ConfigureAwait(false);
+        var messageId = string.IsNullOrWhiteSpace(payload.ClientMessageId) ? requestId : payload.ClientMessageId;
+        var existing = await _repository.GetMessageAsync(messageId).ConfigureAwait(false);
         if (existing is not null)
         {
             // 幂等：同一 requestId 只保留一条；仍在 sending 时补一次终态（其它设备已确认送达）。
             if (string.Equals(existing.Status, ProtocolConstants.StatusSending, StringComparison.Ordinal))
             {
                 await _repository
-                    .UpdateMessageStatusAsync(requestId, ProtocolConstants.StatusSent, null)
+                    .UpdateMessageStatusAsync(messageId, ProtocolConstants.StatusSent, null)
                     .ConfigureAwait(false);
-                await RaiseRowAsync(requestId).ConfigureAwait(false);
+                await RaiseRowAsync(messageId).ConfigureAwait(false);
             }
+
+            await RestoreEchoImagesQuietlyAsync(requestId, messageId, payload.ImageCount).ConfigureAwait(false);
 
             return;
         }
 
         var hasImages = payload.ImageCount > 0;
         var record = new ChatMessageRecord(
-            requestId,
+            messageId,
             "user",
-            hasImages ? "image" : "text",
-            payload.Content ?? string.Empty,
+            hasImages ? (string.IsNullOrWhiteSpace(payload.Content) ? "image" : "mixed") : "text",
+            hasImages && string.IsNullOrWhiteSpace(payload.Content) ? ProtocolConstants.ImagePlaceholder : payload.Content ?? string.Empty,
             ProtocolConstants.StatusSent,
             payload.Timestamp > 0 ? payload.Timestamp : NowMs,
             MessageType: hasImages ? "image" : "text");
@@ -482,7 +511,22 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         await _repository.UpsertMessageAsync(record).ConfigureAwait(false);
         await RaiseMessageChangedAsync(ToView(record)).ConfigureAwait(false);
 
+        await RestoreEchoImagesQuietlyAsync(requestId, messageId, payload.ImageCount).ConfigureAwait(false);
+
         _logger.LogInformation("已入库其它设备的回声 requestId={RequestId} images={ImageCount}", requestId, payload.ImageCount);
+    }
+
+    private async Task RestoreEchoImagesQuietlyAsync(string requestId, string messageId, int imageCount)
+    {
+        if (imageCount < 1 || _imageRestorer is null) return;
+        try
+        {
+            await _imageRestorer.RestoreEchoImagesAsync(requestId, messageId, imageCount).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "回声图片补拉失败 requestId={RequestId}", requestId);
+        }
     }
 
     /// <summary>`chat.queued`（FR-W-CHAT-15 / EDGE-W-17）：窗口秒数**必须**取服务端下发值。</summary>
@@ -581,6 +625,12 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
         await _frameGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            if (!success && response?.RecoveryAction == "resend_new_request")
+            {
+                await HandleBotErrorAsync(new(requestId, new() { ErrorCode = errorCode, Message = response.MessageText,
+                    RequestIds = response.RequestIds ?? response.MergedRequestIds, RecoveryAction = response.RecoveryAction })).ConfigureAwait(false);
+                return;
+            }
             var existing = await _repository.GetMessageAsync(requestId).ConfigureAwait(false);
             // A successful WS response can precede a lost HTTP response.
             if (success || existing?.Status != ProtocolConstants.StatusSent)
@@ -767,7 +817,7 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
             }
 
             _ = await _repository
-                .UpdateMessageStatusAsync(requestId, ProtocolConstants.StatusError, code)
+                .UpdateMessageStatusAsync(requestId, ProtocolConstants.StatusError, ProtocolConstants.ChatRecoveryCode(payload.RecoveryAction, code))
                 .ConfigureAwait(false);
             await RaiseRowAsync(requestId).ConfigureAwait(false);
         }
@@ -1156,7 +1206,8 @@ public sealed class ChatService : IChatService, IInteractionDelivery, IDisposabl
             await _dispatcher.InvokeAsync(() =>
             {
                 // FR-W-NOTI-4：带上 messageId，点击后可定位到该条消息。
-                _notifications.Notify(category, title, first.Content, first.MessageId);
+                _notifications.Notify(category, title, first.Content,
+                    string.IsNullOrWhiteSpace(payload.MessageId) ? first.MessageId : payload.MessageId);
             }).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

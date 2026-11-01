@@ -12,11 +12,11 @@
 1. **物理分表**（PRD 5.2 要求“与 user_progress 同键但物理分表，杜绝断签逻辑误写积分字段”）：
    余额/流水与进度/连续天数落在两个独立的加密文件里，断签逻辑拿不到积分文件句柄。
 2. **加密落盘**：复用 ``secure_storage.SecureJsonStore``（AES-GCM），与聊天记录/记忆同等保护级别（PRD FR-12）。
-3. **并发安全**（PRD EDGE-1）：单进程内用可重入线程锁，跨进程用**阻塞式文件锁**
+3. **并发安全**（PRD EDGE-1）：单进程内用可重入线程锁，跨进程用**有界等待的文件锁**
    （POSIX 走 ``fcntl.flock``，Windows 走 ``msvcrt.locking``，见 ``acquire_file_lock``），
    所有读-改-写都在 ``transaction()`` 内完成，因此扣分是原子的
    （等价于 ``UPDATE ... SET balance = balance - :cost WHERE balance >= :cost`` 的原子语义）。
-   两端锁语义一致：获取时阻塞直到成功、退出/异常时必定释放；但**不要嵌套加锁**
+   两端锁语义一致：获取最多等待 10 秒、退出/异常时必定释放；但**不要嵌套加锁**
    （例如在同一 ``transaction()`` 内再开 ``transaction()`` 或调用 ``snapshot()``），
    同一进程用不同 fd 重复加锁在 Linux flock 与 Windows LockFile 上都会自锁。
 4. **严格读写**：积分一旦写失败必须让上层感知，故使用 ``load_strict`` / ``save_strict``，
@@ -32,8 +32,8 @@ from contextlib import contextmanager
 import time
 from typing import Any, Iterator
 
-from secure_storage import SecureJsonStore
-from services.file_lock import acquire_file_lock, release_file_lock
+from secure_storage import DataCorruptionError, SecureJsonStore
+from services.file_lock import FileLockTimeoutError, acquire_file_lock, release_file_lock
 
 # ``acquire_file_lock`` / ``release_file_lock`` are imported above and re-exported
 # here for backward compatibility with existing callers and tests.
@@ -72,12 +72,23 @@ def activity_key(user_id: str, activity_date: str) -> str:
 class SecureTxStore:
     """带文件锁的加密 JSON 读-改-写存储基类。"""
 
-    def __init__(self, path: str, logger):
+    def __init__(self, path: str, logger, *, lock_timeout: float = 10):
         self.path = path
         self.logger = logger
         self._store = SecureJsonStore(path, logger)
         self._thread_lock = threading.RLock()
         self._lock_path = f"{path}.lock"
+        self.lock_timeout = lock_timeout
+
+    @contextmanager
+    def _bounded_thread_lock(self):
+        deadline = time.monotonic() + self.lock_timeout
+        if not self._thread_lock.acquire(timeout=self.lock_timeout):
+            raise FileLockTimeoutError("progress thread lock timed out")
+        try:
+            yield deadline
+        finally:
+            self._thread_lock.release()
 
     # ---------- 子类实现 ----------
     def _empty(self) -> dict:
@@ -87,7 +98,12 @@ class SecureTxStore:
         """把磁盘上的数据补齐成完整结构，容忍旧版本缺字段。"""
         data = self._empty()
         if not isinstance(raw, dict):
-            return data
+            raise DataCorruptionError("进度数据根节点必须是对象")
+        if raw.get("version", SCHEMA_VERSION) != SCHEMA_VERSION:
+            raise DataCorruptionError("不支持的进度数据版本")
+        for key, value in data.items():
+            if key in raw and isinstance(value, (dict, list)) and not isinstance(raw[key], type(value)):
+                raise DataCorruptionError("进度数据字段类型无效")
         for key, value in raw.items():
             if key == "meta" and isinstance(value, dict):
                 data["meta"].update(value)
@@ -109,12 +125,12 @@ class SecureTxStore:
     @contextmanager
     def transaction(self) -> Iterator[dict]:
         """独占读-改-写事务；正常退出时原子写回，异常时丢弃改动。"""
-        with self._thread_lock:
+        with self._bounded_thread_lock() as deadline:
             lock_fd = None
             locked = False
             try:
                 lock_fd = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-                acquire_file_lock(lock_fd, exclusive=True)
+                acquire_file_lock(lock_fd, exclusive=True, timeout=max(0, deadline - time.monotonic()))
                 locked = True
                 data = self._load()
                 yield data
@@ -135,12 +151,12 @@ class SecureTxStore:
         注意：Windows 下 msvcrt 无共享锁，``exclusive=False`` 会降级为独占锁
         （见 ``acquire_file_lock`` 的说明），语义上更严格、不会削弱互斥。
         """
-        with self._thread_lock:
+        with self._bounded_thread_lock() as deadline:
             lock_fd = None
             locked = False
             try:
                 lock_fd = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-                acquire_file_lock(lock_fd, exclusive=False)
+                acquire_file_lock(lock_fd, exclusive=False, timeout=max(0, deadline - time.monotonic()))
                 locked = True
                 return copy.deepcopy(self._load())
             finally:

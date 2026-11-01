@@ -11,6 +11,8 @@ android {
 
     defaultConfig {
         minSdk = 26
+        targetSdk = 34
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     compileOptions {
@@ -52,8 +54,14 @@ dependencies {
     implementation(libs.hilt.android)
     kapt(libs.hilt.compiler)
     implementation(libs.gson)
+    implementation(libs.retrofit)
+    implementation(libs.okhttp)
     implementation("io.coil-kt:coil-compose:2.6.0")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation(libs.androidx.room.runtime)
+    androidTestImplementation(libs.androidx.work.runtime.ktx)
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test:runner:1.5.2")
 }
 
 kapt {

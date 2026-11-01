@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace TKSDesktop.Contracts.Dtos;
@@ -9,8 +10,15 @@ namespace TKSDesktop.Contracts.Dtos;
 /// <summary>服务端 timeline 记录（`GET /chat/history` 的 `items[]`）。</summary>
 public sealed class TimelineItemDto
 {
+    [JsonPropertyName("historySource")] public string? HistorySource { get; set; }
     [JsonPropertyName("messageId")]
     public string MessageId { get; set; } = string.Empty;
+
+    [JsonPropertyName("requestId")]
+    public string? RequestId { get; set; }
+
+    [JsonPropertyName("imageCount")]
+    public int ImageCount { get; set; }
 
     [JsonPropertyName("userId")]
     public string UserId { get; set; } = string.Empty;
@@ -61,8 +69,28 @@ public sealed class TimelineItemDto
 /// <summary>`GET /chat/history` 响应 `data`。</summary>
 public sealed class ChatHistoryDataDto
 {
+    [JsonPropertyName("historySyncVersion")] public int? HistorySyncVersion { get; set; }
+    [JsonPropertyName("datasetGeneration")] public string? DatasetGeneration { get; set; }
+    [JsonPropertyName("nextCursor")] public string? NextCursor { get; set; }
+    [JsonPropertyName("hasMore")] public bool HasMore { get; set; }
+    [JsonPropertyName("blocked")] public bool Blocked { get; set; }
+    [JsonPropertyName("pollAfterMs")] public int PollAfterMs { get; set; }
     [JsonPropertyName("items")]
     public List<TimelineItemDto> Items { get; set; } = [];
+
+    [JsonPropertyName("operations")]
+    public List<ChatOperationDto> Operations { get; set; } = [];
+}
+
+public sealed class ChatOperationDto
+{
+    [JsonPropertyName("sources")] public List<TimelineItemDto> Sources { get; set; } = [];
+    [JsonPropertyName("status")] public string Status { get; set; } = string.Empty;
+    [JsonPropertyName("requestIds")] public List<string> RequestIds { get; set; } = [];
+    [JsonPropertyName("failureCategory")] public string? FailureCategory { get; set; }
+    [JsonPropertyName("refundStatus")] public string? RefundStatus { get; set; }
+    [JsonPropertyName("retryable")] public bool? Retryable { get; set; }
+    [JsonPropertyName("recoveryAction")] public string? RecoveryAction { get; set; }
 }
 
 /// <summary>用户事实（`GET /memory/facts` 的 `items[]`）。</summary>
@@ -79,6 +107,36 @@ public sealed class UserFactDto
 
     [JsonPropertyName("timestamp")]
     public long Timestamp { get; set; }
+
+    [JsonPropertyName("eventId")]
+    public string? EventId { get; set; }
+
+    [JsonPropertyName("revision")]
+    public long Revision { get; set; }
+
+    [JsonPropertyName("revisionId")]
+    public string? RevisionId { get; set; }
+
+    [JsonPropertyName("permissionVersion")]
+    public long PermissionVersion { get; set; }
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
+
+    [JsonPropertyName("stage")]
+    public string Stage { get; set; } = "candidate";
+
+    [JsonPropertyName("truthStatus")]
+    public string TruthStatus { get; set; } = "pending";
+
+    [JsonPropertyName("score")]
+    public double Score { get; set; }
+
+    [JsonPropertyName("sourceMessageId")]
+    public string? SourceMessageId { get; set; }
+
+    [JsonPropertyName("temporalValidity")]
+    public JsonElement? TemporalValidity { get; set; }
 }
 
 /// <summary>`GET /memory/facts` 响应 `data`。</summary>
@@ -86,6 +144,39 @@ public sealed class MemoryFactsDataDto
 {
     [JsonPropertyName("items")]
     public List<UserFactDto> Items { get; set; } = [];
+
+    [JsonPropertyName("nextCursor")]
+    public long NextCursor { get; set; }
+
+    [JsonPropertyName("hasMore")]
+    public bool HasMore { get; set; }
+}
+
+public sealed class MemoryFactDetailDto
+{
+    [JsonPropertyName("factId")] public string FactId { get; set; } = string.Empty;
+    [JsonPropertyName("domain")] public string Domain { get; set; } = string.Empty;
+    [JsonPropertyName("userId")] public string UserId { get; set; } = string.Empty;
+    [JsonPropertyName("content")] public string Content { get; set; } = string.Empty;
+    [JsonPropertyName("revision")] public long Revision { get; set; }
+    [JsonPropertyName("revisionId")] public string? RevisionId { get; set; }
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; }
+    [JsonPropertyName("stage")] public string Stage { get; set; } = "candidate";
+    [JsonPropertyName("truthStatus")] public string TruthStatus { get; set; } = "pending";
+    [JsonPropertyName("score")] public double Score { get; set; }
+    [JsonPropertyName("temporalValidity")] public JsonElement? TemporalValidity { get; set; }
+    [JsonPropertyName("sources")] public List<MemoryFactSourceDto> Sources { get; set; } = [];
+}
+
+public sealed class MemoryFactSourceDto
+{
+    [JsonPropertyName("sourceMessageId")] public string? SourceMessageId { get; set; }
+}
+
+public sealed class ProactiveSettingsDto
+{
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; }
+    [JsonPropertyName("version")] public long Version { get; set; }
 }
 
 /// <summary>`GET` / `PUT /settings/city` 响应 `data`；未设置时服务端返回 `auto_ip`。</summary>
@@ -128,6 +219,8 @@ public sealed class RestChatRequestDto
 /// <summary>`POST /chat` 响应 `data`。</summary>
 public sealed class RestChatDataDto
 {
+    [JsonPropertyName("recoveryAction")] public string? RecoveryAction { get; set; }
+    [JsonPropertyName("requestIds")] public List<string>? RequestIds { get; set; }
     [JsonPropertyName("conversationId")]
     public string? ConversationId { get; set; }
 

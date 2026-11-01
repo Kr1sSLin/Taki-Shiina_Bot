@@ -7,20 +7,45 @@ using TKSDesktop.Core.Services.Ports;
 namespace TKSDesktop.Core.Network;
 
 /// <summary>将 REST 客户端接入同步服务窄端口。</summary>
-public sealed class RestPortAdapter : IRestPort
+public sealed class RestPortAdapter : IRestPort, IHistoryImagePort, IMemoryEventPort, IHistoryCursorPort
 {
     private readonly RestClient _rest;
 
-    public RestPortAdapter(RestClient rest) => _rest = rest;
+    private readonly Core.Auth.TokenManager? _tokens;
+    public RestPortAdapter(RestClient rest, Core.Auth.TokenManager? tokens = null) { _rest = rest; _tokens = tokens; }
+
+    public string? HistoryScope => _tokens?.UserId is { } owner
+        ? System.Text.Json.JsonSerializer.Serialize(new[] { _rest.ApiBaseUrl.TrimEnd('/'), owner }) : null;
+
+    public async Task<PortCall<ChatHistoryDataDto>> GetHistoryCursorPageAsync(string cursor, int limit, CancellationToken cancellationToken = default)
+        => ToPortCall(await _rest.GetAsync<ChatHistoryDataDto>("/chat/history",
+            new Dictionary<string, string?> { ["cursor"] = cursor, ["limit"] = limit.ToString(CultureInfo.InvariantCulture) },
+            ProtocolConstants.RestTimeoutMs, cancellationToken: cancellationToken).ConfigureAwait(false), static data => data);
+
+    public async Task<PortCall<HistoryImageBytes>> GetHistoryImageAsync(
+        string requestId, int index, CancellationToken cancellationToken = default)
+        => ToPortCall(await _rest.GetHistoryImageAsync(requestId, index, cancellationToken).ConfigureAwait(false), static data => data);
 
     public async Task<PortCall<RestChatDataDto>> SendChatAsync(RestChatRequestDto request, CancellationToken cancellationToken = default)
-        => ToPortCall(await _rest.PostAsync<RestChatDataDto>("/chat", request,
-            ProtocolConstants.RestTimeoutMs, cancellationToken: cancellationToken).ConfigureAwait(false), static data => data);
+    {
+        var result = await _rest.PostAsync<RestChatDataDto>("/chat", request,
+            ProtocolConstants.RestTimeoutMs, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var call = ToPortCall(result, static data => data);
+        return call.Success ? call : call with { Value = result.FailureValue };
+    }
 
     public async Task<PortCall<IReadOnlyList<TimelineItemDto>>> GetChatHistoryAsync(
         long since,
         int limit,
         CancellationToken cancellationToken = default)
+    {
+        var call = await GetChatHistoryPageAsync(since, limit, cancellationToken).ConfigureAwait(false);
+        return call.Success && call.Value is not null
+            ? PortCall<IReadOnlyList<TimelineItemDto>>.Ok(call.Value.Items)
+            : PortCall<IReadOnlyList<TimelineItemDto>>.Fail(call.ErrorCode, call.I18nKey);
+    }
+
+    public async Task<PortCall<ChatHistoryDataDto>> GetChatHistoryPageAsync(long since, int limit, CancellationToken cancellationToken = default)
     {
         var result = await _rest.GetAsync<ChatHistoryDataDto>(
             "/chat/history",
@@ -32,7 +57,7 @@ public sealed class RestPortAdapter : IRestPort
             ProtocolConstants.RestTimeoutMs,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        return ToPortCall(result, static data => (IReadOnlyList<TimelineItemDto>)data.Items);
+        return ToPortCall(result, static data => data);
     }
 
     public async Task<PortCall<IReadOnlyList<UserFactDto>>> GetMemoryFactsAsync(
@@ -51,6 +76,21 @@ public sealed class RestPortAdapter : IRestPort
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         return ToPortCall(result, static data => (IReadOnlyList<UserFactDto>)data.Items);
+    }
+
+    public async Task<PortCall<MemoryFactsDataDto>> GetMemoryEventPageAsync(
+        long cursor, int limit, CancellationToken cancellationToken = default)
+    {
+        var result = await _rest.GetAsync<MemoryFactsDataDto>(
+            "/memory/facts",
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["cursor"] = cursor.ToString(CultureInfo.InvariantCulture),
+                ["limit"] = limit.ToString(CultureInfo.InvariantCulture),
+            },
+            ProtocolConstants.RestTimeoutMs,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return ToPortCall(result, static data => data);
     }
 
     private static PortCall<TOut> ToPortCall<TIn, TOut>(ApiResult<TIn> result, Func<TIn, TOut> map)

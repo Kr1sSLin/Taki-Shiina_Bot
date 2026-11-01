@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using TKSDesktop.Contracts;
+using TKSDesktop.Core.Services.Ports;
 
 namespace TKSDesktop.Core.Network;
 
@@ -130,6 +131,100 @@ public sealed class RestClient : IDisposable
         CancellationToken cancellationToken = default)
         => SendAsync<T>(HttpMethod.Get, path, body: null, envelope: true, authenticated, allowRefresh: true,
             query, timeoutMs, cancellationToken);
+
+    /// <summary>Fetch an original history image as bounded binary bytes with the normal Bearer/refresh flow.</summary>
+    public async Task<ApiResult<HistoryImageBytes>> GetHistoryImageAsync(
+        string requestId, int index, CancellationToken cancellationToken = default)
+    {
+        var traceId = NewTraceId();
+        if (string.IsNullOrWhiteSpace(requestId) || index < 0 || index >= ProtocolConstants.MaxImageCount)
+        {
+            return ApiResult.Fail<HistoryImageBytes>(TksApiException.InvalidResponse("invalid image reference", traceId));
+        }
+
+        var path = $"chat/images/{Uri.EscapeDataString(requestId)}/{index.ToString(CultureInfo.InvariantCulture)}";
+        if (!TryBuildUri(path, null, out var uri, out var configurationError))
+        {
+            return ApiResult.Fail<HistoryImageBytes>(TksApiException.Configuration(configurationError!));
+        }
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var staleToken = _tokens.AccessToken;
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            request.Headers.TryAddWithoutValidation(TraceHeaderName, traceId);
+            request.Headers.TryAddWithoutValidation("Accept", "image/jpeg, image/png");
+            if (!string.IsNullOrEmpty(staleToken))
+            {
+                request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + staleToken);
+            }
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(ProtocolConstants.RestTimeoutMs);
+            try
+            {
+                using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token)
+                    .ConfigureAwait(false);
+                if (response.StatusCode == HttpStatusCode.Unauthorized && attempt == 0)
+                {
+                    var refreshed = await RefreshOnceAsync(staleToken, traceId, cancellationToken).ConfigureAwait(false);
+                    if (refreshed.Success) continue;
+                    var refreshRejected = refreshed.Error is { HttpStatus: not null } refreshError
+                        && (refreshError.ShouldClearCredentials || ErrorCatalog.IsAuthFailure(refreshError.Code));
+                    if (refreshRejected && !refreshed.CredentialsInvalidated)
+                    {
+                        _tokens.OnUnauthorized(AuthFailureReasons.RefreshFailed, refreshed.Error?.HttpStatus);
+                    }
+                    return ApiResult.Fail<HistoryImageBytes>(TksApiException.Unauthorized(null, "unauthorized", traceId));
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return ApiResult.Fail<HistoryImageBytes>(TksApiException.Http(
+                        (int)response.StatusCode, null, $"HTTP {(int)response.StatusCode}", traceId));
+                }
+
+                var mime = response.Content.Headers.ContentType?.MediaType?.ToLowerInvariant();
+                if (mime is not ("image/jpeg" or "image/png")
+                    || response.Content.Headers.ContentLength > ProtocolConstants.MaxImageBytes)
+                {
+                    return ApiResult.Fail<HistoryImageBytes>(TksApiException.InvalidResponse("invalid history image metadata", traceId));
+                }
+
+                await using var stream = await response.Content.ReadAsStreamAsync(timeoutCts.Token).ConfigureAwait(false);
+                using var buffer = new MemoryStream();
+                var chunk = new byte[64 * 1024];
+                while (true)
+                {
+                    var read = await stream.ReadAsync(chunk.AsMemory(), timeoutCts.Token).ConfigureAwait(false);
+                    if (read == 0) break;
+                    if (buffer.Length + read > ProtocolConstants.MaxImageBytes)
+                    {
+                        return ApiResult.Fail<HistoryImageBytes>(TksApiException.InvalidResponse("history image too large", traceId));
+                    }
+                    buffer.Write(chunk, 0, read);
+                }
+                if (buffer.Length == 0)
+                {
+                    return ApiResult.Fail<HistoryImageBytes>(TksApiException.InvalidResponse("empty history image", traceId));
+                }
+                return ApiResult.Success(new HistoryImageBytes(mime, buffer.ToArray()), traceId);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return ApiResult.Fail<HistoryImageBytes>(TksApiException.Timeout(traceId, ProtocolConstants.RestTimeoutMs));
+            }
+            catch (OperationCanceledException)
+            {
+                return ApiResult.Fail<HistoryImageBytes>(TksApiException.Cancelled(traceId));
+            }
+            catch (Exception ex) when (ex is HttpRequestException or IOException)
+            {
+                return ApiResult.Fail<HistoryImageBytes>(TksApiException.Network(ex.Message, traceId, ex));
+            }
+        }
+        return ApiResult.Fail<HistoryImageBytes>(TksApiException.Unauthorized(null, "unauthorized", traceId));
+    }
 
     /// <summary>POST（信封解包）。</summary>
     public Task<ApiResult<T>> PostAsync<T>(
@@ -477,7 +572,10 @@ public sealed class RestClient : IDisposable
             _logger.LogWarning(
                 "REST 返回错误状态 method={Method} path={Path} traceId={TraceId} status={Status} code={Code}",
                 method.Method, path, traceId, httpStatus, info.Code);
-            return ApiResult.Fail<T>(TksApiException.Http(httpStatus, info.Code, message, info.TraceId ?? traceId));
+            return new ApiResult<T>(TksApiException.Http(httpStatus, info.Code, message, info.TraceId ?? traceId).ToError())
+            {
+                FailureValue = string.IsNullOrWhiteSpace(attempt.Body) ? default : SuccessFromEnvelope<T>(attempt.Body, info.TraceId ?? traceId).Value,
+            };
         }
 
         // ⚠️ 信封语义下 `code` 缺失即**无法判定成功** —— 绝不退化为「状态码 200 就算成功」（陷阱 4）。
@@ -534,8 +632,11 @@ public sealed class RestClient : IDisposable
         try
         {
             using var document = JsonDocument.Parse(body);
-            if (document.RootElement.ValueKind != JsonValueKind.Object
-                || !document.RootElement.TryGetProperty("data", out var data)
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.Object)
+                root = detail;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("data", out var data)
                 || data.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
             {
                 return ApiResult.Success<T>(default!, traceId);

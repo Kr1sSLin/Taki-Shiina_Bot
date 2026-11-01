@@ -49,6 +49,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+        }
         release {
             isMinifyEnabled = false
             // 有密钥才挂签名；否则产出 app-release-unsigned.apk

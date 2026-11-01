@@ -1,4 +1,4 @@
-"""Unified API composition tests; no lifespan means schedulers never run."""
+"""统一入口装配与隔离的生命周期回归。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,11 @@ import os
 import sys
 import unittest
 import tempfile
+import asyncio
+import importlib
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from collections import Counter
 
@@ -30,6 +35,59 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 
 class UnifiedApiTestCase(unittest.TestCase):
+    def test_invalid_city_is_400_and_cannot_overwrite_existing_value(self):
+        from fastapi.testclient import TestClient
+        from services.weather_service import WeatherService
+        with tempfile.TemporaryDirectory() as directory:
+            weather = WeatherService(directory, "", "", "")
+            weather.set_city("北京")
+            with patch.object(unified_api.http_api, "weather_service", weather), patch.object(unified_api.http_api, "_require_http_auth"):
+                client = TestClient(unified_api.app)
+                for city in ("39。9042116，4。074", "39.9042,116.4074", "91,181"):
+                    with self.subTest(city=city):
+                        response = client.put("/api/v1/settings/city", json={"city": city})
+                        self.assertEqual(response.status_code, 400)
+                        self.assertEqual(response.json()["code"], 40002)
+                        self.assertEqual(weather.get_current_city(), "北京")
+                response = client.put("/api/v1/settings/city", json={"city": "上海"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(weather.get_current_city(), "上海")
+
+    def test_gamification_lock_timeout_returns_controlled_error(self):
+        from gamification_fixture import make_rig, TEST_USER
+        from services.file_lock import FileLockTimeoutError
+        from types import SimpleNamespace
+        temp, rig = make_rig()
+        with temp, patch("api.v1.points.get_gamification", return_value=rig.gamification), patch("api.v1.points.require_auth", return_value=SimpleNamespace(user_id=TEST_USER)), patch.object(rig.gamification.points_store, "snapshot", side_effect=FileLockTimeoutError("private path")):
+            response = TestClient(unified_api.app).get("/api/v1/points/balance")
+            self.assertEqual(response.status_code, 503)
+            body = response.json()
+            self.assertEqual(body["code"], 50301)
+            self.assertEqual(body["data"]["recoveryAction"], "retry_same_request")
+            self.assertNotIn("private path", response.text)
+
+    def test_budget_middleware_and_validation_preserve_safe_legacy_shape(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        runtime = SimpleNamespace(request=AsyncMock(return_value=None), submit=AsyncMock())
+        client = TestClient(unified_api.app)
+        with patch.object(unified_api.http_api, "_require_http_auth", return_value=SimpleNamespace(user_id="synthetic", device_id="synthetic")), \
+             patch.object(unified_api.http_api, "get_reliable_runtime", return_value=runtime):
+            body = b'{"requestId":"oversize-body","message":"ok","meta":{"padding":"' + b'x' * 65536 + b'"}}'
+            response = client.post("/api/v1/chat", content=iter((body[:100], body[100:])), headers={"Content-Type": "application/json"})
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json()["data"]["recoveryAction"], "edit_input")
+            runtime.submit.assert_not_called()
+            rejected = client.post("/api/v1/chat", json={"message": {"private": "must-not-echo"}})
+            self.assertEqual(rejected.status_code, 422)
+            self.assertIsInstance(rejected.json()["detail"], list)
+            self.assertNotIn("must-not-echo", rejected.text)
+            self.assertEqual(rejected.json()["data"]["recoveryAction"], "edit_input")
+        auth = client.post("/api/v1/chat", json={"message": "hello"})
+        self.assertEqual(auth.status_code, 401)
+        self.assertEqual(auth.json()["detail"]["code"], 40101)
+        self.assertEqual(auth.json()["detail"]["data"]["recoveryAction"], "refresh_then_retry")
+
     def test_key_routes_appear_exactly_once(self):
         paths = Counter()
         route_keys = Counter()
@@ -50,8 +108,13 @@ class UnifiedApiTestCase(unittest.TestCase):
         expected = (
             "/api/v1/auth/login",
             "/api/v1/chat/history",
+            "/api/v1/chat/requests/{request_id}",
             "/api/v1/memory/facts",
+            "/api/v1/memory/facts/{fact_id}",
+            "/api/v1/memory/facts/{fact_id}/permission",
+            "/api/v1/memory/facts/{fact_id}/correction",
             "/api/v1/settings/city",
+            "/api/v1/settings/proactive",
             "/api/v1/chat",
             "/ws/chat",
             "/api/v1/interaction/items",
@@ -82,6 +145,73 @@ class UnifiedApiTestCase(unittest.TestCase):
         for name in shared:
             with self.subTest(name=name):
                 self.assertIs(getattr(unified_api.http_api, name), getattr(unified_api.ws_api, name))
+        for name in ("http_api", "ws_api", "unified_api"):
+            self.assertIs(importlib.import_module(name), importlib.import_module(f"Taki_Shiina_Bot.{name}"))
+        sessions = unified_api.ws_api.ws_sessions
+        for name, attribute in (("ACTIVE_CONNECTIONS", "connections"), ("message_buffer", "buffer"),
+                                ("debounce_jobs", "jobs"), ("message_events", "events"),
+                                ("last_message_at", "last_message_at"), ("is_processing", "processing"),
+                                ("pending_flush", "pending_flush")):
+            self.assertIs(getattr(unified_api.ws_api, name), getattr(sessions, attribute))
+
+    def test_supported_entrypoints_in_fresh_processes(self):
+        for directory, first in ((REPO_ROOT, "Taki_Shiina_Bot.unified_api"),
+                                 (REPO_ROOT, "Taki_Shiina_Bot.ws_api"),
+                                 (REPO_ROOT, "Taki_Shiina_Bot.http_api"),
+                                 (PACKAGE_ROOT, "unified_api"), (PACKAGE_ROOT, "ws_api"), (PACKAGE_ROOT, "http_api")):
+            with self.subTest(directory=directory, first=first):
+                source = f'''
+import importlib, os, runpy, sys
+runpy.run_path({str(Path(CURRENT_DIR) / 'conftest.py')!r})
+sys.path[:] = [p for p in sys.path if p not in ({REPO_ROOT!r}, {PACKAGE_ROOT!r})]
+sys.path.insert(0, os.getcwd())
+importlib.import_module({first!r})
+u = importlib.import_module("unified_api")
+for name in ("http_api", "ws_api", "unified_api"):
+    assert importlib.import_module(name) is importlib.import_module("Taki_Shiina_Bot." + name)
+    assert getattr(importlib.import_module("Taki_Shiina_Bot"), name) is importlib.import_module(name)
+assert u.http_api.state is u.ws_api.state
+assert importlib.import_module("Taki_Shiina_Bot.main").app
+'''
+                result = subprocess.run([sys.executable, "-c", source], cwd=directory, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_lifecycle_starts_once_stops_and_restarts(self):
+        from unittest.mock import AsyncMock, Mock
+        from services.debounce_merge import WebSocketSessions
+
+        async def exercise():
+            module = unified_api.ws_api
+            runtime = SimpleNamespace(start=Mock(), stop=AsyncMock())
+            started, finished = asyncio.Event(), asyncio.Event()
+            async def scheduler():
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    finished.set()
+            sessions = WebSocketSessions(module.logger)
+            run = AsyncMock(side_effect=scheduler)
+            with patch.object(module, "get_reliable_runtime", return_value=runtime), \
+                 patch.object(module.points_jobs, "run_forever", run), \
+                 patch.object(module, "ws_sessions", sessions), patch.object(module, "_points_task", None):
+                await module.on_startup()
+                await started.wait()
+                task = module._points_task
+                await module.on_startup()
+                self.assertIs(task, module._points_task)
+                self.assertEqual(run.call_count, 1)
+                await module.stop_reliable_runtime()
+                self.assertTrue(finished.is_set())
+                self.assertTrue(task.done())
+                runtime.stop.assert_awaited_once()
+                started.clear()
+                await module.on_startup()
+                await started.wait()
+                self.assertIsNot(task, module._points_task)
+                await module.stop_reliable_runtime()
+                self.assertEqual(run.call_count, 2)
+        asyncio.run(exercise())
 
     def test_interleaved_http_ws_history_saves_do_not_overwrite(self):
         from services.history_store import HistoryStore
@@ -121,6 +251,16 @@ class UnifiedApiTestCase(unittest.TestCase):
         unauthorized = client.get("/api/v1/chat/history")
         self.assertEqual(unauthorized.status_code, 401)
         self.assertIn("x-trace-id", unauthorized.headers)
+
+        # Exercise actual unified routes: missing auth is 401, never an
+        # unmounted 404 or a method mismatch hidden by direct-handler tests.
+        detail = client.get("/api/v1/memory/facts/synthetic-fact")
+        self.assertEqual(detail.status_code, 401)
+        permission = client.patch("/api/v1/memory/facts/synthetic-fact/permission",
+                                  json={"enabled": False, "expectedRevision": 1})
+        self.assertEqual(permission.status_code, 401)
+        self.assertEqual(client.get("/api/v1/settings/proactive").status_code, 401)
+        self.assertEqual(client.put("/api/v1/settings/proactive", json={"enabled": False}).status_code, 401)
 
 
 if __name__ == "__main__":

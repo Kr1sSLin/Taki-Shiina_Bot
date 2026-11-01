@@ -62,6 +62,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly IWindowChrome _windowChrome;
     private readonly IPaths _paths;
     private readonly IUiDispatcher _dispatcher;
+    private readonly MemoryManagementService? _memory;
 
     private bool _disposed;
     private bool _loading;
@@ -80,7 +81,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ITrayIcon tray,
         IWindowChrome windowChrome,
         IPaths paths,
-        IUiDispatcher dispatcher)
+        IUiDispatcher dispatcher,
+        MemoryManagementService? memory = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(auth);
@@ -109,6 +111,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _windowChrome = windowChrome;
         _paths = paths;
         _dispatcher = dispatcher;
+        _memory = memory;
 
         // FR-W-SET-1：**必须监听**系统主题变化（「跟随系统」时界面随之切换）。
         _windowChrome.SystemThemeChanged += OnSystemThemeChanged;
@@ -121,6 +124,52 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     /// <summary>请求退出登录（View 层回到登录页）。</summary>
     public event EventHandler? LogoutRequested;
+
+    [ObservableProperty]
+    private bool _proactiveAvailable;
+
+    [ObservableProperty]
+    private bool _proactiveEnabled;
+
+    [ObservableProperty]
+    private string _proactiveStatusText = I18n.T("settings.proactive.loading");
+
+    public string ProactiveActionText => I18n.T(ProactiveEnabled ? "settings.proactive.disable" : "settings.proactive.enable");
+
+    partial void OnProactiveEnabledChanged(bool value) => OnPropertyChanged(nameof(ProactiveActionText));
+
+    public async Task RefreshProactiveAsync()
+    {
+        if (_memory is null) return;
+        var result = await _memory.GetProactiveAsync().ConfigureAwait(true);
+        ProactiveAvailable = result.IsSuccess && result.Value is not null;
+        if (ProactiveAvailable)
+        {
+            ProactiveEnabled = result.Value!.Enabled;
+            ProactiveStatusText = I18n.T("settings.proactive.description");
+        }
+        else ProactiveStatusText = I18n.T("settings.proactive.unavailable");
+    }
+
+    [RelayCommand]
+    private async Task ToggleProactiveAsync()
+    {
+        if (_memory is null || !ProactiveAvailable) return;
+        ProactiveAvailable = false;
+        ProactiveStatusText = I18n.T("settings.proactive.saving");
+        var result = await _memory.SetProactiveAsync(!ProactiveEnabled).ConfigureAwait(true);
+        if (result.IsSuccess && result.Value is not null)
+        {
+            ProactiveEnabled = result.Value.Enabled;
+            ProactiveStatusText = I18n.T("settings.proactive.applied");
+            ProactiveAvailable = true;
+        }
+        else
+        {
+            ProactiveStatusText = I18n.T("settings.proactive.failed");
+            await RefreshProactiveAsync().ConfigureAwait(true);
+        }
+    }
 
     /* ---- 主题（FR-W-SET-1） ---- */
 

@@ -9,8 +9,8 @@
 
         * Bot notifications list with unread count and mark-all-read (FR-W-HIS-1).
         * User facts list, newest first (FR-W-HIS-2), filterable in place (FR-W-HIS-3).
-        * Facts are READ-ONLY (FR-W-HIS-4): the backend has no edit/delete endpoint, so
-          no local delete affordance is offered - a local-only delete would fake
+        * User facts can be corrected, disabled and restored through the server.
+          Deletion remains unavailable because local-only deletion would fake
           server-side consistency.
         * This page must be REACHABLE, not merely implemented (FR-W-HIS-5): the main
           window navigation and the tray menu both route here.
@@ -93,7 +93,7 @@
                 </ItemsControl>
             </DockPanel>
 
-            <!-- Facts (read-only) -->
+            <!-- Facts and server-authoritative permission management -->
             <DockPanel Grid.Column="1">
                 <TextBlock DockPanel.Dock="Top" Style="{StaticResource Tks.Text.Body}"
                            Margin="0,0,0,8"
@@ -112,6 +112,29 @@
                            Text="{Binding EmptyText}"
                            Visibility="{Binding IsFactEmpty, Converter={StaticResource Tks.BoolToVisibility}}" />
 
+                <Border DockPanel.Dock="Bottom" Style="{StaticResource Tks.Card}" Margin="0,8,0,0">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding FactDetailText}"
+                                   TextWrapping="Wrap" />
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding PermissionStatusText}"
+                                   Margin="0,4,0,0" TextWrapping="Wrap" />
+                        <Button Style="{StaticResource Tks.Button.Ghost}" Margin="0,8,0,0"
+                                Content="{Binding PermissionActionText}" Command="{Binding ChangePermissionCommand}"
+                                IsEnabled="{Binding CanChangePermission}" />
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,8,0,0"
+                                   Text="{Binding CorrectionLabelText}" />
+                        <TextBox MaxLength="2000" Text="{Binding CorrectionText, UpdateSourceTrigger=PropertyChanged}"
+                                 IsEnabled="{Binding CanCorrectFact}" />
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,4,0,0"
+                                   Text="{Binding CorrectionHintText}" TextWrapping="Wrap" />
+                        <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,4,0,0"
+                                   Text="{Binding CorrectionStatusText}" TextWrapping="Wrap" />
+                        <Button Style="{StaticResource Tks.Button.Ghost}" Margin="0,8,0,0"
+                                Content="{Binding CorrectFactButtonText}" Command="{Binding CorrectFactCommand}"
+                                IsEnabled="{Binding CanCorrectFact}" />
+                    </StackPanel>
+                </Border>
+
                 <ItemsControl ItemsSource="{Binding Facts}">
                     <ItemsControl.Template>
                         <ControlTemplate TargetType="ItemsControl">
@@ -128,6 +151,10 @@
                                     <TextBlock Style="{StaticResource Tks.Text.Caption}"
                                                Margin="0,4,0,0"
                                                Text="{Binding TimeText}" />
+                                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Text="{Binding PermissionText}" />
+                                    <Button Style="{StaticResource Tks.Button.Ghost}" Content="{Binding DataContext.ViewFactDetailText, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            Command="{Binding DataContext.SelectFactCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            CommandParameter="{Binding}" />
                                 </StackPanel>
                             </Border>
                         </DataTemplate>

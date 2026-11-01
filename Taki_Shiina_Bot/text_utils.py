@@ -164,3 +164,25 @@ def with_history_timestamp(m: dict) -> dict:
     out = dict(m)
     out["content"] = f"【{beijing.strftime('%m-%d %H:%M')}】{m['content']}"
     return out
+
+
+def compute_debounce_window(bot_last, now_utc, debounce_base, debounce_extended, debounce_extend_window):
+    if not bot_last:
+        return debounce_base
+
+    seconds_since_response = (now_utc - bot_last).total_seconds()
+    if seconds_since_response < debounce_extend_window:
+        return debounce_extended
+    return debounce_base
+
+
+def extract_timer_instruction(raw_reply):
+    timer_pattern = r"\[\[TIMER:(\d{1,2}:\d{2})\|(.*?)\]\]"
+    match = re.search(timer_pattern, raw_reply or "")
+    if not match:
+        return raw_reply, None, None
+
+    target_time_str = match.group(1)
+    reminder_text = match.group(2)
+    cleaned_reply = re.sub(timer_pattern, "", raw_reply or "").strip()
+    return cleaned_reply, target_time_str, reminder_text

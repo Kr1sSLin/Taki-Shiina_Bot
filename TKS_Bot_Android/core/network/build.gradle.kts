@@ -15,6 +15,13 @@ android {
         buildConfigField("String", "WS_BASE_URL", "\"wss://takishiinabot.top\"")
     }
 
+    buildTypes {
+        debug {
+            buildConfigField("String", "API_BASE_URL", "\"https://staging.takishiinabot.top/api/v1/\"")
+            buildConfigField("String", "WS_BASE_URL", "\"wss://staging.takishiinabot.top\"")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -31,6 +38,7 @@ android {
 
 dependencies {
     implementation(project(":core:common"))
+    implementation(project(":core:database"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.retrofit)
@@ -40,6 +48,7 @@ dependencies {
     implementation(libs.androidx.security.crypto)
     implementation(libs.hilt.android)
     kapt(libs.hilt.compiler)
+    testImplementation("junit:junit:4.13.2")
 }
 
 kapt {

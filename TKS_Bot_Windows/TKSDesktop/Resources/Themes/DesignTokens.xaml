@@ -125,8 +125,8 @@
         <GradientStop Offset="1" Color="#A608080E" />
     </LinearGradientBrush>
     <LinearGradientBrush x:Key="Tks.Brush.ComposerRim" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Offset="0" Color="#997F7F86" />
-        <GradientStop Offset="1" Color="#66585860" />
+        <GradientStop Offset="0" Color="#FFB477E3" />
+        <GradientStop Offset="1" Color="#FF9562CE" />
     </LinearGradientBrush>
     <SolidColorBrush x:Key="Tks.Brush.ComposerButton" Color="#FF292835" />
     <SolidColorBrush x:Key="Tks.Brush.ComposerSend" Color="#FF3C3B47" />

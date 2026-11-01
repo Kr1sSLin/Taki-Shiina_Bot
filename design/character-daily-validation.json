@@ -1,0 +1,50 @@
+{
+  "prd": "04-v0.3",
+  "date": "2026-10-17",
+  "report_timezone": "Asia/Shanghai",
+  "character_timezone": "Asia/Tokyo",
+  "status": "local_implementation_and_offline_validation_passed",
+  "full_backend_regression": {
+    "tests_passed": 424,
+    "subtests_passed": 234,
+    "warnings": 13,
+    "note": "Completed before adding one additional backup recovery test. Existing dependency deprecation warnings remain."
+  },
+  "final_daily_and_persona_suite": {
+    "tests_passed": 32,
+    "subtests_passed": 46,
+    "includes_additional_backup_recovery_test": true
+  },
+  "controlled_chat_replay": {
+    "cases": 12,
+    "passed": 12,
+    "rejected_draft_characters_delivered": 0,
+    "report": "design/character-daily-chat-regression.json"
+  },
+  "static_checks": {
+    "relevant_files_checked": 24,
+    "syntax_passed": true,
+    "privacy_findings": 0,
+    "diff_whitespace_passed": true,
+    "direct_text_provider_call_sites": 1,
+    "direct_text_provider_call_location": "services/public_policy.py:checked_completion"
+  },
+  "acceptance": {
+    "P01_to_P04_implemented": true,
+    "P_A01_to_P_A08_offline_plumbing_covered": true,
+    "real_model_calls": 0,
+    "real_model_replay": "deferred_by_user_pending_fixed_sample_review",
+    "semantic_quality_measured": false,
+    "human_style_review": "pending",
+    "fixed_human_cases": 14,
+    "human_review_document": "design/character-daily-human-review.md",
+    "note": "Scripted labels verify rejection, persistence and delivery mechanisms. They do not establish real model semantic accuracy or human style acceptance."
+  },
+  "release": {
+    "new_authored_daily_default_enabled": false,
+    "existing_approved_events_preserved": true,
+    "deployed": false,
+    "production_data_read": false,
+    "production_configuration_changed": false
+  }
+}

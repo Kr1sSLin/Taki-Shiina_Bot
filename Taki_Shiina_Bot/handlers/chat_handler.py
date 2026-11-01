@@ -1,13 +1,14 @@
+from services.public_policy import public_messages, checked_completion
 import asyncio
 import datetime
 import os
 import random
-import re
 import uuid
-import traceback
 from datetime import timedelta, timezone
 
-from text_utils import with_history_timestamp
+from text_utils import compute_debounce_window, extract_timer_instruction, with_history_timestamp
+from services.privacy import scrub_locations
+from services.permission_guard import PermissionGuard
 
 # 飞书告警模块（可选）
 try:
@@ -15,28 +16,6 @@ try:
     ALERT_ENABLED = True
 except (ImportError, ValueError):
     ALERT_ENABLED = False
-
-
-def compute_debounce_window(bot_last, now_utc, debounce_base, debounce_extended, debounce_extend_window):
-    if not bot_last:
-        return debounce_base
-
-    seconds_since_response = (now_utc - bot_last).total_seconds()
-    if seconds_since_response < debounce_extend_window:
-        return debounce_extended
-    return debounce_base
-
-
-def extract_timer_instruction(raw_reply):
-    timer_pattern = r"\[\[TIMER:(\d{1,2}:\d{2})\|(.*?)\]\]"
-    match = re.search(timer_pattern, raw_reply)
-    if not match:
-        return raw_reply, None, None
-
-    target_time_str = match.group(1)
-    reminder_text = match.group(2)
-    cleaned_reply = re.sub(timer_pattern, "", raw_reply).strip()
-    return cleaned_reply, target_time_str, reminder_text
 
 
 def create_chat_handler(
@@ -62,7 +41,13 @@ def create_chat_handler(
     inject_emojis,
     logger,
 ):
+    permission_guard = getattr(memory_service, "permission_guard", None) or PermissionGuard()
+
     async def extract_memory(user_id, user_text, history):
+        if not permission_guard.owner_context_allowed(user_id):
+            return
+        user_text = scrub_locations(user_text)
+        history = scrub_locations(history)
         try:
             recent_context_str = str(history[-4:])
             ex_prompt = """
@@ -72,26 +57,26 @@ def create_chat_handler(
             1. 如果全是废话、情绪发泄或重复信息，直接回\"无\"。
             2. 必须是关于【用户】的客观事实。
             """
-            summary_res = await client.chat.completions.create(
+            summary_res = await checked_completion(client,
                 model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-                messages=[
+                messages=public_messages([
                     {"role": "system", "content": ex_prompt},
                     {
                         "role": "user",
                         "content": f"对话背景：\n{recent_context_str}\n\n用户最新发言：{user_text}",
                     },
-                ],
+                ], 'handlers/chat_handler.py'),
                 max_tokens=100,
                 temperature=0.8,
                 frequency_penalty=0.5,
                 presence_penalty=0.5,
             )
             info = summary_res.choices[0].message.content.strip()
-            if info and info.strip() not in ("无", "无。", "无新信息", "无新信息。"):
-                logger.info(f"🧠 [情报捕获] {info}")
+            if permission_guard.owner_context_allowed(user_id) and info and info.strip() not in ("无", "无。", "无新信息", "无新信息。"):
+                logger.info("情报提取完成")
                 memory_service.update_profile(user_id, info)
         except Exception as e:
-            logger.error(f"情报提取失败: {e}")
+            logger.error("Memory extraction failed", exc_info=True)
 
     async def process_chat_buffer(context):
         user_id = context.job.chat_id
@@ -105,18 +90,21 @@ def create_chat_handler(
         if user_id not in message_buffer or not message_buffer[user_id]:
             return
 
-        full_user_text = " ".join(message_buffer[user_id])
+        # An unverified SQL restore raises here, before consuming the buffer or
+        # calling any model; a disabled fact only quarantines old context.
+        legacy_allowed = permission_guard.owner_context_allowed(user_id)
+        full_user_text = scrub_locations(" ".join(message_buffer[user_id]))
         message_buffer[user_id] = []
         if user_id in debounce_jobs:
             del debounce_jobs[user_id]
 
-        logger.info(f"📩 [{user_id}] 打包接收: {full_user_text}")
+        logger.info("收到合并消息 chars=%d", len(full_user_text))
         last_activity[str(user_id)] = datetime.datetime.now(timezone.utc)
 
         try:
             if str(user_id) not in user_chat_history:
                 user_chat_history[str(user_id)] = []
-            history = user_chat_history[str(user_id)]
+            history = user_chat_history[str(user_id)] if legacy_allowed else []
 
             utc_now = datetime.datetime.now(timezone.utc)
             beijing_now = utc_now + timedelta(hours=8)
@@ -144,9 +132,12 @@ def create_chat_handler(
                     trigger_prompt += f"\n\n🛑【突发状态】：{reaction}"
                     break
 
-            system_content = (
-                f"{await get_system_prompt(user_id)}\n{time_str}\n{weather_info}\n\n{time_enforcement}"
-            )
+            prompt = await get_system_prompt(user_id) if legacy_allowed else await get_system_prompt(user_id, allow_private_context=False)
+            if legacy_allowed and not permission_guard.owner_context_allowed(user_id):
+                legacy_allowed = False
+                history = []
+                prompt = await get_system_prompt(user_id, allow_private_context=False)
+            system_content = f"{prompt}\n{time_str}\n{weather_info}\n\n{time_enforcement}"
 
             messages = [{"role": "system", "content": system_content}]
             messages.extend(with_history_timestamp(m) for m in history)
@@ -170,11 +161,12 @@ def create_chat_handler(
                  """
 
             messages.append({"role": "user", "content": full_user_text + force_instruction})
+            messages = scrub_locations(messages)
 
-            response = await client.chat.completions.create(
-                model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"), messages=messages, temperature=0.75
+            response = await checked_completion(client,
+                model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"), messages=public_messages(messages, 'handlers/chat_handler.py'), temperature=0.75
             )
-            raw_reply = response.choices[0].message.content
+            raw_reply = scrub_locations(response.choices[0].message.content)
 
             raw_reply, target_time_str, reminder_text = extract_timer_instruction(raw_reply)
 
@@ -210,12 +202,16 @@ def create_chat_handler(
                     )
 
                     local_target_str = target_dt.strftime("%Y-%m-%d %H:%M:%S")
-                    logger.info(f"⏰ [闹钟设置成功] 将在 {local_target_str} (北京时间) 提醒: {reminder_text}")
+                    logger.info("闹钟设置成功")
 
                 except Exception as e:
-                    logger.error(f"❌ 设置闹钟失败: {e}")
+                    logger.error("Reminder scheduling failed", exc_info=True)
 
             now_ms = int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
+            if not legacy_allowed:
+                # Retain stored audit history while excluding it from every
+                # model/extraction context during quarantine.
+                history = user_chat_history[str(user_id)]
             history.append({"role": "user", "content": full_user_text, "ts": now_ms - 1})
             history.append({"role": "assistant", "content": raw_reply, "ts": now_ms})
             if len(history) > 300:
@@ -224,7 +220,7 @@ def create_chat_handler(
 
             last_bot_response_time[str(user_id)] = datetime.datetime.now(timezone.utc)
 
-            if len(full_user_text) > 5:
+            if legacy_allowed and len(full_user_text) > 5:
                 asyncio.create_task(extract_memory(user_id, full_user_text, history))
 
             typing_delay = len(raw_reply) * 0.1 + random.uniform(0.5, 1.0)
@@ -246,11 +242,11 @@ def create_chat_handler(
                 await context.bot.send_message(chat_id=user_id, text=msg)
 
         except Exception as e:
-            logger.error(f"❌ Chat Error: {e}")
+            logger.error("Legacy chat failed", exc_info=True)
             # 发送飞书告警
             if ALERT_ENABLED:
                 try:
-                    error_detail = f"聊天处理异常\n\n用户ID: {user_id}\n用户消息: {full_user_text[:100]}...\n\n错误类型: {type(e).__name__}\n错误信息: {str(e)}\n\n堆栈追踪:\n{traceback.format_exc()}"
+                    error_detail = f"聊天处理异常\n\n错误类型: {type(e).__name__}"
                     send_alert(error_detail)
                 except Exception:
                     pass
@@ -261,10 +257,8 @@ def create_chat_handler(
 
         user_id = update.effective_chat.id
         user_text = update.message.text
-        user_name = update.effective_user.username or update.effective_user.first_name or "未知"
-
         if str(user_id) != str(owner_id):
-            logger.warning(f"⚠️ [拦截] 陌生人 {user_name}({user_id}) 试图说话: {user_text}")
+            logger.warning("已拦截未授权用户消息")
 
             if user_text:
                 asyncio.create_task(
@@ -272,8 +266,7 @@ def create_chat_handler(
                         f"⚠️ **[安全警告]**\n"
                         f"有陌生人试图和立希搭话！\n"
                         f"ID: `{user_id}`\n"
-                        f"昵称: {user_name}\n"
-                        f"内容: {user_text}"
+                        f"消息已拦截。"
                     )
                 )
             return

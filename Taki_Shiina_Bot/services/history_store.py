@@ -10,14 +10,7 @@ class HistoryStore:
         self.store = SecureJsonStore(self.history_file, self.logger)
 
     def load(self):
-        try:
-            return self.store.load({})
-        except Exception as e:
-            self.logger.error(f"⚠️ 读取历史记录失败: {e}")
-            return {}
+        return self.store.load_strict({})
 
     def save(self, history_data):
-        try:
-            self.store.save(history_data)
-        except Exception as e:
-            self.logger.error(f"❌ 保存历史失败: {e}")
+        self.store.save_strict(history_data)

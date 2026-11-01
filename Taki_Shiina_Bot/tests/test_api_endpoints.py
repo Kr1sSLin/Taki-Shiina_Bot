@@ -88,7 +88,13 @@ class ApiEndpointsTestCase(unittest.TestCase):
     # ---------- 菜单与发送 ----------
     def test_interaction_items_endpoint(self):
         self.set_balance(20)
-        response = self.client.get("/api/v1/interaction/items", headers=AUTH_HEADER)
+        original = self.rig.handler.list_items
+        def list_items(user_id):
+            with self.assertRaises(RuntimeError):
+                asyncio.get_running_loop()
+            return original(user_id)
+        with patch.object(self.rig.handler, "list_items", side_effect=list_items):
+            response = self.client.get("/api/v1/interaction/items", headers=AUTH_HEADER)
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["code"], 0)
@@ -261,6 +267,7 @@ class ApiEndpointsTestCase(unittest.TestCase):
             "/api/v1/admin/gamification-config",
             headers=AUTH_HEADER,
             json={
+                "expectedRevision": config["data"]["revision"],
                 "interaction_items": items
                 + [
                     {
@@ -276,6 +283,10 @@ class ApiEndpointsTestCase(unittest.TestCase):
         ).json()
         self.assertEqual(updated["code"], 0)
         self.assertEqual(len(updated["data"]["interaction_items"]), 6)
+        stale = self.client.put("/api/v1/admin/gamification-config", headers=AUTH_HEADER,
+                                json={"expectedRevision": config["data"]["revision"], "interaction_items": items})
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.json()["code"], 40901)
         # 新物品按 sort_order 追加到平铺列表末尾（FR-5）
         menu = self.client.get("/api/v1/interaction/items", headers=AUTH_HEADER).json()
         self.assertEqual([item["id"] for item in menu["data"]["items"]][-1], "pudding")

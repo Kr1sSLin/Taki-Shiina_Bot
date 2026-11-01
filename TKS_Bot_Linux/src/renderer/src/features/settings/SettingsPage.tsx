@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { AppSettings } from '@shared/protocol'
+import type { AppSettings, ProactiveStatus } from '@shared/protocol'
 import type { AttachmentUsage } from '@shared/ipc'
 import { Button, IconButton, Input, Modal, Segmented, Spinner, Switch } from '../../components/primitives'
 import { IconCopy, IconDownload, IconFolder, IconLogout, IconRefresh, IconTrash } from '../../components/Icons'
@@ -119,6 +119,9 @@ export function SettingsPage(): JSX.Element {
   const [logoutClearData, setLogoutClearData] = useState(false)
   const [usage, setUsage] = useState<AttachmentUsage | null>(null)
   const [busyKey, setBusyKey] = useState<string | null>(null)
+  const [proactive, setProactive] = useState<ProactiveStatus | null>(null)
+  const [proactiveError, setProactiveError] = useState<string | null>(null)
+  const [proactiveBusy, setProactiveBusy] = useState(false)
   const [revealOrigin, setRevealOrigin] = useState<{ x: number; y: number } | null>(null)
   const [revealActive, setRevealActive] = useState(false)
 
@@ -148,6 +151,28 @@ export function SettingsPage(): JSX.Element {
       alive = false
     }
   }, [])
+
+  useEffect(() => {
+    let alive = true
+    void window.tks.settings.getProactive().then((value) => {
+      if (alive) setProactive(value)
+    }).catch((err) => {
+      if (alive) setProactiveError(describeError(err))
+    })
+    return () => { alive = false }
+  }, [])
+
+  async function changeProactive(enabled: boolean): Promise<void> {
+    setProactiveBusy(true)
+    try {
+      setProactive(await window.tks.settings.setProactive(enabled))
+      setProactiveError(null)
+    } catch (err) {
+      setProactiveError(describeError(err))
+    } finally {
+      setProactiveBusy(false)
+    }
+  }
 
   useEffect(
     () => () => {
@@ -648,6 +673,15 @@ export function SettingsPage(): JSX.Element {
         {/* ------------------------------ 通知 ------------------------------ */}
         <section className="section">
           <h2 className="section-title">{t('settings.section.notifications')}</h2>
+          <Switch
+            checked={proactive?.enabled ?? false}
+            disabled={!proactive || proactiveBusy}
+            label={t('settings.proactive.enabled')}
+            hint={t('settings.proactive.hint')}
+            onChange={(value) => { void changeProactive(value) }}
+          />
+          {proactiveError ? <p className="field-error" role="alert">{proactiveError}</p> : null}
+          {proactive?.globally_enabled === false ? <p className="row-hint">{t('settings.proactive.globallyOff')}</p> : null}
           {/* FR-NOTI-7：五类通知分类开关 */}
           {NOTIFICATION_OPTIONS.map((option) => (
             <Switch

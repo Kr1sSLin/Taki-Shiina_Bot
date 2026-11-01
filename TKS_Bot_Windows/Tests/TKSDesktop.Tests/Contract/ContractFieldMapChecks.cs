@@ -31,16 +31,20 @@ internal static partial class ContractChecks
         yield return Dto("TimelineItemDto", typeof(TimelineItemDto),
             "messageId", "userId", "role", "content", "timestamp",
             "contentType", "itemId", "itemName", "itemIcon", "costPoints",
-            "interactionFailed", "messageKind", "greetingScenario", "modelProvider");
-        yield return Dto("ChatHistoryDataDto", typeof(ChatHistoryDataDto), "items");
-        yield return Dto("UserFactDto", typeof(UserFactDto), "factId", "userId", "fact", "timestamp");
-        yield return Dto("MemoryFactsDataDto", typeof(MemoryFactsDataDto), "items");
+            "interactionFailed", "messageKind", "greetingScenario", "modelProvider", "requestId", "imageCount", "historySource");
+        yield return Dto("ChatHistoryDataDto", typeof(ChatHistoryDataDto), "items", "operations",
+            "historySyncVersion", "datasetGeneration", "nextCursor", "hasMore", "blocked", "pollAfterMs");
+        yield return Dto("ChatOperationDto", typeof(ChatOperationDto), "status", "requestIds", "sources", "failureCategory", "refundStatus", "retryable", "recoveryAction");
+        yield return Dto("UserFactDto", typeof(UserFactDto), "factId", "userId", "fact", "timestamp",
+            "eventId", "revision", "revisionId", "permissionVersion", "enabled", "stage",
+            "truthStatus", "score", "sourceMessageId", "temporalValidity");
+        yield return Dto("MemoryFactsDataDto", typeof(MemoryFactsDataDto), "items", "nextCursor", "hasMore");
         yield return Dto("CityDataDto", typeof(CityDataDto), "city");
         yield return Dto("CityUpdateRequestDto", typeof(CityUpdateRequestDto), "city");
         yield return Dto("RestChatRequestDto", typeof(RestChatRequestDto),
             "requestId", "conversationId", "message", "stream", "traceId");
         yield return Dto("RestChatDataDto", typeof(RestChatDataDto),
-            "conversationId", "reply", "messageId", "model", "debounceWindowSec", "timerInstruction");
+            "conversationId", "reply", "messageId", "model", "debounceWindowSec", "timerInstruction", "recoveryAction", "requestIds");
         yield return Dto("TimerInstructionDto", typeof(TimerInstructionDto), "target", "text");
 
         // ---- section 5.3.1 client to server frames ----
@@ -58,10 +62,10 @@ internal static partial class ContractChecks
             "timerInstruction", "requestIds", "messageKind", "greetingScenario",
             "interactionItemId", "interactionItemName", "interactionItemIcon", "interactionFailed");
         yield return Dto("ChatEchoPayloadDto", typeof(ChatEchoPayloadDto),
-            "content", "imageCount", "timestamp", "originDeviceId");
+            "content", "imageCount", "clientMessageId", "timestamp", "originDeviceId");
         yield return Dto("ChatQueuedPayloadDto", typeof(ChatQueuedPayloadDto), "debounceWindowSec");
         yield return Dto("BotErrorPayloadDto", typeof(BotErrorPayloadDto),
-            "errorCode", "message", "requestIds", "timestamp");
+            "errorCode", "message", "requestIds", "timestamp", "retryable", "recoveryAction", "refundStatus", "failureCategory");
         yield return Dto("AuthExpiredPayloadDto", typeof(AuthExpiredPayloadDto), "reason", "timestamp");
         yield return Dto("PointsChangedPayloadDto", typeof(PointsChangedPayloadDto),
             "ledgerId", "reasonCode", "changeAmount", "balanceAfter", "balance",
@@ -87,7 +91,7 @@ internal static partial class ContractChecks
         yield return Dto7("InteractionSendDataDto", typeof(InteractionSendDataDto),
             "success", "itemId", "requestId", "balance", "charged", "refunded", "duplicate", "item",
             "reply", "messageId", "timerInstruction", "mergedCount", "mergedRequestIds",
-            "fallbackText", "errorCode", "messageText");
+            "fallbackText", "errorCode", "messageText", "requestIds", "retryable", "recoveryAction", "refundStatus", "failureCategory");
         yield return Dto7("InteractionSendItemDto", typeof(InteractionSendItemDto), "id", "name", "icon", "costPoints");
 
         // ---- points / level / makeup card (camelCase outer) ----

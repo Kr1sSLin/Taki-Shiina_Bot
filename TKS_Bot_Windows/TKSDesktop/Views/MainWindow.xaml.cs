@@ -141,27 +141,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!IsVisible)
-        {
-            Show();
-        }
-
-        if (WindowState == WindowState.Minimized)
-        {
-            WindowState = WindowState.Normal;
-        }
-
-        _ = Activate();
-        ChatPane.FocusInput();
-        _ = Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
-        {
-            if (IsVisible && WindowState != WindowState.Minimized)
-            {
-                _ = Activate();
-                ChatPane.FocusInput();
-            }
-        }));
-        _ = _viewModel.OnActivatedAsync();
+        var restored = WindowActivation.Restore(this);
+        _logger.LogInformation("窗口唤回 visible={Visible} state={State} active={Active} restored={Restored}",
+            IsVisible, WindowState, IsActive, restored);
+        if (IsEnabled && IsActive) ChatPane.FocusInput();
     }
 
     /// <summary>托盘与全局快捷键的显示/隐藏切换。</summary>
@@ -415,6 +398,17 @@ public partial class MainWindow : Window
         _ = lParam;
         _ = handled;
 
+        // Releasing Alt after the global activation shortcut can request the
+        // menu bar on this menu-less window. DefWindowProc would beep. Keep
+        // character commands (including Alt+Space's system menu) untouched.
+        if (message == NativeMethods.WmSysCommand
+            && (wParam.ToInt64() & 0xFFF0) == NativeMethods.ScKeyMenu
+            && lParam == IntPtr.Zero)
+        {
+            handled = true;
+            return IntPtr.Zero;
+        }
+
         if (message is NativeMethods.WmDisplayChange or NativeMethods.WmDpiChanged)
         {
             // Let WPF apply its own DPI transition first, then revalidate the saved
@@ -573,6 +567,7 @@ public partial class MainWindow : Window
     {
         var viewModel = _provider.GetRequiredService<SettingsViewModel>();
         _ = viewModel.RefreshStorageAsync();
+        _ = viewModel.RefreshProactiveAsync();
 
         ShowEmbedded(
             () => new SettingsView { DataContext = viewModel },

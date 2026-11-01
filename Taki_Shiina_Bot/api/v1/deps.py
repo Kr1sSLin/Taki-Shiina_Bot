@@ -12,8 +12,14 @@ from typing import Any
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
+from services.input_budget import error_data
 
 from auth_utils import AuthContext, DeviceEntry, resolve_auth_context
+
+
+async def storage_busy_response(request, _error):
+    return business_error(50301, "存储暂时繁忙，请使用原请求重试", {"retryable": True, "recoveryAction": "retry_same_request"},
+                          resolve_trace_id(request), http_status=503)
 
 # 业务错误码（HTTP 层统一返回 200 + code，便于客户端按 code 判定业务结果）
 CODE_OK = 0
@@ -78,7 +84,7 @@ def resolve_trace_id(request) -> str:
 
 
 def response_body(code: int, message: str, data: Any, trace_id: str) -> dict[str, Any]:
-    return {"code": code, "message": message, "data": data, "traceId": trace_id}
+    return {"code": code, "message": message, "data": error_data(code, data), "traceId": trace_id}
 
 
 def ok(data: Any, trace_id: str, message: str = "ok") -> dict[str, Any]:

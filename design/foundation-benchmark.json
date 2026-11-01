@@ -1,0 +1,14 @@
+{
+  "python": "3.14.6",
+  "platform": "win32",
+  "facts": 250,
+  "write_p50_ms": 2.641,
+  "write_p95_ms": 3.169,
+  "search_ms": 13.576,
+  "search_peak_bytes": 333800,
+  "recall": 1.0,
+  "backup_restore_rebuild_ms": 13.778,
+  "restored_matches": 250,
+  "restore_guard_verified": true,
+  "note": "Synthetic bounded substring retrieval; not semantic recall or a production capacity claim."
+}

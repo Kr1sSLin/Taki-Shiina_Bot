@@ -1,0 +1,325 @@
+{
+  "public_policy_version": "08-v0.3",
+  "sample_kind": "offline_scripted_provider",
+  "real_model_calls": 0,
+  "batching_delay_seconds": 0,
+  "semantic_quality_measured": false,
+  "production_sla_verified": false,
+  "cases": 12,
+  "passed": 12,
+  "p50_seconds": 0.1068,
+  "p95_seconds": 0.2418,
+  "worst_seconds": 0.2418,
+  "unexpected_failure_rate": 0.0,
+  "note": "Scripted fixture labels test full checking, bounded rewrite and zero unapproved transport bytes. Real model latency/cost and human style acceptance remain unfrozen.",
+  "samples": [
+    {
+      "case": "E01-interest",
+      "expected": "completed",
+      "outcome": "completed",
+      "passed": true,
+      "rejected_draft_characters_delivered": 0,
+      "elapsed_seconds": 0.2418,
+      "calls": [
+        "chat",
+        "reply_check"
+      ],
+      "label": "style_anchor",
+      "observations": {
+        "turns": 1,
+        "committed": 1,
+        "completed": 1,
+        "failed": 0,
+        "timeouts": 0,
+        "p50_seconds": 0.10747599601745605,
+        "p95_seconds": 0.10747599601745605,
+        "worst_seconds": 0.10747599601745605,
+        "worst_wait_seconds": 0.10747599601745605,
+        "timeout_rate": 0.0
+      }
+    },
+    {
+      "case": "E03-date",
+      "expected": "completed",
+      "outcome": "completed",
+      "passed": true,
+      "rejected_draft_characters_delivered": 0,
+      "elapsed_seconds": 0.1381,
+      "calls": [
+        "chat",
+        "reply_check"
+      ],
+      "label": "style_anchor",
+      "observations": {
+        "turns": 1,
+        "committed": 1,
+        "completed": 1,
+        "failed": 0,
+        "timeouts": 0,
+        "p50_seconds": 0.059064388275146484,
+        "p95_seconds": 0.059064388275146484,
+        "worst_seconds": 0.059064388275146484,
+        "worst_wait_seconds": 0.059064388275146484,
+        "timeout_rate": 0.0
+      }
+    },
+    {
+      "case": "E01-followup",
+      "expected": "completed",
+      "outcome": "completed",
+      "passed": true,
+      "rejected_draft_characters_delivered": 0,
+      "elapsed_seconds": 0.1528,
+      "calls": [
+        "chat",
+        "reply_check"
+      ],
+      "label": "style_anchor",
+      "observations": {
+        "turns": 1,
+        "committed": 1,
+        "completed": 1,
+        "failed": 0,
+        "timeouts": 0,
+        "p50_seconds": 0.10575604438781738,
+        "p95_seconds": 0.10575604438781738,
+        "worst_seconds": 0.10575604438781738,
+        "worst_wait_seconds": 0.10575604438781738,
+        "timeout_rate": 0.0
+      }
+    },
+    {
+      "case": "N01-stage",
+      "expected": "failed",
+      "outcome": "failed",
+      "passed": true,
+      "rejected_draft_characters_delivered": 0,
+      "elapsed_seconds": 0.091,
+      "calls": [
+        "chat",
+        "chat_rewrite"
+      ],
+      "label": "style",
+      "observations": {
+        "turns": 1,
+        "committed": 0,
+        "completed": 0,
+        "failed": 1,
+        "timeouts": 0,
+        "p50_seconds": null,
+        "p95_seconds": null,
+        "worst_seconds": null,
+        "worst_wait_seconds": 0.04506993293762207,
+        "timeout_rate": 0.0
+      }
+    },
+    {
+      "case": "N02-delay",
+      "expected": "failed",
+      "outcome": "failed",
+      "passed": true,
+      "rejected_draft_characters_delivered": 0,
+      "elapsed_seconds": 0.0922,
+      "calls": [
+        "chat",
+        "chat_rewrite"
+      ],
+      "label": "style",
+      "observations": {
+        "turns": 1,
+        "committed": 0,
+        "completed": 0,
+        "failed": 1,
+        "timeouts": 0,
+        "p50_seconds": null,
+        "p95_seconds": null,
+        "worst_seconds": null,
+        "worst_wait_seconds": 0.07546639442443848,
+        "timeout_rate": 0.0
+      }
+    },
+    {
+      "case": "N03-promise",
+      "expected": "failed",
+      "outcome": "failed",
+      "passed": true,
+      "rejected_draft_characters_delivered": 0,
+      "elapsed_seconds": 0.0917,
+      "calls": [
+        "chat",
+        "reply_check",
+        "chat_rewrite",
+        "reply_check"
+      ],
+      "label": "evidence",
+      "observations": {
+        "turns": 1,
+        "committed": 0,
+        "completed": 0,
+        "failed": 1,
+        "timeouts": 0,
+        "p50_seconds": null,
+        "p95_seconds": null,
+        "worst_seconds": null,
+        "worst_wait_seconds": 0.047861576080322266,
+        "timeout_rate": 0.0
+      }
+    },
+    {
+      "case": "N04-major",
+      "expected": "failed",
+      "outcome": "failed",
+      "passed": true,
+      "rejected_draft_characters_delivered": 0,
+      "elapsed_seconds": 0.0759,
+      "calls": [
+        "chat",
+        "chat_rewrite"
+      ],
+      "label": "major_events",
+      "observations": {
+        "turns": 1,
+        "committed": 0,
+        "completed": 0,
+        "failed": 1,
+        "timeouts": 0,
+        "p50_seconds": null,
+        "p95_seconds": null,
+        "worst_seconds": null,
+        "worst_wait_seconds": 0.05922818183898926,
+        "timeout_rate": 0.0
+      }
+    },
+    {
+      "case": "N05-relationship",
+      "expected": "failed",
+      "outcome": "failed",
+      "passed": true,
+      "rejected_draft_characters_delivered": 0,
+      "elapsed_seconds": 0.1224,
+      "calls": [
+        "chat",
+        "chat_rewrite"
+      ],
+      "label": "relationship",
+      "observations": {
+        "turns": 1,
+        "committed": 0,
+        "completed": 0,
+        "failed": 1,
+        "timeouts": 0,
+        "p50_seconds": null,
+        "p95_seconds": null,
+        "worst_seconds": null,
+        "worst_wait_seconds": 0.10649967193603516,
+        "timeout_rate": 0.0
+      }
+    },
+    {
+      "case": "N06-low-memory",
+      "expected": "failed",
+      "outcome": "failed",
+      "passed": true,
+      "rejected_draft_characters_delivered": 0,
+      "elapsed_seconds": 0.1083,
+      "calls": [
+        "chat",
+        "reply_check",
+        "chat_rewrite",
+        "reply_check"
+      ],
+      "label": "evidence",
+      "observations": {
+        "turns": 1,
+        "committed": 0,
+        "completed": 0,
+        "failed": 1,
+        "timeouts": 0,
+        "p50_seconds": null,
+        "p95_seconds": null,
+        "worst_seconds": null,
+        "worst_wait_seconds": 0.057744741439819336,
+        "timeout_rate": 0.0
+      }
+    },
+    {
+      "case": "N07-subject",
+      "expected": "failed",
+      "outcome": "failed",
+      "passed": true,
+      "rejected_draft_characters_delivered": 0,
+      "elapsed_seconds": 0.1068,
+      "calls": [
+        "chat",
+        "reply_check",
+        "chat_rewrite",
+        "reply_check"
+      ],
+      "label": "subject",
+      "observations": {
+        "turns": 1,
+        "committed": 0,
+        "completed": 0,
+        "failed": 1,
+        "timeouts": 0,
+        "p50_seconds": null,
+        "p95_seconds": null,
+        "worst_seconds": null,
+        "worst_wait_seconds": 0.08344817161560059,
+        "timeout_rate": 0.0
+      }
+    },
+    {
+      "case": "N08-plan",
+      "expected": "failed",
+      "outcome": "failed",
+      "passed": true,
+      "rejected_draft_characters_delivered": 0,
+      "elapsed_seconds": 0.1226,
+      "calls": [
+        "chat",
+        "reply_check",
+        "chat_rewrite",
+        "reply_check"
+      ],
+      "label": "time",
+      "observations": {
+        "turns": 1,
+        "committed": 0,
+        "completed": 0,
+        "failed": 1,
+        "timeouts": 0,
+        "p50_seconds": null,
+        "p95_seconds": null,
+        "worst_seconds": null,
+        "worst_wait_seconds": 0.10665583610534668,
+        "timeout_rate": 0.0
+      }
+    },
+    {
+      "case": "N09-check-outage",
+      "expected": "failed",
+      "outcome": "failed",
+      "passed": true,
+      "rejected_draft_characters_delivered": 0,
+      "elapsed_seconds": 0.0626,
+      "calls": [
+        "chat",
+        "reply_check"
+      ],
+      "label": "unavailable",
+      "observations": {
+        "turns": 1,
+        "committed": 0,
+        "completed": 0,
+        "failed": 1,
+        "timeouts": 0,
+        "p50_seconds": null,
+        "p95_seconds": null,
+        "worst_seconds": null,
+        "worst_wait_seconds": 0.05575895309448242,
+        "timeout_rate": 0.0
+      }
+    }
+  ]
+}

@@ -35,7 +35,7 @@ const USER = process.env.USERNAME_FOR_LOGIN ?? 'kris'
 const PASS = process.env.PASSWORD_FOR_LOGIN ?? 'taki'
 const USER_ID = process.env.USER_ID ?? 'kris'
 const DEVICE_WHITELIST = (process.env.DEVICE_WHITELIST ?? '').split(',').filter(Boolean)
-const MERGE_WAIT_MS = Number(process.env.MERGE_WAIT_MS ?? 1200)
+const MERGE_WAIT_MS = Number(process.env.MERGE_WAIT_MS ?? 250)
 const ACCESS_TTL_SEC = Number(process.env.ACCESS_TTL_SEC ?? 900)
 /** 设为正数可模拟运维配置了设备白名单（触发 40301）。 */
 const KICK_ON_LOGIN = process.env.KICK_ON_LOGIN === '1'
@@ -46,6 +46,8 @@ const FAIL_INTERACTION = process.env.FAIL_INTERACTION === '1'
 /* 内存状态                                                                    */
 /* -------------------------------------------------------------------------- */
 
+const historyCursors = new Map()
+const historyImages = new Map()
 const state = {
   /** accessToken → { userId, deviceId } */
   accessTokens: new Map(),
@@ -55,7 +57,11 @@ const state = {
   ledger: [],
   ledgerSeq: 1,
   history: [],
+  operations: [],
   facts: [],
+  correctionRequests: new Map(),
+  factSeq: 0,
+  proactiveEnabled: true,
   /** userId → [{requestId, content}] 防抖缓冲 */
   messageBuffer: new Map(),
   /** userId → Set<WebSocket> */
@@ -345,7 +351,11 @@ async function runReplyFlow({ requestIds, mergedText, itemName, withTimer = fals
 
   // 记忆提炼（异步）
   setTimeout(() => {
-    const fact = { factId: randomUUID(), userId: USER_ID, fact: `用户提到：${(mergedText ?? '').slice(0, 24)}`, timestamp: nowMs() }
+    const fact = { factId: randomUUID(), userId: USER_ID, fact: `用户提到：${(mergedText ?? '').slice(0, 24)}`,
+      timestamp: nowMs(), revision: 1, revisionId: randomUUID(), permissionVersion: 1,
+      domain: 'user_fact', modelPermission: 'allowed', stage: 'candidate', truthStatus: 'accepted', score: 0.3,
+      action: 'created', eventId: randomUUID(), sequence: ++state.factSeq,
+      originalFact: `用户提到：${(mergedText ?? '').slice(0, 24)}` }
     state.facts.unshift(fact)
     broadcast({ type: 'memory.fact.created', payload: fact })
   }, 200)
@@ -423,18 +433,98 @@ const server = createServer(async (req, res) => {
   }
 
   /* ------------------------------- 聊天历史 ---------------------------- */
+  const imageMatch = /^\/api\/v1\/chat\/images\/([^/]+)\/0$/.exec(path)
+  if (imageMatch && method === 'GET') {
+    const image = historyImages.get(imageMatch[1])
+    if (!image || image.owner !== auth.userId) return json(res, 404, envelope(null))
+    res.writeHead(200, { 'content-type': 'image/png' })
+    return res.end(image.bytes)
+  }
   if (path === '/api/v1/chat/history' && method === 'GET') {
     const since = Number(url.searchParams.get('since') ?? 0)
     const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') ?? 200), 500))
+    if (url.searchParams.has('cursor')) {
+      if (since !== 0) return json(res, 400, envelope(null, undefined, 40001, 'invalid cursor parameters'))
+      const rows = [...new Map(state.history.filter(x => x.userId === auth.userId).map(item => [item.messageId, item])).values()]
+      const cursor = url.searchParams.get('cursor')
+      const previous = cursor === 'start' ? { owner: auth.userId, position: 0, end: rows.length } : historyCursors.get(cursor)
+      if (!previous || previous.owner !== auth.userId) return json(res, 409, envelope({ reason: 'cursor_reset_required' }, undefined, 40910, 'reset'))
+      const end = previous.position === previous.end ? rows.length : previous.end
+      const position = Math.min(previous.position + limit, end)
+      const nextCursor = randomUUID()
+      historyCursors.set(nextCursor, { owner: auth.userId, position, end })
+      return json(res, 200, envelope({ historySyncVersion: 1, datasetGeneration: 'mock-history-v1',
+        items: rows.slice(previous.position, position).map(item => ({ ...item, historySource: 'sql' })),
+        nextCursor, hasMore: position < end, operations: state.operations }))
+    }
     const items = state.history.filter((x) => x.timestamp > since && x.userId === auth.userId).slice(-limit)
-    return json(res, 200, envelope({ items }))
+    return json(res, 200, envelope({ items, operations: state.operations }))
   }
 
   if (path === '/api/v1/memory/facts' && method === 'GET') {
-    const since = Number(url.searchParams.get('since') ?? 0)
+    const cursor = Number(url.searchParams.get('cursor') ?? 0)
     const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') ?? 200), 500))
-    const items = state.facts.filter((x) => x.timestamp > since).slice(-limit)
-    return json(res, 200, envelope({ items }))
+    const items = state.facts.filter((x) => x.sequence > cursor).sort((a, b) => a.sequence - b.sequence).slice(0, limit)
+    const nextCursor = items.at(-1)?.sequence ?? cursor
+    return json(res, 200, envelope({ items, nextCursor, hasMore: state.facts.some((x) => x.sequence > nextCursor) }))
+  }
+  const factMatch = /^\/api\/v1\/memory\/facts\/([^/]+)$/.exec(path)
+  if (factMatch && method === 'GET') {
+    const fact = state.facts.find((x) => x.factId === decodeURIComponent(factMatch[1]))
+    return fact ? json(res, 200, envelope({ ...fact, content: fact.originalFact, sources: [] })) : json(res, 403, envelope(null, undefined, 40301, 'fact unavailable'))
+  }
+  const permissionMatch = /^\/api\/v1\/memory\/facts\/([^/]+)\/permission$/.exec(path)
+  if (permissionMatch && method === 'PATCH') {
+    const body = await readBody(req)
+    const fact = state.facts.find((x) => x.factId === decodeURIComponent(permissionMatch[1]))
+    if (!fact) return json(res, 403, envelope(null, undefined, 40301, 'fact unavailable'))
+    if (body.expectedRevision !== fact.revision) return json(res, 409, envelope(null, undefined, 40901, 'revision changed'))
+    fact.revision += 1
+    fact.permissionVersion += 1
+    fact.modelPermission = body.enabled ? 'allowed' : 'blocked'
+    fact.fact = body.enabled ? fact.originalFact : ''
+    fact.action = body.enabled ? 'restored' : 'disabled'
+    fact.eventId = randomUUID()
+    fact.sequence = ++state.factSeq
+    return json(res, 200, envelope({ factId: fact.factId, revision: fact.revision, modelPermission: fact.modelPermission }))
+  }
+  const correctionMatch = /^\/api\/v1\/memory\/facts\/([^/]+)\/correction$/.exec(path)
+  if (correctionMatch && method === 'PATCH') {
+    const body = await readBody(req)
+    const fact = state.facts.find((x) => x.factId === decodeURIComponent(correctionMatch[1]))
+    if (!fact || fact.domain !== 'user_fact') return json(res, 403, envelope(null, undefined, 40301, 'fact unavailable'))
+    const key = `${auth.userId}:${body.operationId}`
+    const prior = state.correctionRequests.get(key)
+    if (prior) {
+      if (prior.factId !== fact.factId || prior.expectedRevision !== body.expectedRevision || prior.content !== body.content?.trim())
+        return json(res, 409, envelope(null, undefined, 40901, 'operation changed'))
+      return json(res, 200, envelope({ factId: fact.factId, revision: prior.revision }))
+    }
+    if (body.expectedRevision !== fact.revision) return json(res, 409, envelope(null, undefined, 40901, 'revision changed'))
+    const content = body.content?.trim()
+    if (!content || content.length > 2000 || content === fact.originalFact || !body.operationId)
+      return json(res, 400, envelope(null, undefined, 40001, 'invalid correction'))
+    fact.revision += 1
+    fact.revisionId = randomUUID()
+    fact.originalFact = content
+    fact.fact = fact.modelPermission === 'allowed' ? content : ''
+    fact.score = 0.6
+    fact.stage = 'formal'
+    fact.truthStatus = 'accepted'
+    fact.action = 'updated'
+    fact.eventId = randomUUID()
+    fact.sequence = ++state.factSeq
+    state.correctionRequests.set(key, { factId: fact.factId, expectedRevision: body.expectedRevision,
+      content, revision: fact.revision })
+    return json(res, 200, envelope({ factId: fact.factId, revision: fact.revision }))
+  }
+  if (path === '/api/v1/settings/proactive' && method === 'GET') {
+    return json(res, 200, envelope({ enabled: state.proactiveEnabled, globally_enabled: true, daily_used: 0, weekly_used: 0 }))
+  }
+  if (path === '/api/v1/settings/proactive' && method === 'PUT') {
+    const body = await readBody(req)
+    state.proactiveEnabled = body.enabled === true
+    return json(res, 200, envelope({ enabled: state.proactiveEnabled, daily_used: 0, weekly_used: 0 }))
   }
 
   /* ------------------------------ 城市设置 ----------------------------- */
@@ -842,6 +932,9 @@ const server = createServer(async (req, res) => {
         type: 'makeup_card.changed',
         payload: { reason: 'MONTHLY_GRANT', ...state.makeup, timestamp: nowMs() }
       })
+    } else if (kind === 'operation_failure') {
+      state.operations.push(body.operation)
+      if (!body.offline) broadcast(body.frame)
     } else if (kind === 'bot_error') {
       broadcast({
         type: 'bot.error',
@@ -871,10 +964,15 @@ const server = createServer(async (req, res) => {
     } else if (kind === 'unknown_frame') {
       // NFR-12：客户端必须忽略未知 type，不得抛错
       broadcast({ type: 'future.feature.event', payload: { whatever: true }, extraTopLevel: 1 })
+    } else if (kind === 'history_image') {
+      const requestId = 'p2-history-image'
+      historyImages.set(requestId, { owner: auth.userId, bytes: Buffer.from(body.data, 'base64') })
+      state.history.push({ messageId: requestId, requestId, imageCount: 1, userId: auth.userId,
+        role: 'user', content: '恢复后的历史原图', timestamp: nowMs() })
     } else if (kind === 'seed_history') {
       const n = Number(body.count ?? 12)
       for (let i = n; i > 0; i -= 1) {
-        const ts = nowMs() - i * 60000
+        const ts = body.timestamp ?? nowMs() - i * 60000
         state.history.push({ messageId: `seed_u_${i}`, userId: USER_ID, role: 'user', content: `历史用户消息 ${i}`, timestamp: ts })
         state.history.push({
           messageId: `seed_b_${i}`,
@@ -962,6 +1060,8 @@ wss.on('connection', (ws) => {
     let frame
     try {
       frame = JSON.parse(raw.toString('utf8'))
+      if (!frame || Array.isArray(frame) || typeof frame !== 'object' || typeof frame.type !== 'string' ||
+          ('payload' in frame && (!frame.payload || Array.isArray(frame.payload) || typeof frame.payload !== 'object'))) throw new Error('invalid frame')
     } catch {
       ws.send(JSON.stringify({ type: 'bot.error', requestId: null, payload: { errorCode: 'INVALID_JSON', message: '无效的 JSON 格式', requestIds: [], timestamp: nowMs() } }))
       return
@@ -972,8 +1072,13 @@ wss.on('connection', (ws) => {
     const type = frame.type
 
     if (type === 'ping') {
-      // pong 是顶层 {type,timestamp}，无 payload，且向该账号所有连接广播
-      broadcast({ type: 'pong', timestamp: nowMs() })
+      const timestamps = [frame, frame.payload ?? {}].filter((item) => 'timestamp' in item).map((item) => item.timestamp)
+      if (timestamps.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value < 0) ||
+          (timestamps.length === 2 && timestamps[0] !== timestamps[1])) {
+        ws.send(JSON.stringify({ type: 'bot.error', payload: { errorCode: 'INVALID_JSON', message: '无效的 JSON 格式' } }))
+        return
+      }
+      ws.send(JSON.stringify({ type: 'pong', timestamp: nowMs(), ...(timestamps.length ? { pingTimestamp: timestamps[0] } : {}) }))
       return
     }
 
@@ -1017,8 +1122,8 @@ wss.on('connection', (ws) => {
       // EDGE-L17：debounceWindowSec 由服务端下发
       broadcast({ type: 'chat.queued', requestId, payload: { debounceWindowSec: 8 } })
 
-      // 防抖窗口（测试期缩短为 400ms）
-      const debounceMs = Number(process.env.DEBOUNCE_MS ?? 400)
+      // 与现有自检驱动一致，礼物能在普通回复前摘走缓冲。
+      const debounceMs = Number(process.env.DEBOUNCE_MS ?? 600)
       setTimeout(() => {
         const pending = state.messageBuffer.get(auth.userId) ?? []
         if (pending.length === 0) return

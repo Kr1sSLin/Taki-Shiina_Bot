@@ -36,7 +36,7 @@ namespace TKSDesktop.App
 
             if (window.IsVisible)
             {
-                window.Activate();
+                if (!startHidden) window.ActivateAndFocus();
                 return;
             }
 

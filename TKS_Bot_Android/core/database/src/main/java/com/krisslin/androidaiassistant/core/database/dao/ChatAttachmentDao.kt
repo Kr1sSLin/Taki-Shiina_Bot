@@ -24,6 +24,9 @@ interface ChatAttachmentDao {
     @Query("SELECT * FROM chat_attachments WHERE message_id = :messageId")
     suspend fun getByMessageId(messageId: String): List<ChatAttachmentEntity>
 
+    @Query("SELECT * FROM chat_attachments WHERE session_id = :sessionId AND upload_state = 'pending_history' ORDER BY timestamp ASC")
+    suspend fun getPendingHistory(sessionId: String): List<ChatAttachmentEntity>
+
     @Query("DELETE FROM chat_attachments WHERE message_id = :messageId")
     suspend fun deleteByMessageId(messageId: String)
 

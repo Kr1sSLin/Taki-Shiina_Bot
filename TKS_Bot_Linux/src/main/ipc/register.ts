@@ -109,13 +109,13 @@ export function registerIpcHandlers(services: Services): void {
   })
 
   handle<ChatMessage[]>(IPC.chatListMessages, async (opts) => {
-    const o = (opts ?? {}) as { limit?: number; beforeTimestamp?: number }
-    return services.chat.list({ limit: o.limit ?? 80, beforeTimestamp: o.beforeTimestamp })
+    const o = (opts ?? {}) as { limit?: number; beforeTimestamp?: number; beforeMessageId?: string }
+    return services.chat.list({ limit: o.limit ?? 80, beforeTimestamp: o.beforeTimestamp, beforeMessageId: o.beforeMessageId })
   })
 
   handle<ChatMessage[]>(IPC.chatLoadOlder, async (opts) => {
-    const o = (opts ?? {}) as { beforeTimestamp: number; limit: number }
-    return services.chat.list({ limit: o.limit ?? 50, beforeTimestamp: o.beforeTimestamp })
+    const o = (opts ?? {}) as { beforeTimestamp: number; limit: number; beforeMessageId?: string }
+    return services.chat.list({ limit: o.limit ?? 50, beforeTimestamp: o.beforeTimestamp, beforeMessageId: o.beforeMessageId })
   })
 
   handle<void>(IPC.chatDeleteMessage, async (messageId) => {
@@ -127,10 +127,7 @@ export function registerIpcHandlers(services: Services): void {
   })
 
   handle<void>(IPC.chatRetryMessage, async (messageId) => {
-    const msg = listMessages({ limit: 1 }).find((m) => m.messageId === String(messageId))
-    if (!msg) return
-    // FR-CHAT-11：重试仅针对用户消息——把它标记回发送中，由渲染端复用同一 requestId 重发
-    void msg
+    await services.chat.retrySameRequest(String(messageId))
   })
 
   handle<ChatMessage[]>(IPC.chatSearch, async (keyword, limit) => {
@@ -172,14 +169,20 @@ export function registerIpcHandlers(services: Services): void {
     markAllNotificationsRead()
   })
   handle(IPC.historyListFacts, async (limit) => {
+    await services.chat.pullFacts().catch(() => undefined)
     const facts = listFacts(typeof limit === 'number' ? limit : 300)
-    if (facts.length === 0) {
-      // 本地为空时补拉一次（FR-SYNC-7）
-      await services.chat.pullFacts().catch(() => undefined)
-      return listFacts(typeof limit === 'number' ? limit : 300)
-    }
     return facts
   })
+  handle(IPC.historyFactDetail, (factId) => services.memory.detail(String(factId)))
+  handle(IPC.historySetFactPermission, (factId, enabled, expectedRevision) =>
+    services.memory.setPermission(String(factId), enabled as boolean, Number(expectedRevision)))
+  handle(IPC.historyCorrectFact, (factId, content, expectedRevision) =>
+    services.memory.correctFact(String(factId), String(content), Number(expectedRevision)))
+  handle(IPC.historyPendingPermissions, () => services.memory.pending())
+  handle(IPC.settingsGetProactive, () => services.rest.request('settings/proactive'))
+  handle(IPC.settingsSetProactive, (enabled) => services.rest.request('settings/proactive', {
+    method: 'PUT', body: { enabled }
+  }))
 
   /** FR-HIS-3：记忆搜索与按日期筛选（渲染端额外做本地二次过滤）。 */
   handle('history:searchFacts', (keyword, sinceMs, untilMs) =>

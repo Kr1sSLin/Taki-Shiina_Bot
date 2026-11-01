@@ -83,11 +83,47 @@ public interface IRestPort
         int limit,
         CancellationToken cancellationToken = default);
 
+    async Task<PortCall<ChatHistoryDataDto>> GetChatHistoryPageAsync(long since, int limit, CancellationToken cancellationToken = default)
+    {
+        var call = await GetChatHistoryAsync(since, limit, cancellationToken).ConfigureAwait(false);
+        return call.Success && call.Value is not null
+            ? PortCall<ChatHistoryDataDto>.Ok(new() { Items = call.Value.ToList() })
+            : PortCall<ChatHistoryDataDto>.Fail(call.ErrorCode, call.I18nKey);
+    }
+
     /// <summary>`GET /memory/facts?since={since}&amp;limit={limit}`（FR-W-SYNC-7）。</summary>
     Task<PortCall<IReadOnlyList<UserFactDto>>> GetMemoryFactsAsync(
         long since,
         int limit,
         CancellationToken cancellationToken = default);
+}
+
+/// <summary>Event cursor contract for memory; production REST adapter implements it.</summary>
+public interface IMemoryEventPort
+{
+    Task<PortCall<MemoryFactsDataDto>> GetMemoryEventPageAsync(long cursor, int limit, CancellationToken cancellationToken = default);
+}
+
+public interface IHistoryCursorPort
+{
+    string? HistoryScope { get; }
+    Task<PortCall<ChatHistoryDataDto>> GetHistoryCursorPageAsync(string cursor, int limit, CancellationToken cancellationToken = default);
+}
+
+/// <summary>Authenticated original image bytes from a reliable chat source.</summary>
+public sealed record HistoryImageBytes(string MimeType, byte[] Bytes);
+
+/// <summary>Optional binary history transport; legacy sync fakes may omit it.</summary>
+public interface IHistoryImagePort
+{
+    Task<PortCall<HistoryImageBytes>> GetHistoryImageAsync(
+        string requestId, int index, CancellationToken cancellationToken = default);
+}
+
+/// <summary>Bind a WS echo's original images to its local user message.</summary>
+public interface IHistoryImageRestorer
+{
+    Task RestoreEchoImagesAsync(string requestId, string messageId, int imageCount, CancellationToken ct = default);
 }
 
 /// <summary>

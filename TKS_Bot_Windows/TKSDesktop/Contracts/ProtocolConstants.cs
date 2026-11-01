@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace TKSDesktop.Contracts;
 
 /// <summary>
@@ -9,6 +11,17 @@ namespace TKSDesktop.Contracts;
 /// </summary>
 public static class ProtocolConstants
 {
+    public static bool ChatInputTooLong(string text) =>
+        System.Text.Encoding.UTF8.GetByteCount(text) > 32 * 1024 || text.EnumerateRunes().Count() > 8000;
+
+    public static string ChatRecoveryCode(string? action, string code) => action switch
+    {
+        "resend_new_request" => "RESEND_NEW_REQUEST",
+        "edit_input" => "EDIT_INPUT",
+        "poll_status" => "POLL_STATUS",
+        _ => code,
+    };
+
     /* ---- 连接与心跳（FR-W-CONN-2 / FR-W-CONN-3） ---- */
 
     /// <summary>心跳间隔 25 秒，与服务端保活约定一致（PRD §5.3.1）。</summary>
@@ -186,4 +199,13 @@ public static class ProtocolConstants
 
     public const string CursorKeyChat = "chat";
     public const string CursorKeyMemory = "memory";
+
+    /* ---- 图片消息占位正文（服务端常量） ---- */
+
+    /// <summary>
+    /// 服务端在「只有图片、没有文字」时写入的占位正文（`ws_api.py`、`reliable_chat_store.py`）。
+    /// 客户端只用于回声/历史识别与显示抑制，不直接呈现给用户；
+    /// 与 <see cref="HistorySeparator"/> 同属跨端协议字面量，故集中在契约常量文件内（NFR-W-10 只约束界面文案）。
+    /// </summary>
+    public const string ImagePlaceholder = "[图片]";
 }

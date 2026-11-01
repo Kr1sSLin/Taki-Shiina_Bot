@@ -1,0 +1,26 @@
+{
+  "annotation_status": "human_reviewed",
+  "annotation_review": {"reviewer": "user", "date": "2026-10-16", "status": "passed", "cases": 13, "note": "User revised S01/S07 and then explicitly approved the other cases. This approves labels, not live-model predictions."},
+  "user_decision": "2026-10-16: explicit stable assertions start formal at 0.6; transient states/plans start candidate at 0.3. S07 corrected formal preference restarts at 0.6.",
+  "author": "Codex synthetic draft, explicitly reviewed and amended by the user",
+  "now": "2026-10-16T12:00:00+08:00",
+  "candidates": {
+    "coffee": {"fact_id": "synthetic-coffee", "revision": 1, "text": "用户喜欢咖啡", "subject": "user", "truth_status": "accepted", "temporal_type": "preference", "temporal_validity": {"from": null, "until": null, "expression": "", "timezone": null, "precision": "unknown"}},
+    "disputed_coffee": {"fact_id": "synthetic-coffee", "revision": 1, "text": "用户喜欢咖啡", "subject": "user", "truth_status": "disputed", "temporal_type": "preference", "temporal_validity": {"from": null, "until": null, "expression": "", "timezone": null, "precision": "unknown"}}
+  },
+  "cases": [
+    {"id": "S01", "input": "我喜欢咖啡。", "candidates": [], "expected": [{"text": "用户喜欢咖啡", "assertion": "explicit", "subject": "user", "temporal_type": "preference"}]},
+    {"id": "S02", "input": "我朋友喜欢咖啡。", "candidates": [], "expected": []},
+    {"id": "S03", "input": "如果我明天去京都就好了。", "candidates": [], "expected": []},
+    {"id": "S04", "input": "你刚才说我喜欢咖啡，那只是你猜的。", "candidates": [], "expected": []},
+    {"id": "S05", "input": "我不喜欢咖啡。", "candidates": [], "expected": [{"text": "用户不喜欢咖啡", "assertion": "explicit", "subject": "user", "temporal_type": "preference"}]},
+    {"id": "S06", "input": "我一直喜欢咖啡。", "candidates": ["coffee"], "expected": [{"text": "用户喜欢咖啡", "fact_id": "synthetic-coffee", "expected_revision": 1, "assertion": "explicit", "subject": "user", "temporal_type": "preference"}]},
+    {"id": "S07", "input": "之前说我喜欢咖啡是口误，我喜欢茶。", "candidates": ["coffee"], "expected": [{"text": "用户喜欢茶", "operation": "correct", "fact_id": "synthetic-coffee", "expected_revision": 1, "assertion": "explicit", "subject": "user", "temporal_type": "preference"}]},
+    {"id": "S08", "input": "我以前喜欢咖啡，现在更喜欢茶了。", "candidates": ["coffee"], "expected": [{"text": "用户喜欢茶", "operation": "change", "fact_id": "synthetic-coffee", "expected_revision": 1, "assertion": "explicit", "subject": "user", "temporal_type": "preference"}]},
+    {"id": "S09", "input": "咖啡也就那样。", "candidates": ["coffee"], "expected": [{"operation": "dispute", "fact_id": "synthetic-coffee", "expected_revision": 1, "subject": "user"}]},
+    {"id": "S10", "input": "我明确确认，我一直喜欢咖啡。", "candidates": ["disputed_coffee"], "expected": [{"text": "用户喜欢咖啡", "operation": "confirm", "fact_id": "synthetic-coffee", "expected_revision": 1, "assertion": "explicit", "subject": "user", "temporal_type": "preference"}]},
+    {"id": "S11", "input": "我明天要去京都旅行。", "candidates": [], "expected": [{"text": "用户计划明天去京都旅行", "accepted_texts": ["用户计划于2026年10月17日前往京都旅行"], "assertion": "explicit", "subject": "user", "temporal_type": "plan", "temporal_validity": {"from": "2026-10-17T00:00:00+08:00", "until": "2026-10-18T00:00:00+08:00"}}]},
+    {"id": "S12", "input": "我今天感冒了。", "candidates": [], "expected": [{"text": "用户今天感冒", "assertion": "explicit", "subject": "user", "temporal_type": "current_state", "temporal_validity": {"from": "2026-10-16T00:00:00+08:00", "until": "2026-10-17T00:00:00+08:00"}}]},
+    {"id": "S13", "input": "以后别再提我喜欢咖啡。", "candidates": ["coffee"], "expected": []}
+  ]
+}

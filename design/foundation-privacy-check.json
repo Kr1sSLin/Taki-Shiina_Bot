@@ -1,0 +1,7 @@
+{
+  "checked_working_tree_files": 87,
+  "findings": [],
+  "scope": "Known credential signatures only; not a complete history/privacy audit",
+  "refreshed": "2026-10-16 independent re-scan of changed and untracked files, now including client sources",
+  "not_covered": "Coordinate/text egress rules are covered by services/privacy.py and its tests, not by this scan"
+}

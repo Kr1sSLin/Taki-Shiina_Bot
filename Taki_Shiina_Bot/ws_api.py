@@ -2,9 +2,15 @@
 WebSocket API for TakiShiina Bot
 实现防抖合并、断线继续处理、在线实时推送
 """
+import sys
+
+# 项目目录和包入口共用同一模块，不能重复创建仓储与任务。
+sys.modules.setdefault("ws_api", sys.modules[__name__])
+sys.modules.setdefault("Taki_Shiina_Bot.ws_api", sys.modules[__name__])
+
+from services.public_policy import public_messages, public_text, checked_completion, require_public_text
 
 import asyncio
-import base64
 import json
 import logging
 import os
@@ -23,12 +29,24 @@ from auth_utils import AuthContext, DeviceEntry, parse_device_tokens, resolve_au
 from app_constants import EMOTIONAL_TRIGGERS, LORE_TRIGGERS, USER_MEMO
 from app_state import AppState
 from services.history_store import HistoryStore
+from services.application_service import ChatApplicationService
+from services.async_storage import store_call, gamification_call
+from services.chat_runtime import ChatFailed, get_chat_runtime
+from services.contracts import ChatCommand
+from services.input_budget import BODY_BYTES, InputTooLong, validate_text, edit_input
+from services.http_errors import install_http_errors
+from services.foundation_store import PermissionDenied, StorageBusy, VersionConflict
+from services.text_generation import TextGenerator
+from services.privacy_logging import install_privacy_logging
+from services.privacy import redact_locations
 from services.memory_service import MemoryService
 from services.prompt_service import PromptService
 from services.timeline_store import TimelineStore
 from services.file_lock import FileLockTimeoutError
 from services.weather_service import WeatherService
 from text_utils import (
+    compute_debounce_window,
+    extract_timer_instruction,
     clean_short_term_history,
     inject_emojis,
     is_repetitive_reply,
@@ -39,20 +57,23 @@ from text_utils import (
 
 # ===== 互动礼物 · 积分机制 · 等级体系（PRD 新增功能） =====
 from api.v1.admin import router as admin_router
-from api.v1.deps import AuthRuntime, configure_auth, register_gamification
+from api.v1.deps import AuthRuntime, configure_auth, register_gamification, storage_busy_response
 from api.v1.interaction import router as interaction_router
 from api.v1.level import router as level_router
 from api.v1.points import router as points_router
 from handlers.interaction_handler import InteractionHandler
 from jobs.points_jobs import PointsJobs
 from services.gamification_service import GamificationService
-from services.debounce_merge import build_user_timeline_items, collect_pending_after_quiet_window
+from services.debounce_merge import WebSocketSessions, build_user_timeline_items, collect_pending_after_quiet_window
+from services.ws_transport import validate_frame as _validate_frame, parse_images
 from services.points_events import (
     level_changed_event,
     makeup_card_changed_event,
     points_changed_event,
 )
 from services.progress_store import SOURCE_CHAT
+from services.vision_limits import MAX_INLINE_IMAGE_BYTES
+from services.vision_generation import VISION_DESCRIPTION_PROMPT, describe_images
 from time_utils import build_time_block, describe_business_period
 
 _base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -78,6 +99,9 @@ VISION_MAX_IMAGE_COUNT = int(os.getenv("VISION_MAX_IMAGE_COUNT", "3"))
 VISION_ALLOWED_MIME = {
     m.strip() for m in os.getenv("VISION_ALLOWED_MIME", "image/jpeg,image/png").split(",") if m.strip()
 }
+# Base64 expands binary payloads. Leave room for the JSON envelope so the
+# effective inline image budget is reachable through the built-in Uvicorn entry.
+VISION_WS_MAX_SIZE = max(16 * 1024 * 1024, ((MAX_INLINE_IMAGE_BYTES + 2) // 3) * 4 + 256 * 1024)
 AUTH_JWT_SECRET = (os.getenv("AUTH_JWT_SECRET", "") or "").strip()
 BOT_DEVICE_TOKENS = (os.getenv("BOT_DEVICE_TOKENS", "") or "").strip()
 MAX_DEVICE_COUNT = 4
@@ -102,16 +126,6 @@ HISTORY_SEPARATOR = "──── 新的一天 ────"
 
 GEMINI_TIMEOUT = 30
 
-VISION_DESCRIPTION_PROMPT = (
-    "你是一个图片描述助手。请客观、准确地描述用户图片中的内容，供后续文本模型参考。\n"
-    "要求：\n"
-    "1. 输出纯事实描述：画面主体、环境、动作、人物表情、画面中的文字（如有）等。\n"
-    "2. 严禁代入任何人设或角色，严禁使用对话语气，严禁评价图片好坏。\n"
-    "3. 如果画面中有可辨认的文字，请逐字引用。\n"
-    "4. 如果图片内容不清晰或无法辨认，直接回答：图片内容无法辨认。\n"
-    "5. 200 字以内，直接输出描述正文，不要加标题或前缀。"
-)
-
 VISION_CONTEXT_TEMPLATE = (
     "【用户发来了一张图片，识图结果】：\n"
     "{vision_description}\n\n"
@@ -124,6 +138,7 @@ MEMORY_TIMELINE_FILE = os.path.join(_data_dir, "memory_timeline.json")
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
+install_privacy_logging()
 
 state = AppState(history_file=os.path.join(_data_dir, "chat_history.json"))
 db = MemoryService(_data_dir)
@@ -153,14 +168,19 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI(title="TakiShiina Bot WebSocket API")
+install_http_errors(app)
+app.add_exception_handler(FileLockTimeoutError, storage_busy_response)
 
-ACTIVE_CONNECTIONS: dict[str, set[WebSocket]] = {}
-message_buffer: dict[str, list[dict]] = {}
-debounce_jobs: dict[str, asyncio.Task] = {}
-message_events: dict[str, asyncio.Event] = {}
-last_message_at: dict[str, datetime] = {}
-is_processing: dict[str, bool] = {}
-pending_flush: dict[str, bool] = {}
+ws_sessions = WebSocketSessions(logger)
+# 保留旧模块的访问入口，所有映射仍由同一个会话对象持有。
+ACTIVE_CONNECTIONS = ws_sessions.connections
+message_buffer = ws_sessions.buffer
+debounce_jobs = ws_sessions.jobs
+message_events = ws_sessions.events
+last_message_at = ws_sessions.last_message_at
+is_processing = ws_sessions.processing
+pending_flush = ws_sessions.pending_flush
+_points_task = None
 
 WORKER_IDLE_TIMEOUT = 600  # 秒：worker 无任何新消息超过该时长则自退出,避免断线后泄漏
 
@@ -217,31 +237,18 @@ def _extract_ws_auth(websocket: WebSocket) -> tuple[str, str | None]:
 def _trace_text(label: str, user_id: str, text: str):
     if not DEBUG_REPLY_TRACE:
         return
-    compact = (text or "").replace("\n", "\\n")
-    if len(compact) > 280:
-        compact = compact[:280] + "...(truncated)"
-    logger.info(f"[TRACE][{user_id}] {label}: {compact}")
+    logger.info("[TRACE] %s chars=%d", label, len(text or ""))
 
 
 def parse_timer_instruction(raw_reply: str):
-    import re
-
-    timer_pattern = r"\[\[TIMER:(\d{1,2}:\d{2})\|(.*?)\]\]"
-    match = re.search(timer_pattern, raw_reply or "")
-    if not match:
-        return raw_reply, None, None
-    target_time_str = match.group(1)
-    reminder_text = match.group(2)
-    cleaned_reply = re.sub(timer_pattern, "", raw_reply).strip()
-    return cleaned_reply, target_time_str, reminder_text
+    return extract_timer_instruction(raw_reply)
 
 
 def calc_debounce_window(user_id: str):
-    bot_last = state.last_bot_response_time.get(user_id)
-    if not bot_last:
-        return DEBOUNCE_BASE
-    seconds_since_response = (datetime.now(timezone.utc) - bot_last).total_seconds()
-    return DEBOUNCE_EXTENDED if seconds_since_response < DEBOUNCE_EXTEND_WINDOW else DEBOUNCE_BASE
+    return compute_debounce_window(
+        state.last_bot_response_time.get(user_id), datetime.now(timezone.utc),
+        DEBOUNCE_BASE, DEBOUNCE_EXTENDED, DEBOUNCE_EXTEND_WINDOW,
+    )
 
 
 def _timeline_backend(store, path: str) -> TimelineStore:
@@ -274,9 +281,9 @@ async def _resolve_empty_reply(client, cleaned_reply: str, messages: list[dict])
         }
     )
     try:
-        resp = await client.chat.completions.create(
+        resp = await checked_completion(client,
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-            messages=retry_messages,
+            messages=public_messages(retry_messages, 'ws_api.py'),
             temperature=1.0,
         )
         retry_raw = (resp.choices[0].message.content or "").strip()
@@ -307,6 +314,7 @@ async def append_memory_timeline(items: list[dict]):
 
 
 async def extract_user_facts(user_id: str, message: str):
+    message = redact_locations(message)
     extraction_prompt = (
         "你是一个信息提取助手。从用户消息中提取关于用户自身的客观事实（如习惯、计划、状态、偏好等）。\n"
         "规则：\n"
@@ -318,9 +326,9 @@ async def extract_user_facts(user_id: str, message: str):
     )
 
     try:
-        resp = await client.chat.completions.create(
+        resp = await checked_completion(client,
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-            messages=[{"role": "user", "content": extraction_prompt}],
+            messages=public_messages([{"role": "user", "content": extraction_prompt}], 'ws_api.py'),
             temperature=0.3,
         )
         raw = (resp.choices[0].message.content or "[]").strip()
@@ -340,7 +348,7 @@ async def extract_user_facts(user_id: str, message: str):
             if not clean_fact:
                 continue
 
-            db.update_profile(user_id, clean_fact)
+            await store_call(db.update_profile, user_id, clean_fact)
             fact_item = {
                 "factId": f"fact_{uuid.uuid4().hex}",
                 "userId": user_id,
@@ -373,6 +381,41 @@ async def broadcast_json(user_id: str, data: dict):
     if dead and user_id in ACTIVE_CONNECTIONS:
         for ws in dead:
             ACTIVE_CONNECTIONS[user_id].discard(ws)
+    return len(ACTIVE_CONNECTIONS.get(user_id, ()))
+
+
+async def deliver_reliable(delivery):
+    owner = delivery.get("owner")
+    if not owner:
+        raise ConnectionError("delivery owner unavailable")
+    if delivery["target"] == "chat":
+        result = delivery["result"]
+        payload = {"delta": "", "done": True, "messageId": result["messageId"], "finalContent": result["reply"], "timestamp": result["timestamp"], "requestIds": result["requestIds"], "contentType": result.get("contentType", "text"), "modelProvider": "deepseek", "eventId": result["eventId"], "deliveryId": result["deliveryId"], **result.get("interaction", {})}
+        if result.get("messageKind") == "proactive":
+            payload.update(messageKind="proactive", topicId=result["topicId"], notificationText="立希发来一条消息")
+        if result.get("interaction"):
+            gift = result["interaction"]
+            payload.update({"messageKind": "interaction", "interactionItemId": gift.get("itemId"), "interactionItemName": gift.get("itemName"), "interactionItemIcon": gift.get("itemIcon")})
+        if "timerInstruction" in result:
+            payload["timerInstruction"] = result["timerInstruction"]
+        event = {"type": "chat.reply.stream", "requestId": result["requestIds"][-1], "payload": payload}
+    else:
+        event = {"type": "memory.changed", "eventId": delivery["event_id"], "payload": delivery["event"]}
+    if not await broadcast_json(owner, event):
+        raise ConnectionError("no live recipient; durable inbox retains the event")
+
+
+def _source_images(images: list[dict]) -> list[dict]:
+    return [{"mimeType": image["mimeType"], "dataBase64": image["dataBase64"], "sha256": image["sha256"]} for image in images]
+
+
+def get_reliable_runtime():
+    deliver_reliable.available = lambda owner: bool(ACTIVE_CONNECTIONS.get(owner))
+    generator = TextGenerator(state, history_store, prompt_service, weather_service, client, parse_timer_instruction, interaction_retry_provider=lambda: gamification.config.get_points_rules().get("deepseek_retry", {}), vision_provider=describe_images)
+    runtime = get_chat_runtime(_data_dir, generator, generator.extract, deliver_reliable)
+    if runtime:
+        runtime.configure_interactions(gamification.interaction.reconcile_reliable)
+    return runtime
 
 
 async def send_error(
@@ -381,20 +424,27 @@ async def send_error(
     message: str,
     request_id: str | None = None,
     request_ids: list[str] | None = None,
+    operation: dict | None = None,
+    websocket: WebSocket | None = None,
 ):
-    await broadcast_json(
-        user_id,
-        {
-            "type": "bot.error",
-            "requestId": request_id,
-            "payload": {
-                "errorCode": error_code,
-                "message": message,
-                "requestIds": request_ids or [],
-                "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
-            },
+    frame = {
+        "type": "bot.error",
+        "traceId": uuid.uuid4().hex,
+        "requestId": request_id,
+        "payload": {
+            "errorCode": error_code,
+            "message": message,
+            "requestIds": request_ids or [],
+            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+            "retryable": error_code in ("CHAT_RETRY", "SERVICE_UNAVAILABLE", "AI_TIMEOUT", "INTERNAL_ERROR"),
+            "recoveryAction": "retry_same_request" if error_code in ("CHAT_RETRY", "SERVICE_UNAVAILABLE") else "poll_status" if error_code in ("AI_TIMEOUT", "INTERNAL_ERROR") else "edit_input",
+            **(operation or {}),
         },
-    )
+    }
+    if websocket is not None:
+        await websocket.send_text(json.dumps(frame, ensure_ascii=False))
+    else:
+        await broadcast_json(user_id, frame)
 
 
 # ================= 互动礼物 · 积分机制 · 等级体系 接入 =================
@@ -476,6 +526,7 @@ gamification.interaction = InteractionHandler(
     ],
     logger=logger,
     alert_sender=ALERT_SENDER,
+    runtime_provider=get_reliable_runtime,
 )
 
 points_jobs = PointsJobs(
@@ -492,8 +543,8 @@ async def record_chat_activity(user_id: str) -> None:
     早安/晚安等系统推送走 ``send_greeting``，不经过本函数，因此天然不计入积分。
     """
     try:
-        gamification.touch_user(user_id)
-        result = gamification.points.record_user_activity(user_id, source=SOURCE_CHAT)
+        await gamification_call(gamification.touch_user, user_id)
+        result = await gamification_call(gamification.points.record_user_activity, user_id, source=SOURCE_CHAT)
     except Exception as exc:
         logger.exception(f"[积分] 记录有效对话失败: user={user_id}, err={exc}")
         return
@@ -503,17 +554,58 @@ async def record_chat_activity(user_id: str) -> None:
             await broadcast_json(user_id, points_changed_event(entry))
         if result.level is not None and result.level.level_changed:
             await broadcast_json(user_id, level_changed_event(result.level))
-        granted = gamification.makeup.ensure_initial_grant(user_id)
+        granted = await gamification_call(gamification.makeup.ensure_initial_grant, user_id)
         if granted:
             await broadcast_json(
                 user_id,
-                makeup_card_changed_event(gamification.makeup.get_summary(user_id), "MONTHLY_GRANT"),
+                makeup_card_changed_event(await gamification_call(gamification.makeup.get_summary, user_id), "MONTHLY_GRANT"),
             )
     except Exception as exc:
         logger.warning(f"[积分] 事件推送失败: user={user_id}, err={exc}")
 
 
 async def process_buffered_messages(user_id: str):
+    reliable = get_reliable_runtime()
+    if reliable:
+        buffered = message_buffer.pop(user_id, [])
+        if not buffered:
+            return
+        request_ids = [item["requestId"] for item in buffered]
+        try:
+            commands = [ChatCommand(user_id, item["requestId"], item.get("clientMessageId") or item["requestId"], item.get("deviceId") or "ws", item["content"] or "[图片]", channel="ws", metadata={"images": _source_images(item["images"])} if item.get("images") else None) for item in buffered]
+            # Each source has already been accepted at WS receipt. Replaying
+            # them individually also lets the store split a pending turn when
+            # another image would exceed the vision model's per-turn limit.
+            receipts = []
+            for command in commands:
+                receipts.extend(await reliable.accept([command], merge_pending=True))
+            turn_ids = list(dict.fromkeys(receipt["turn_id"] for receipt in receipts))
+            await reliable.ready(user_id, turn_ids)
+            results = [await reliable.wait(user_id, turn_id) for turn_id in turn_ids]
+            # Fresh delivery is owned by the outbox, including after disconnect.
+            # A source retry can explicitly replay the same persistent reply ID.
+            for result in results:
+                state.last_activity[user_id] = datetime.now(timezone.utc)
+                state.last_bot_response_time[user_id] = datetime.now(timezone.utc)
+        except VersionConflict:
+            await send_error(user_id, "REQUEST_CONFLICT", "请求标识与已保存内容冲突", request_ids[-1], request_ids)
+        except (PermissionDenied, StorageBusy):
+            await send_error(user_id, "SERVICE_UNAVAILABLE", "服务暂时不可用，请稍后重试", request_ids[-1], request_ids)
+        except (ChatFailed, TimeoutError):
+            existing = await reliable.request(user_id, request_ids[-1])
+            operation = existing["operation"] if existing else None
+            message = "本批次处理失败，请重新发送" if operation and operation["status"] == "failed" else "仍在处理，请查询原请求状态"
+            await send_error(user_id, "CHAT_RETRY", message, request_ids[-1], request_ids, operation)
+        except Exception:
+            logger.exception("reliable ws chat failed")
+            await send_error(user_id, "INTERNAL_ERROR", "处理失败，请稍后重试", request_ids[-1], request_ids)
+        return
+    async with state.sessions.session(user_id):
+        await _process_buffered_messages(user_id)
+
+
+async def _process_buffered_messages(user_id: str):
+    service = ChatApplicationService(state, history_store, prompt_service, weather_service)
     if is_processing.get(user_id):
         pending_flush[user_id] = True
         return
@@ -536,21 +628,9 @@ async def process_buffered_messages(user_id: str):
         await broadcast_json(user_id, {"type": "chat.typing", "payload": {"typing": True}})
 
         history = state.user_chat_history.setdefault(user_id, [])
-        weather_info = await weather_service.get_weather_str(force=True)
-
         utc_now = datetime.now(timezone.utc)
         beijing_now = utc_now + timedelta(hours=8)
-        # 服务端判定时段后注入（避免模型自己按 HH:MM 猜时段）
-        time_str = build_time_block(beijing_now)
-
-        time_enforcement = "\n".join((
-            "1. **时间锚定**：你必须无条件信任上述【当前北京时间】，绝不能凭训练数据或常识猜测当前时间。",
-            "2. **全天候禁止催睡**：无论现在是凌晨几点，绝对禁止主动建议用户去睡觉或休息。",
-            "3. **深夜默契**：如果用户深夜还在发消息，表示他想通宵，你要配合而不是扫兴。",
-        ))
-
-        system_prompt = await prompt_service.get_system_prompt(user_id)
-        system_content = f"{system_prompt}\n{time_str}\n{weather_info}\n\n{time_enforcement}"
+        system_prompt, system_content = await service.system_context(user_id, at=beijing_now)
         _trace_text("SYS_PROMPT", user_id, system_prompt)
 
         emotional_prompt = ""
@@ -573,22 +653,7 @@ async def process_buffered_messages(user_id: str):
             f"{emotional_prompt}{trigger_prompt}"
         )
 
-        # 取分隔标记之后的历史，最多 10 条
-        sep_idx = -1
-        for i in range(len(history) - 1, -1, -1):
-            if history[i].get("role") == "system" and history[i].get("content") == HISTORY_SEPARATOR:
-                sep_idx = i
-                break
-        if sep_idx >= 0:
-            recent_history = history[sep_idx + 1:]
-        else:
-            recent_history = history
-        recent_history = [
-            m for m in recent_history
-            if not (m.get("role") == "system" and m.get("content") == HISTORY_SEPARATOR)
-        ]
-        recent_history = recent_history[-10:]
-        recent_history, polluted_tails = clean_short_term_history(recent_history, min_repeat=3)
+        recent_history, polluted_tails = service.history_context(history, limit=10, after_separator=True)
         if DEBUG_REPLY_TRACE:
             recent_assistant_count = sum(1 for m in recent_history if m.get("role") == "assistant")
             logger.info(
@@ -615,30 +680,7 @@ async def process_buffered_messages(user_id: str):
                     "payload": {"typing": True, "stage": "vision"},
                 },
             )
-            model = genai.GenerativeModel(GEMINI_MODEL)
-            vision_prompt = VISION_DESCRIPTION_PROMPT
-            if merged_text:
-                vision_prompt += f"\n\n用户留言：{merged_text}"
-            parts = [vision_prompt]
-            for img in merged_images[:VISION_MAX_IMAGE_COUNT]:
-                parts.append(
-                    {
-                        "mime_type": img["mimeType"],
-                        "data": img["raw"],
-                    }
-                )
-            try:
-                resp = await asyncio.wait_for(
-                    asyncio.to_thread(model.generate_content, parts),
-                    timeout=GEMINI_TIMEOUT,
-                )
-                vision_description = (resp.text or "").strip()
-            except asyncio.TimeoutError:
-                logger.warning(f"[WS] 识图超时，使用降级描述: user={user_id}")
-                vision_description = "图片内容无法辨认（识图超时）。"
-            except Exception as e:
-                logger.exception(f"[WS] 识图失败，使用降级描述: {e}")
-                vision_description = "图片内容无法辨认（识图失败）。"
+            vision_description = await describe_images(merged_images, merged_text)
             _trace_text("VISION_DESC", user_id, vision_description)
 
             user_message = {
@@ -649,10 +691,7 @@ async def process_buffered_messages(user_id: str):
                 ),
             }
 
-        messages = [{"role": "system", "content": system_content}]
-        messages.extend(with_history_timestamp(m) for m in recent_history)
-        messages.append({"role": "system", "content": anchor_prompt})
-        messages.append(user_message)
+        messages = service.messages(system_content, recent_history, anchor_prompt, user_message)
 
         # ---- Stage 2: DeepSeek 流式生成 ----
         if has_images:
@@ -664,9 +703,9 @@ async def process_buffered_messages(user_id: str):
                 },
             )
         response = await asyncio.wait_for(
-            client.chat.completions.create(
+            checked_completion(client,
                 model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-                messages=messages,
+                messages=public_messages(messages, 'ws_api.py'),
                 temperature=0.75,
                 stream=True,
             ),
@@ -706,9 +745,9 @@ async def process_buffered_messages(user_id: str):
                     "content": "【去重重采样】：禁止复用最近10条回复的开头、句式和收尾，保持人设但换一种自然表达。",
                 }
             )
-            retry_resp = await client.chat.completions.create(
+            retry_resp = await checked_completion(client,
                 model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-                messages=dedupe_messages,
+                messages=public_messages(dedupe_messages, 'ws_api.py'),
                 temperature=1.0,
             )
             retry_raw = retry_resp.choices[0].message.content or cleaned_reply
@@ -745,11 +784,10 @@ async def process_buffered_messages(user_id: str):
             ]
         )
 
-        history.append({"role": "user", "content": merged_record, "ts": now_ms - 1})
-        history.append({"role": "assistant", "content": final_reply, "ts": now_ms})
-        if len(history) > 300:
-            state.user_chat_history[user_id] = history[-300:]
-        history_store.save(state.user_chat_history)
+        await store_call(service.commit_history, user_id, [
+            {"role": "user", "content": merged_record, "ts": now_ms - 1},
+            {"role": "assistant", "content": final_reply, "ts": now_ms},
+        ])
 
         state.last_activity[user_id] = datetime.now(timezone.utc)
         state.last_bot_response_time[user_id] = datetime.now(timezone.utc)
@@ -790,75 +828,28 @@ async def process_buffered_messages(user_id: str):
         # 处理期间有新消息到达，给一小段尾批窗口再触发下一轮合并。
         need_tail_flush = pending_flush.pop(user_id, False) or bool(message_buffer.get(user_id))
         if need_tail_flush:
-            asyncio.create_task(_tail_flush_wakeup(user_id))
+            ws_sessions.schedule_tail(user_id, TAIL_DEBOUNCE)
 
 
 async def _tail_flush_wakeup(user_id: str):
-    await asyncio.sleep(TAIL_DEBOUNCE)
-    event = message_events.get(user_id)
-    if event:
-        event.set()
+    await ws_sessions.tail_wakeup(user_id, TAIL_DEBOUNCE)
 
 
 def _ensure_user_worker(user_id: str):
-    old_worker = debounce_jobs.get(user_id)
-    if old_worker and not old_worker.done():
-        return
-
-    message_events.setdefault(user_id, asyncio.Event())
-
-    async def _worker():
-        while True:
-            event = message_events[user_id]
-            try:
-                await asyncio.wait_for(event.wait(), timeout=WORKER_IDLE_TIMEOUT)
-            except asyncio.TimeoutError:
-                # 长时间无消息：worker 自退出并清理状态,避免连接断开后协程泄漏
-                logger.info(f"[防抖] worker 空闲超时退出: user={user_id}")
-                debounce_jobs.pop(user_id, None)
-                message_events.pop(user_id, None)
-                last_message_at.pop(user_id, None)
-                is_processing.pop(user_id, None)
-                pending_flush.pop(user_id, None)
-                message_buffer.pop(user_id, None)
-                return
-            event.clear()
-
-            # 等待“静默窗口”：在窗口内若收到新消息则重置等待。
-            while True:
-                last_at = last_message_at.get(user_id)
-                if not last_at:
-                    break
-                window = calc_debounce_window(user_id)
-                elapsed = (datetime.now(timezone.utc) - last_at).total_seconds()
-                remaining = window - elapsed
-                if remaining <= 0:
-                    break
-
-                try:
-                    await asyncio.wait_for(event.wait(), timeout=remaining)
-                    event.clear()
-                    continue
-                except asyncio.TimeoutError:
-                    break
-
-            if is_processing.get(user_id):
-                pending_flush[user_id] = True
-                continue
-
-            await process_buffered_messages(user_id)
-
-    debounce_jobs[user_id] = asyncio.create_task(_worker())
-    logger.info(f"[防抖] 启动用户 worker: user={user_id}")
+    ws_sessions.ensure_worker(user_id, process_buffered_messages, calc_debounce_window, WORKER_IDLE_TIMEOUT)
 
 
 def schedule_debounce(user_id: str):
     _ensure_user_worker(user_id)
     message_events[user_id].set()
-    buffered_count = len(message_buffer.get(user_id, []))
-    logger.info(
-        f"[防抖] 收到消息，等待静默窗口: user={user_id}, window={calc_debounce_window(user_id)}s, buffered={buffered_count}"
-    )
+    logger.info("[防抖] 收到消息，等待静默窗口: user=%s, window=%ss, buffered=%s",
+                user_id, calc_debounce_window(user_id), len(message_buffer.get(user_id, [])))
+
+
+def _parse_ws_images(raw_images):
+    return parse_images(raw_images, max_count=VISION_MAX_IMAGE_COUNT,
+                        max_image_mb=VISION_MAX_IMAGE_MB, max_total_bytes=MAX_INLINE_IMAGE_BYTES,
+                        allowed_mime=VISION_ALLOWED_MIME)
 
 
 @app.websocket("/ws/chat")
@@ -900,56 +891,85 @@ async def websocket_chat(websocket: WebSocket):
     try:
         while True:
             raw_message = await websocket.receive_text()
+            if len(raw_message.encode("utf-8")) > VISION_WS_MAX_SIZE:
+                await send_error(user_id, "INVALID_JSON", "请求体过大，请编辑后发送", operation=edit_input(), websocket=websocket)
+                continue
             try:
-                message = json.loads(raw_message)
-            except json.JSONDecodeError:
-                await send_error(user_id, "INVALID_JSON", "无效的 JSON 格式")
+                message = await store_call(json.loads, raw_message)
+                ping_timestamp = _validate_frame(message)
+            except (json.JSONDecodeError, ValueError, OverflowError):
+                await send_error(user_id, "INVALID_JSON", "无效的 JSON 格式", websocket=websocket)
                 continue
 
             msg_type = message.get("type", "")
             request_id = message.get("requestId") or str(uuid.uuid4())
 
             if msg_type == "ping":
-                await broadcast_json(
-                    user_id,
-                    {"type": "pong", "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)},
-                )
+                pong = {"type": "pong", "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)}
+                if ping_timestamp is not None:
+                    pong["pingTimestamp"] = ping_timestamp
+                await websocket.send_text(json.dumps(pong))
                 continue
 
             if msg_type == "chat.message":
                 payload = message.get("payload", {})
-                content = (payload.get("content") or "").strip()
-                raw_images = payload.get("images") or []
-                logger.info(f"[WS] 收到消息: user={user_id}, content={content[:50]}...")
-                if not content and not raw_images:
-                    await send_error(user_id, "EMPTY_MESSAGE", "消息内容不能为空", request_id)
+                if not isinstance(payload, dict):
+                    await send_error(user_id, "EMPTY_MESSAGE", "消息格式无效", request_id, websocket=websocket)
                     continue
-                parsed_images = []
-                if raw_images:
-                    if len(raw_images) > VISION_MAX_IMAGE_COUNT:
-                        await send_error(user_id, "VISION_IMAGE_COUNT_EXCEEDED", f"单次最多 {VISION_MAX_IMAGE_COUNT} 张图片", request_id)
+                raw_content = payload.get("content") or ""
+                if not isinstance(raw_content, str):
+                    await send_error(user_id, "EMPTY_MESSAGE", "消息格式无效", request_id, websocket=websocket)
+                    continue
+                content = redact_locations(raw_content.strip())
+                raw_images = payload.get("images") or []
+                if not isinstance(raw_images, list):
+                    await send_error(user_id, "VISION_INVALID_MIME", "图片格式无效", request_id, websocket=websocket)
+                    continue
+                if raw_images and not GEMINI_API_KEY:
+                    await send_error(user_id, "GEMINI_NOT_CONFIGURED", "服务端未配置 Gemini Key", request_id, websocket=websocket)
+                    continue
+                logger.info("[WS] 收到消息 chars=%d", len(content))
+                if not content and not raw_images:
+                    await send_error(user_id, "EMPTY_MESSAGE", "消息内容不能为空", request_id, websocket=websocket)
+                    continue
+                try:
+                    parsed_images = await store_call(_parse_ws_images, raw_images)
+                except ValueError as error:
+                    await send_error(user_id, *error.args, request_id, websocket=websocket)
+                    continue
+                try:
+                    reliable = get_reliable_runtime()
+                except PermissionDenied:
+                    await send_error(user_id, "SERVICE_UNAVAILABLE", "服务暂时不可用，请稍后重试", request_id, websocket=websocket)
+                    continue
+                client_message_id = payload.get("clientMessageId") or request_id
+                try:
+                    if not reliable or not await reliable.request(user_id, request_id):
+                        validate_text(raw_content)
+                        if not raw_images and len(raw_message.encode("utf-8")) > BODY_BYTES:
+                            raise InputTooLong("请求体最多 64 KiB，请编辑后发送")
+                except InputTooLong as error:
+                    await send_error(user_id, "INPUT_TOO_LONG", str(error), request_id, operation=edit_input(request_id), websocket=websocket)
+                    continue
+                if reliable:
+                    try:
+                        command = ChatCommand(user_id, request_id, client_message_id, device_id, content or "[图片]", channel="ws", metadata={"images": _source_images(parsed_images)} if parsed_images else None)
+                        receipts = await reliable.accept([command], delay=calc_debounce_window(user_id), merge_pending=True)
+                        if receipts[0]["duplicate"]:
+                            previous = await asyncio.to_thread(reliable.store.turn_result, user_id, receipts[0]["turn_id"])
+                            if previous["status"] == "completed":
+                                await reliable.replay(user_id, previous["result"])
+                                continue
+                    except InputTooLong as error:
+                        await send_error(user_id, "INPUT_TOO_LONG", str(error), request_id, operation=edit_input(request_id), websocket=websocket)
                         continue
-                    for idx, item in enumerate(raw_images):
-                        mime_type = (item or {}).get("mimeType", "").strip().lower()
-                        data_base64 = (item or {}).get("dataBase64", "")
-                        if mime_type not in VISION_ALLOWED_MIME:
-                            await send_error(user_id, "VISION_INVALID_MIME", f"第 {idx + 1} 张图片格式不支持", request_id)
-                            parsed_images = []
-                            break
-                        try:
-                            raw = base64.b64decode(data_base64)
-                        except Exception:
-                            await send_error(user_id, "VISION_INVALID_BASE64", f"第 {idx + 1} 张图片解析失败", request_id)
-                            parsed_images = []
-                            break
-                        if len(raw) > VISION_MAX_IMAGE_MB * 1024 * 1024:
-                            await send_error(user_id, "VISION_IMAGE_TOO_LARGE", f"第 {idx + 1} 张图片超过 {VISION_MAX_IMAGE_MB}MB", request_id)
-                            parsed_images = []
-                            break
-                        parsed_images.append({"mimeType": mime_type, "raw": raw})
-                    if raw_images and not parsed_images:
+                    except VersionConflict:
+                        await send_error(user_id, "REQUEST_CONFLICT", "请求标识与已保存内容冲突", request_id, websocket=websocket)
                         continue
-                message_buffer.setdefault(user_id, []).append({"requestId": request_id, "content": content, "images": parsed_images})
+                    except Exception:
+                        await send_error(user_id, "SERVICE_UNAVAILABLE", "消息暂未保存，请使用原请求重试", request_id, websocket=websocket)
+                        continue
+                message_buffer.setdefault(user_id, []).append({"requestId": request_id, "clientMessageId": client_message_id, "deviceId": device_id, "content": content, "images": parsed_images})
                 last_message_at[user_id] = datetime.now(timezone.utc)
                 # 多设备回声：该用户的其他在线设备实时看到这条发言；发送端按 requestId 幂等去重
                 await broadcast_json(
@@ -960,6 +980,7 @@ async def websocket_chat(websocket: WebSocket):
                         "payload": {
                             "content": content,
                             "imageCount": len(parsed_images),
+                            "clientMessageId": client_message_id,
                             "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
                             "originDeviceId": device_id,
                         },
@@ -978,7 +999,7 @@ async def websocket_chat(websocket: WebSocket):
                 schedule_debounce(user_id)
                 continue
 
-            await send_error(user_id, "UNKNOWN_TYPE", f"未知的消息类型: {msg_type}", request_id)
+            await send_error(user_id, "UNKNOWN_TYPE", "未知的消息类型", request_id, websocket=websocket)
     except WebSocketDisconnect:
         logger.info(f"[WS] 连接断开: user={user_id}, device={device_id}")
     except Exception:
@@ -1013,7 +1034,7 @@ def _scene_target_user_ids() -> list[str]:
 
 async def refresh_all_scenes() -> int:
     """刷新所有相关用户的「立希当前状态」，返回成功数。"""
-    targets = _scene_target_user_ids()
+    targets = await gamification_call(_scene_target_user_ids)
     succeeded = 0
     for uid in targets:
         try:
@@ -1085,14 +1106,15 @@ async def internal_scene_refresh(
             "data": {"userId": userId, "scene": scene, "period": describe_business_period()},
         }
     count = await refresh_all_scenes()
+    targets = await gamification_call(_scene_target_user_ids)
     return {
         "code": 0,
         "message": "ok",
         "data": {
             "refreshedUsers": count,
-            "userIds": _scene_target_user_ids(),
+            "userIds": targets,
             "period": describe_business_period(),
-            "scenes": {uid: state.scene_cache.get(uid, {}).get("scene") for uid in _scene_target_user_ids()},
+            "scenes": {uid: state.scene_cache.get(uid, {}).get("scene") for uid in targets},
         },
     }
 
@@ -1119,6 +1141,10 @@ NIGHT_SCRIPTS = [
 
 
 async def send_greeting(user_id: str, scenario_type: str):
+    if get_reliable_runtime() is not None:
+        # Stage E owns new proactive rules. The old autonomous writer cannot
+        # bypass the durable inbox and permission gate during stage A.
+        return
     """生成并推送定时问候"""
     # 检查用户近 2 小时是否活跃
     user_last = state.last_activity.get(user_id)
@@ -1164,14 +1190,14 @@ async def send_greeting(user_id: str, scenario_type: str):
     try:
         system_prompt = await prompt_service.get_system_prompt(user_id)
         weather_info = await weather_service.get_weather_str(force=True)
-        response = await client.chat.completions.create(
+        response = await checked_completion(client,
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-            messages=[
+            messages=public_messages([
                 {
                     "role": "system",
                     "content": f"{system_prompt}\n\n{weather_info}\n\n🎯 当前任务: {final_instruction}",
                 }
-            ],
+            ], 'ws_api.py'),
             temperature=0.85,
         )
         raw_reply = response.choices[0].message.content or ""
@@ -1188,7 +1214,7 @@ async def send_greeting(user_id: str, scenario_type: str):
         history.append({"role": "assistant", "content": final_reply, "ts": now_ms})
         if len(history) > 300:
             state.user_chat_history[user_id] = history[-300:]
-        history_store.save(state.user_chat_history)
+        await store_call(history_store.save, state.user_chat_history)
 
         await append_timeline(
             [{"messageId": greeting_id, "userId": user_id, "role": "bot", "content": final_reply, "timestamp": now_ms}]
@@ -1214,7 +1240,7 @@ async def send_greeting(user_id: str, scenario_type: str):
         )
 
         state.last_bot_response_time[user_id] = datetime.now(timezone.utc)
-        logger.info(f"[问候] [{scenario_type}] 发送成功: {final_reply[:50]}...")
+        logger.info("[问候] 发送成功")
     except Exception as e:
         logger.exception(f"[问候] [{scenario_type}] 发送失败: {e}")
 
@@ -1259,16 +1285,28 @@ async def _delayed_greeting(user_id: str, scenario_type: str, delay_seconds: int
 
 @app.on_event("startup")
 async def on_startup():
-    asyncio.create_task(greeting_scheduler())
-    asyncio.create_task(history_separator_scheduler())
-    # 积分/等级定时任务：断签扫描与提前提醒、月度补签卡发放、纪念日奖励（PRD §3.2 jobs/）
-    asyncio.create_task(points_jobs.run_forever())
-    # 心情整点刷新（S1）：让「立希当前状态」真正每小时变化
-    asyncio.create_task(scene_refresh_scheduler())
-    logger.info("[启动] 定时问候调度器已启动")
-    logger.info("[启动] 历史分隔调度器已启动")
-    logger.info("[启动] 积分/等级定时任务已启动")
-    logger.info("[启动] 心情整点刷新任务已启动")
+    global _points_task
+    ws_sessions.stopping = False
+    install_privacy_logging()
+    reliable = get_reliable_runtime() if os.getenv("FOUNDATION_ENABLED", "1") == "1" else None
+    if reliable:
+        reliable.start()
+    if _points_task is None or _points_task.done():
+        _points_task = asyncio.create_task(points_jobs.run_forever(), name="points-jobs")
+        logger.info("[启动] 积分/等级定时任务已启动")
+
+
+@app.on_event("shutdown")
+async def stop_reliable_runtime():
+    global _points_task
+    if _points_task is not None:
+        _points_task.cancel()
+        await asyncio.gather(_points_task, return_exceptions=True)
+        _points_task = None
+    await ws_sessions.stop()
+    reliable = get_reliable_runtime() if os.getenv("FOUNDATION_ENABLED", "1") == "1" else None
+    if reliable:
+        await reliable.stop()
 
 
 # ================= 每日历史软切割 =================
@@ -1317,7 +1355,7 @@ async def history_separator_scheduler():
                                 logger.info(f"[分隔] 用户仍活跃，强制插入分隔标记")
 
                 triggered_date = today_str
-                insert_daily_separator(user_id)
+                await store_call(insert_daily_separator, user_id)
 
         except Exception as e:
             logger.exception(f"[分隔] 调度器异常: {e}")
@@ -1330,4 +1368,4 @@ if __name__ == "__main__":
 
     host = os.getenv("BOT_WS_HOST", "127.0.0.1")
     port = int(os.getenv("BOT_WS_PORT", "8001"))
-    uvicorn.run("ws_api:app", host=host, port=port, reload=False)
+    uvicorn.run(app, host=host, port=port, reload=False, ws_max_size=VISION_WS_MAX_SIZE, ws_max_queue=4)

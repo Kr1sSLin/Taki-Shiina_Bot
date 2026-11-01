@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+from services.async_storage import gamification_call
+
 from fastapi import APIRouter, Header, Query, Request
 from pydantic import BaseModel
 
@@ -55,8 +57,8 @@ async def points_balance(request: Request, authorization: str | None = Header(de
     trace_id = resolve_trace_id(request)
     auth = require_auth(authorization, trace_id)
     gamification = get_gamification()
-    gamification.touch_user(auth.user_id)
-    detail = gamification.points.get_balance_detail(auth.user_id)
+    await gamification_call(gamification.touch_user, auth.user_id)
+    detail = await gamification_call(gamification.points.get_balance_detail, auth.user_id)
     return ok({"balance": detail["balance"], "updatedAt": detail.get("updatedAt")}, trace_id)
 
 
@@ -65,7 +67,7 @@ async def points_overview(request: Request, authorization: str | None = Header(d
     trace_id = resolve_trace_id(request)
     auth = require_auth(authorization, trace_id)
     gamification = get_gamification()
-    return ok(gamification.get_points_overview(auth.user_id), trace_id)
+    return ok(await gamification_call(gamification.get_points_overview, auth.user_id), trace_id)
 
 
 @router.get("/points/history")
@@ -79,7 +81,7 @@ async def points_history(
     trace_id = resolve_trace_id(request)
     auth = require_auth(authorization, trace_id)
     gamification = get_gamification()
-    data = gamification.points.get_history(
+    data = await gamification_call(gamification.points.get_history,
         auth.user_id,
         page=page,
         page_size=pageSize,
@@ -93,8 +95,8 @@ async def makeup_card_summary(request: Request, authorization: str | None = Head
     trace_id = resolve_trace_id(request)
     auth = require_auth(authorization, trace_id)
     gamification = get_gamification()
-    gamification.touch_user(auth.user_id)
-    return ok(gamification.makeup.get_summary(auth.user_id), trace_id)
+    await gamification_call(gamification.touch_user, auth.user_id)
+    return ok(await gamification_call(gamification.makeup.get_summary, auth.user_id), trace_id)
 
 
 @router.post("/points/makeup-card/use")
@@ -106,13 +108,13 @@ async def makeup_card_use(
     trace_id = resolve_trace_id(request)
     auth = require_auth(authorization, trace_id)
     gamification = get_gamification()
-    gamification.touch_user(auth.user_id)
+    await gamification_call(gamification.touch_user, auth.user_id)
 
     target_date = (payload.targetDate or payload.target_date or "").strip()
     if not target_date:
         return business_error(CODE_INVALID_PARAM, "targetDate 不能为空", None, trace_id, http_status=400)
 
-    result = gamification.makeup.use_card(auth.user_id, target_date)
+    result = await gamification_call(gamification.makeup.use_card, auth.user_id, target_date)
     if not result.ok:
         error_code, message = _MAKEUP_ERROR_MAP.get(
             result.error_code or "", (CODE_INVALID_PARAM, result.message or "补签失败")
@@ -132,7 +134,7 @@ async def makeup_card_use(
                 )
             await gamification.interaction.push_event(
                 auth.user_id,
-                makeup_card_changed_event(gamification.makeup.get_summary(auth.user_id), "USED"),
+                makeup_card_changed_event(await gamification_call(gamification.makeup.get_summary, auth.user_id), "USED"),
             )
         except Exception:
             pass
@@ -150,7 +152,7 @@ async def makeup_card_history(
     trace_id = resolve_trace_id(request)
     auth = require_auth(authorization, trace_id)
     gamification = get_gamification()
-    return ok(gamification.makeup.get_history(auth.user_id, page=page, page_size=pageSize), trace_id)
+    return ok(await gamification_call(gamification.makeup.get_history, auth.user_id, page=page, page_size=pageSize), trace_id)
 
 
 @router.get("/points/makeup-card/candidates")
@@ -163,5 +165,5 @@ async def makeup_card_candidates(
     trace_id = resolve_trace_id(request)
     auth = require_auth(authorization, trace_id)
     gamification = get_gamification()
-    gamification.touch_user(auth.user_id)
-    return ok(gamification.makeup.get_candidates(auth.user_id, limit=limit), trace_id)
+    await gamification_call(gamification.touch_user, auth.user_id)
+    return ok(await gamification_call(gamification.makeup.get_candidates, auth.user_id, limit=limit), trace_id)

@@ -18,7 +18,7 @@ artifacts/
 # ---- 运行时数据（若因调试落在程序目录下） ----
 # 便携版会在此写 data/ 与 portable.flag；这些是**本机运行态**，不入库。
 # 注意：portable.flag 由 build.ps1 在打包时生成并塞进 zip，不在源码树里。
-data/
+/data/
 
 # ---- 测试与自检残留 ----
 *.trx

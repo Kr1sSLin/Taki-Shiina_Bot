@@ -1,4 +1,4 @@
-"""HTTP 兜底通道必须把消息写入 chat_timeline.json。
+"""HTTP 兜底通道必须把消息写入可靠时间线，并支持历史和解。
 
 背景（客户端故障复盘）：客户端「发送」走 WS，「历史同步」走 GET /chat/history，
 后者读的是 chat_timeline.json。ws_api 会写该文件，而 http_api 的
@@ -15,9 +15,11 @@ POST /api/v1/chat 早前**完全没写**，于是通过 REST 兜底发出的消�
 from __future__ import annotations
 
 import base64
+import asyncio
 import os
 import tempfile
 import unittest
+from controlled_model_fixture import checker_response
 
 from ws_api_import_fixture import ensure_ws_api_env
 
@@ -61,6 +63,9 @@ class _FakeResponse:
 
 class _FakeCompletions:
     async def create(self, **_kwargs):
+        check = checker_response(_kwargs)
+        if check:
+            return check
         return _FakeResponse("收下了。")
 
 
@@ -135,6 +140,20 @@ class HttpChatTimelineTestCase(unittest.TestCase):
         api.prompt_service.get_system_prompt = _fake_prompt
         self.addCleanup(lambda: setattr(api.prompt_service, "get_system_prompt", self._orig_prompt))
 
+        from services.chat_runtime import ChatRuntime
+        from services.reliable_chat_store import ReliableChatStore
+        from services.domain_cipher import DomainCipher
+        from services.text_generation import TextGenerator
+        from unittest.mock import AsyncMock
+        self.store = ReliableChatStore(os.path.join(self._tmp.name, "foundation.sqlite3"), DomainCipher(b"t" * 32))
+        generator = TextGenerator(api.state, None, api.prompt_service, api.weather_service, api.client, api.parse_timer_instruction)
+        runtime = ChatRuntime(self.store, generator, AsyncMock(return_value=[]), api._no_live_delivery, poll_interval=0.005)
+        runtime.delivery_available = lambda owner: False
+        runtime_patch = patch.object(api, "get_reliable_runtime", return_value=runtime)
+        runtime_patch.start()
+        self.addCleanup(runtime_patch.stop)
+        self.addCleanup(lambda: asyncio.run(runtime.stop()))
+
         self.client = TestClient(api.app)
 
     def _post_chat(self, request_id: str, message: str = "帮我记一下"):
@@ -150,7 +169,7 @@ class HttpChatTimelineTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json().get("code"), 0, response.text)
 
-        items = self.http_api.timeline_store.load([])
+        items = self.store.history("test_user")
         roles = [x.get("role") for x in items]
         self.assertIn("user", roles, f"timeline 缺少 user 项: {items}")
         self.assertIn("bot", roles, f"timeline 缺少 bot 项: {items}")
@@ -181,7 +200,7 @@ class HttpChatTimelineTestCase(unittest.TestCase):
     def test_bot_and_user_items_have_distinct_ids(self):
         request_id = "req_client_ghi789"
         self.assertEqual(self._post_chat(request_id).status_code, 200)
-        items = self.http_api.timeline_store.load([])
+        items = self.store.history("test_user")
         ids = [x.get("messageId") for x in items]
         self.assertEqual(len(ids), len(set(ids)), f"timeline messageId 必须唯一: {ids}")
 
@@ -189,14 +208,7 @@ class HttpChatTimelineTestCase(unittest.TestCase):
         import copy
         from unittest.mock import AsyncMock, patch
         before = copy.deepcopy(self.http_api.state.user_chat_history)
-        original_append = self.http_api.append_timeline
-
-        async def _fail(_items):
-            raise RuntimeError("sensitive storage path")
-
-        self.http_api.append_timeline = _fail
-        self.addCleanup(lambda: setattr(self.http_api, "append_timeline", original_append))
-        with patch.object(self.http_api, "extract_user_facts", AsyncMock()) as extract:
+        with patch.object(self.store, "commit_reply", side_effect=RuntimeError("sensitive storage path")), patch.object(self.http_api, "extract_user_facts", AsyncMock()) as extract:
             response = self._post_chat("req-storage-fail")
             extract.assert_not_called()
         # Creating an empty per-user context is harmless; no failed message may persist.
@@ -205,8 +217,9 @@ class HttpChatTimelineTestCase(unittest.TestCase):
             {key: value for key, value in before.items() if value},
         )
         self.assertFalse(os.path.exists(os.path.join(self._tmp.name, "history.json")))
-        self.assertEqual(response.status_code, 500)
-        self.assertEqual(response.json()["code"], 5000)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["code"], 50302)
+        self.assertEqual(self.store.history("test_user"), [])
         self.assertNotIn("sensitive storage path", response.text)
 
 

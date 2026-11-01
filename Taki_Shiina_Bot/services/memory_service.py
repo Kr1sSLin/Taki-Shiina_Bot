@@ -1,37 +1,34 @@
 import datetime
+import copy
 import logging
 import os
 
 from secure_storage import SecureJsonStore
+from services.privacy import redact_locations
+from services.permission_guard import PermissionGuard
+from services.foundation_store import PermissionDenied
 
 
 class MemoryService:
     def __init__(self, base_dir):
         self.logger = logging.getLogger(__name__)
+        self.base_dir = os.path.abspath(base_dir)
+        self.permission_guard = PermissionGuard(self.base_dir)
         self.db_file = os.path.join(base_dir, "user_memories.json")
         self.data = {}
         self.store = SecureJsonStore(self.db_file, self.logger)
         self.load()
 
     def load(self):
-        if not os.path.exists(self.db_file):
-            self.data = {}
-            self.save()
-            return
-        try:
-            self.data = self.store.load({})
-        except Exception as e:
-            self.logger.error(f"无法读取记忆文件: {e}")
-            self.data = {}
+        self.data = self.store.load_strict({})
 
     def save(self):
-        try:
-            self.store.save(self.data)
-        except Exception as e:
-            self.logger.error(f"无法保存记忆文件: {e}")
+        self.store.save_strict(self.data)
 
     def get_profile(self, user_id):
         user_id = str(user_id)
+        if not self.permission_guard.owner_context_allowed(user_id):
+            return ""
         raw_data = self.data.get(user_id, [])
 
         if not raw_data:
@@ -47,6 +44,8 @@ class MemoryService:
 
     def update_profile(self, user_id, new_info):
         user_id = str(user_id)
+        if not self.permission_guard.owner_context_allowed(user_id):
+            raise PermissionDenied("Unmapped legacy memory updates are disabled for this owner")
         raw_data = self.data.get(user_id, [])
 
         if isinstance(raw_data, str):
@@ -55,13 +54,15 @@ class MemoryService:
             else:
                 memory_list = raw_data.split("\n")
         else:
-            memory_list = raw_data
+            memory_list = list(raw_data)
 
         date_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        entry = f"[{date_str}] {new_info}"
+        entry = f"[{date_str}] {redact_locations(new_info)}"
 
         memory_list.append(entry)
 
-        self.data[user_id] = memory_list
-        self.save()
-        self.logger.info(f"💾 记忆已更新: {entry}")
+        updated = copy.deepcopy(self.data)
+        updated[user_id] = memory_list
+        self.store.save_strict(updated)
+        self.data = updated
+        self.logger.info("记忆更新已提交")

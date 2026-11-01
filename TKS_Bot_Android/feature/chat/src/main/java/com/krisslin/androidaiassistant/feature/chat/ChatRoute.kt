@@ -114,6 +114,7 @@ import kotlin.math.roundToInt
 @Composable
 fun ChatRoute(
     viewModel: ChatViewModel = hiltViewModel(),
+    targetMessageId: String? = null,
     isDarkMode: Boolean = false,
     onToggleTheme: () -> Unit = {},
     onNavigateToLogin: () -> Unit = {},
@@ -124,6 +125,12 @@ fun ChatRoute(
     val state by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
+    LaunchedEffect(targetMessageId, state.messages) {
+        if (targetMessageId != null) {
+            val index = state.messages.indexOfFirst { it.id == targetMessageId || it.id == "${targetMessageId}_0" }
+            if (index >= 0) listState.animateScrollToItem(index)
+        }
+    }
     var showImagePreview by remember { mutableStateOf<String?>(null) }
     var messageMenuTargetId by remember { mutableStateOf<String?>(null) }
     var showAttachMenu by remember { mutableStateOf(false) }
@@ -301,10 +308,7 @@ fun ChatRoute(
             ) {
                 val statusText = when (state.connectionStatus) {
                     ConnectionStatus.CONNECTING -> "连接中..."
-                    ConnectionStatus.CONNECTED -> {
-                        val activity = state.botActivity.statusLabel(state.botStage)
-                        if (activity != null) "在线 · $activity" else "在线"
-                    }
+                    ConnectionStatus.CONNECTED -> "在线"
                     ConnectionStatus.DISCONNECTED -> "离线"
                 }
                 ChatTopBarRow(
@@ -703,16 +707,6 @@ private fun ChatBackground(
                 contentScale = ContentScale.Crop
             )
         }
-    }
-}
-
-private fun BotActivityStatus.statusLabel(stage: String? = null): String? = when (this) {
-    BotActivityStatus.IDLE -> null
-    BotActivityStatus.SENDING -> "发送中…"
-    BotActivityStatus.TYPING -> when (stage) {
-        "vision" -> "在看图"
-        "generating" -> "回复生成中…"
-        else -> "打字中"
     }
 }
 

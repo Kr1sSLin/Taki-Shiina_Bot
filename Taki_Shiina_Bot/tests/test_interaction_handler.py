@@ -137,7 +137,9 @@ class InteractionHandlerTestCase(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.error_code, 40204)
         self.assertTrue(result.refunded)
-        self.assertEqual(result.balance, 21)  # 20 - 5扣分 + 1每日首次 + 5退回
+        self.assertEqual(result.balance, 20)  # 失败不是有效对话，只退回原扣款。
+        self.assertNotIn(REASON_DAILY_FIRST_CHAT, self.ledger_reasons())
+        self.assertEqual(self.rig.gamification.progress_store.snapshot()["daily_activity_log"], {})
         self.assertEqual(result.attempts, 3)
 
         reasons = self.ledger_reasons()
@@ -154,6 +156,7 @@ class InteractionHandlerTestCase(unittest.TestCase):
 
     def test_refund_is_idempotent(self):
         self.set_balance(20)
+        self.rig.points.deduct_for_item(TEST_USER, "coffee", 5, "same-key")
         refund = self.rig.points.refund_item(TEST_USER, "coffee", 5, "same-key")
         again = self.rig.points.refund_item(TEST_USER, "coffee", 5, "same-key")
         self.assertTrue(refund.created)
@@ -172,9 +175,11 @@ class InteractionHandlerTestCase(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.error_code, 40205)
         self.assertTrue(result.refunded)
-        self.assertEqual(self.rig.points.get_balance(TEST_USER), 21)
+        self.assertEqual(self.rig.points.get_balance(TEST_USER), 20)
+        self.assertNotIn(REASON_DAILY_FIRST_CHAT, self.ledger_reasons())
         self.assertFalse(any(event.get("payload", {}).get("done") is True for _user, event in self.rig.events))
         self.assertEqual(self.rig.events_of("bot.error")[-1]["payload"]["errorCode"], "STORAGE_FAILED_REFUNDED")
+        self.assertGreater(self.rig.events_of("bot.error")[-1]["payload"]["timestamp"], 0)
 
         replay = run(self.rig.handler.send(TEST_USER, "coffee", request_id="storage-fail"))
         self.assertTrue(replay.duplicate)
@@ -182,6 +187,20 @@ class InteractionHandlerTestCase(unittest.TestCase):
         self.assertEqual(len(refunds), 1)
 
     # ---------- 幂等与并发（FR-13 / EDGE-1） ----------
+    def test_history_failure_refunds_and_never_reports_success(self):
+        from unittest.mock import patch
+        self.set_balance(20)
+        original = dict(self.rig.state.user_chat_history)
+        with patch.object(self.rig.handler.history_store, "save", side_effect=OSError("synthetic disk full")):
+            result = run(self.rig.handler.send(TEST_USER, "coffee", request_id="history-fail"))
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, 40205)
+        self.assertTrue(result.refunded)
+        self.assertEqual(self.rig.points.get_balance(TEST_USER), 20)
+        self.assertNotIn(REASON_DAILY_FIRST_CHAT, self.ledger_reasons())
+        self.assertEqual(self.rig.state.user_chat_history, original if original else {TEST_USER: []})
+        self.assertFalse(any(event.get("payload", {}).get("done") is True for _user, event in self.rig.events))
+
     def test_duplicate_request_is_not_charged_twice(self):
         self.set_balance(20)
         first = run(self.rig.handler.send(TEST_USER, "coffee", request_id="dup-1"))

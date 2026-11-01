@@ -26,6 +26,9 @@ import type {
   ReminderRecord,
   SettingsPatch,
   UserFact,
+  MemoryDetail,
+  QueuedMemoryPermission,
+  ProactiveStatus,
   UserProgressCache
 } from './protocol'
 import type { IpcFailure } from './errors'
@@ -86,6 +89,12 @@ export const IPC = {
   historyMarkRead: 'history:markRead',
   historyMarkAllRead: 'history:markAllRead',
   historyListFacts: 'history:listFacts',
+  historyFactDetail: 'history:factDetail',
+  historySetFactPermission: 'history:setFactPermission',
+  historyCorrectFact: 'history:correctFact',
+  historyPendingPermissions: 'history:pendingPermissions',
+  settingsGetProactive: 'settings:getProactive',
+  settingsSetProactive: 'settings:setProactive',
 
   // 提醒
   reminderList: 'reminder:list',
@@ -314,8 +323,8 @@ export interface TksApi {
   chat: {
     send(input: { requestId: string; content: string; attachmentIds: string[] }): Promise<void>
     sendViaRest(input: { requestId: string; content: string }): Promise<{ reply: string; message: ChatMessage[] }>
-    listMessages(opts: { limit: number; beforeTimestamp?: number }): Promise<ChatMessage[]>
-    loadOlder(opts: { beforeTimestamp: number; limit: number }): Promise<ChatMessage[]>
+    listMessages(opts: { limit: number; beforeTimestamp?: number; beforeMessageId?: string }): Promise<ChatMessage[]>
+    loadOlder(opts: { beforeTimestamp: number; limit: number; beforeMessageId?: string }): Promise<ChatMessage[]>
     deleteMessage(messageId: string): Promise<void>
     /** FR-CHAT-12：返回清空条数与推进后的同步游标。 */
     clearConversation(): Promise<{ deleted: number; cursor: number }>
@@ -348,6 +357,10 @@ export interface TksApi {
     markRead(ids: string[]): Promise<void>
     markAllRead(): Promise<void>
     listFacts(limit?: number): Promise<UserFact[]>
+    factDetail(factId: string): Promise<MemoryDetail>
+    setFactPermission(factId: string, enabled: boolean, expectedRevision: number): Promise<'applied' | 'pending' | 'conflict'>
+    correctFact(factId: string, content: string, expectedRevision: number): Promise<void>
+    pendingPermissions(): Promise<QueuedMemoryPermission[]>
     onNotificationsUpdated(cb: (e: { unread: number }) => void): () => void
     onFactsUpdated(cb: (e: { facts: UserFact[] }) => void): () => void
   }
@@ -359,6 +372,8 @@ export interface TksApi {
   }
   settings: {
     get(): Promise<AppSettings>
+    getProactive(): Promise<ProactiveStatus>
+    setProactive(enabled: boolean): Promise<ProactiveStatus>
     update(patch: SettingsPatch): Promise<AppSettings>
     testConnection(apiBaseUrl: string): Promise<{ ok: boolean; latencyMs: number | null; errorI18nKey: string | null }>
     getCity(): Promise<string>

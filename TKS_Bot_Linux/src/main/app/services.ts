@@ -38,6 +38,7 @@ import { clearTokens } from '../core/auth/token-manager'
 import { RestClient } from '../core/network/rest-client'
 import { ConnectionManager } from '../core/network/connection-manager'
 import { ChatService } from '../core/chat/chat-service'
+import { MemoryManagementService } from '../core/chat/memory-management-service'
 import { ImageService, initAttachmentDir } from '../core/chat/image-service'
 import { NotificationService } from '../core/push/notification-service'
 import { ReminderScheduler } from '../core/push/reminder-scheduler'
@@ -58,6 +59,7 @@ export interface Services {
   rest: RestClient
   conn: ConnectionManager
   chat: ChatService
+  memory: MemoryManagementService
   images: ImageService
   notify: NotificationService
   reminders: ReminderScheduler
@@ -202,9 +204,8 @@ export function buildServices(opts: BuildOptions): Services {
      *   - 点击通知可唤起窗口并滚动定位到该消息（`messageId` → `evt:navigate`）
      */
     notifyReply: (info) => {
-      const body = info.messages.map((m) => m.content).join('\n').trim()
-      if (!body) return
-      const messageId = info.messages[0]?.messageId
+      const messageId = info.originalMessageId
+      const body = t('notify.chat.privateBody')
 
       if (info.messageKind === 'greeting') {
         const titleKey =
@@ -217,10 +218,7 @@ export function buildServices(opts: BuildOptions): Services {
         return
       }
 
-      const prefix = info.interactionItemIcon
-        ? `${info.interactionItemIcon}${info.interactionItemName ?? ''} `
-        : ''
-      notify.notify({ kind: 'chat', title: t('notify.chat.title'), body: `${prefix}${body}`, route: '/chat', messageId })
+      notify.notify({ kind: 'chat', title: t('notify.chat.title'), body, route: '/chat', messageId })
     },
     notifyError: (info) => {
       const detail = info.message || t(errorI18nKey(info.errorCode))
@@ -237,6 +235,9 @@ export function buildServices(opts: BuildOptions): Services {
   })
   chatRef = chat
 
+  const memory = new MemoryManagementService(rest, () => auth.status().userId,
+    async () => { await chat.pullFacts() })
+
   const images = new ImageService()
 
   /* --------------------------- 积分/等级/互动 --------------------------- */
@@ -245,6 +246,7 @@ export function buildServices(opts: BuildOptions): Services {
     rest,
     notify,
     applyMergedRequestIds: (ids) => chat.applyMergedRequestIds(ids),
+    applyInteractionFailure: (frame) => { chat.handleBotError(frame); void chat.syncHistory(true) },
     isWsConnected: () => conn.isConnected(),
     navigate: (route) => bus.send(IPC.evtNavigate, { to: route })
   })
@@ -305,6 +307,7 @@ export function buildServices(opts: BuildOptions): Services {
     log.info('连接就绪，开始同步', { fullSync })
     // FR-SYNC-4：首次登录 / 手动重连 / 上次全量失败 → `since=0`
     void chat.syncHistory(fullSync)
+    void memory.flush()
     // FR-PT-5：登录与 WS 重连成功后同步覆盖积分/等级缓存
     void gamification.refreshAll()
     gamification.setUserId(auth.describe().userId)
@@ -397,6 +400,7 @@ export function buildServices(opts: BuildOptions): Services {
     rest,
     conn,
     chat,
+    memory,
     images,
     notify,
     reminders,

@@ -1,7 +1,9 @@
 import datetime
 import os
+import re
 
 import httpx
+from services.privacy import redact_locations
 
 
 class WeatherService:
@@ -21,7 +23,8 @@ class WeatherService:
     def get_current_city(self):
         if os.path.exists(self.city_file):
             with open(self.city_file, "r", encoding="utf-8") as f:
-                return f.read().strip()
+                city = f.read().strip()
+                return city if redact_locations(city) == city else "auto_ip"
         return "auto_ip"
 
     async def _resolve_location_id(self, loc: str) -> str | None:
@@ -81,6 +84,16 @@ class WeatherService:
             return "【当前天气】：暂时无法获取"
 
     def set_city(self, city):
+        city = city.strip()
+        if redact_locations(city) != city:
+            raise ValueError("仅接受城市名称，不保存详细坐标")
+        # Preserve auto location and existing provider city IDs; punctuation
+        # produced by Chinese input methods must not turn coordinates into names.
+        if not (city == "auto_ip" or re.fullmatch(r"[0-9]{9}", city) or (
+            any(char.isalpha() for char in city)
+            and all(char.isalpha() or char in " -.'·" for char in city)
+        )):
+            raise ValueError("请输入城市名称（如北京），不支持经纬度或异常标点")
         with open(self.city_file, "w", encoding="utf-8") as f:
             f.write(city)
         self.cache = {"info": "未知", "time": 0}

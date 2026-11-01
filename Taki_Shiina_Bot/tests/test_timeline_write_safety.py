@@ -288,14 +288,10 @@ class HttpApiMemoryTimelineSafetyTestCase(_AppendSafetyMixin, unittest.TestCase)
 
 
 class StoreJsonCorruptionTestCase(unittest.TestCase):
-    """补一条底层语义：SecureJsonStore.load 遇到坏 JSON 会静默返回默认值。
+    """Both read spellings reject corruption under FND-02."""
 
-    这是上面四个缺陷的**共同源头**——所以写入方不能依赖 `load(default)` 判断
-    「文件是空的」还是「读失败了」。这里把该行为固定下来，作为文档化事实。
-    """
-
-    def test_load_swallows_json_error_and_returns_default(self):
-        from secure_storage import SecureJsonStore
+    def test_load_raises_on_json_error(self):
+        from secure_storage import DataCorruptionError, SecureJsonStore
         import logging
 
         _set_key(KEY_GOOD)
@@ -304,10 +300,11 @@ class StoreJsonCorruptionTestCase(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write("not json at all")
             store = SecureJsonStore(path, logging.getLogger("test"))
-            self.assertEqual(store.load(["DEFAULT"]), ["DEFAULT"])
+            with self.assertRaises(DataCorruptionError):
+                store.load(["DEFAULT"])
 
     def test_load_strict_raises_on_json_error(self):
-        from secure_storage import SecureJsonStore
+        from secure_storage import DataCorruptionError, SecureJsonStore
         import logging
 
         _set_key(KEY_GOOD)
@@ -316,7 +313,7 @@ class StoreJsonCorruptionTestCase(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write("not json at all")
             store = SecureJsonStore(path, logging.getLogger("test"))
-            with self.assertRaises(json.JSONDecodeError):
+            with self.assertRaises(DataCorruptionError):
                 store.load_strict(["DEFAULT"])
 
 

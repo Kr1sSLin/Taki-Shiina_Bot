@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.Input;
 using TKSDesktop.App;
 using TKSDesktop.Contracts;
 using TKSDesktop.Core.Platform;
+using TKSDesktop.Core.Services;
 
 namespace TKSDesktop.ViewModels;
 
@@ -54,7 +55,7 @@ public sealed partial class NotificationItemViewModel : ObservableObject
     }
 }
 
-/// <summary>记忆档案一行（FR-W-HIS-3/5；**只读**）。</summary>
+/// <summary>记忆档案一行。</summary>
 public sealed class FactItemViewModel
 {
     /// <summary>由本地投影构建。</summary>
@@ -63,6 +64,14 @@ public sealed class FactItemViewModel
         ArgumentNullException.ThrowIfNull(item);
         FactId = item.FactId;
         Fact = item.Fact;
+        UserId = item.UserId;
+        Revision = item.Revision;
+        Enabled = item.Enabled;
+        Stage = item.Stage;
+        TruthStatus = item.TruthStatus;
+        Score = item.Score;
+        SourceMessageId = item.SourceMessageId;
+        TemporalValidity = item.TemporalValidity;
         TimeText = MessageItemViewModel
             .FromUnixMilliseconds(item.Timestamp)
             .ToString("yyyy-MM-dd HH:mm", CultureInfo.CurrentCulture);
@@ -73,6 +82,15 @@ public sealed class FactItemViewModel
 
     /// <summary>事实正文。</summary>
     public string Fact { get; }
+    public string UserId { get; }
+    public long Revision { get; }
+    public bool Enabled { get; }
+    public string Stage { get; }
+    public string TruthStatus { get; }
+    public double Score { get; }
+    public string? SourceMessageId { get; }
+    public string? TemporalValidity { get; }
+    public string PermissionText => I18n.T(Enabled ? "memory.allowed" : "memory.disabled");
 
     /// <summary>时间文案。</summary>
     public string TimeText { get; }
@@ -91,14 +109,19 @@ public sealed partial class HistoryViewModel : ObservableObject
 {
     private readonly ILocalHistoryReader _history;
     private readonly IUiDispatcher _dispatcher;
+    private readonly MemoryManagementService? _memory;
+    private readonly ISyncService? _sync;
 
     /// <summary>构造。</summary>
-    public HistoryViewModel(ILocalHistoryReader history, IUiDispatcher dispatcher)
+    public HistoryViewModel(ILocalHistoryReader history, IUiDispatcher dispatcher,
+        MemoryManagementService? memory = null, ISyncService? sync = null)
     {
         ArgumentNullException.ThrowIfNull(history);
         ArgumentNullException.ThrowIfNull(dispatcher);
         _history = history;
         _dispatcher = dispatcher;
+        _memory = memory;
+        _sync = sync;
     }
 
     /// <summary>Bot 通知（倒序）。</summary>
@@ -106,6 +129,36 @@ public sealed partial class HistoryViewModel : ObservableObject
 
     /// <summary>记忆事实（倒序）。</summary>
     public ObservableCollection<FactItemViewModel> Facts { get; } = [];
+
+    [ObservableProperty]
+    private FactItemViewModel? _selectedFact;
+
+    [ObservableProperty]
+    private string _factDetailText = I18n.T("memory.selectHint");
+
+    [ObservableProperty]
+    private string _permissionStatusText = string.Empty;
+
+    [ObservableProperty]
+    private bool _canChangePermission;
+
+    [ObservableProperty]
+    private string _permissionActionText = I18n.T("memory.disabled");
+
+    [ObservableProperty]
+    private string _correctionText = string.Empty;
+
+    [ObservableProperty]
+    private string _correctionStatusText = string.Empty;
+
+    [ObservableProperty]
+    private bool _canCorrectFact;
+
+    public string CorrectionLabelText => I18n.T("memory.correction.label");
+    public string CorrectionHintText => I18n.T("memory.correction.hint");
+    public string CorrectFactButtonText => I18n.T("memory.correction.submit");
+
+    public string ViewFactDetailText => I18n.T("memory.viewDetail");
 
     /// <summary>未读数。</summary>
     [ObservableProperty]
@@ -144,7 +197,7 @@ public sealed partial class HistoryViewModel : ObservableObject
     /// <summary>「全部已读」按钮文案。</summary>
     public string MarkAllReadText => I18n.T("history.markAllRead");
 
-    /// <summary>记忆只读说明（FR-W-HIS-5）。</summary>
+    /// <summary>记忆管理说明（FR-W-HIS-5）。</summary>
     public string FactsReadonlyText => I18n.T("history.facts.readonly");
 
     /// <summary>记忆搜索占位文案。</summary>
@@ -179,6 +232,122 @@ public sealed partial class HistoryViewModel : ObservableObject
             RaiseCounters();
         }).ConfigureAwait(true);
     }
+
+    [RelayCommand]
+    private async Task SelectFactAsync(FactItemViewModel? item)
+    {
+        if (item is null) return;
+        SelectedFact = item;
+        CorrectionText = string.Empty;
+        CorrectionStatusText = string.Empty;
+        CanCorrectFact = false;
+        _selectedRevision = item.Revision;
+        _selectedEnabled = item.Enabled;
+        CanChangePermission = _memory is not null && item.UserId.Length > 0;
+        PermissionActionText = I18n.T(item.Enabled ? "memory.disabled" : "memory.restore");
+        FactDetailText = DetailOf(item.Fact, item.SourceMessageId, item.Stage,
+            item.TruthStatus, item.Enabled, item.Revision, item.Score, item.TemporalValidity);
+        if (_memory is null) return;
+        PermissionStatusText = await _memory.LatestOperationStateAsync(item.FactId).ConfigureAwait(true) switch
+        {
+            "pending" => I18n.T("memory.pending"),
+            "conflict" => I18n.T("memory.conflict"),
+            _ => string.Empty,
+        };
+        var detail = await _memory.GetDetailAsync(item.FactId).ConfigureAwait(true);
+        if (detail.IsSuccess && detail.Value is { } current)
+        {
+            CanCorrectFact = current.Domain == "user_fact";
+            FactDetailText = DetailOf(current.Content, current.Sources.FirstOrDefault()?.SourceMessageId,
+                current.Stage, current.TruthStatus, current.Enabled, current.Revision,
+                current.Score, current.TemporalValidity?.GetRawText());
+            PermissionActionText = I18n.T(current.Enabled ? "memory.disabled" : "memory.restore");
+            _selectedRevision = current.Revision;
+            _selectedEnabled = current.Enabled;
+        }
+        else PermissionStatusText = I18n.T("memory.offlineDetail");
+    }
+
+    private long _selectedRevision;
+    private bool _selectedEnabled;
+
+    [RelayCommand]
+    private async Task CorrectFactAsync()
+    {
+        var item = SelectedFact;
+        if (item is null || _memory is null || !CanCorrectFact ||
+            string.IsNullOrWhiteSpace(CorrectionText) || _selectedRevision < 1) return;
+        CanCorrectFact = false;
+        var result = await _memory.CorrectFactAsync(item.FactId, CorrectionText, _selectedRevision).ConfigureAwait(true);
+        if (result.IsSuccess)
+        {
+            if (_sync is not null) await _sync.SyncFactsAsync().ConfigureAwait(true);
+            await LoadAsync().ConfigureAwait(true);
+            var latest = Facts.FirstOrDefault(fact => fact.FactId == item.FactId);
+            if (latest is not null) await SelectFactAsync(latest).ConfigureAwait(true);
+            CorrectionStatusText = I18n.T("memory.correction.applied");
+        }
+        else
+        {
+            CorrectionStatusText = I18n.T(result.Error?.HttpStatus == 409
+                ? "memory.conflict" : "memory.correction.failed");
+            if (_sync is not null) await _sync.SyncFactsAsync().ConfigureAwait(true);
+            var detail = await _memory.GetDetailAsync(item.FactId).ConfigureAwait(true);
+            if (detail.IsSuccess && detail.Value is { } current)
+            {
+                _selectedRevision = current.Revision;
+                FactDetailText = DetailOf(current.Content, current.Sources.FirstOrDefault()?.SourceMessageId,
+                    current.Stage, current.TruthStatus, current.Enabled, current.Revision,
+                    current.Score, current.TemporalValidity?.GetRawText());
+            }
+            CanCorrectFact = detail.IsSuccess && detail.Value?.Domain == "user_fact";
+        }
+    }
+
+    [RelayCommand]
+    private async Task ChangePermissionAsync()
+    {
+        var item = SelectedFact;
+        if (item is null || _memory is null || string.IsNullOrWhiteSpace(item.UserId)) return;
+        if (_selectedRevision == 0) _selectedRevision = item.Revision;
+        var queued = await _memory.QueuePermissionAsync(item.FactId, item.UserId,
+            !_selectedEnabled, _selectedRevision).ConfigureAwait(true);
+        if (!queued)
+        {
+            PermissionStatusText = I18n.T("memory.pendingExists");
+            return;
+        }
+        PermissionStatusText = I18n.T("memory.pending");
+        await _memory.FlushAsync().ConfigureAwait(true);
+        var state = await _memory.LatestOperationStateAsync(item.FactId).ConfigureAwait(true);
+        if (state == "applied")
+        {
+            if (_sync is not null) await _sync.SyncFactsAsync().ConfigureAwait(true);
+            await LoadAsync().ConfigureAwait(true);
+            PermissionStatusText = I18n.T("memory.applied");
+            var detail = await _memory.GetDetailAsync(item.FactId).ConfigureAwait(true);
+            if (detail.IsSuccess && detail.Value is { } current)
+            {
+                _selectedRevision = current.Revision;
+                _selectedEnabled = current.Enabled;
+                PermissionActionText = I18n.T(current.Enabled ? "memory.disabled" : "memory.restore");
+                FactDetailText = DetailOf(current.Content, current.Sources.FirstOrDefault()?.SourceMessageId,
+                    current.Stage, current.TruthStatus, current.Enabled, current.Revision,
+                    current.Score, current.TemporalValidity?.GetRawText());
+            }
+        }
+        else if (state == "conflict")
+        {
+            PermissionStatusText = I18n.T("memory.conflict");
+            await SelectFactAsync(item).ConfigureAwait(true);
+        }
+    }
+
+    private static string DetailOf(string content, string? source, string stage, string truth,
+        bool enabled, long revision, double score, string? validity) =>
+        I18n.T("memory.detail", content, source ?? I18n.T("memory.unknown"), stage, truth,
+            I18n.T(enabled ? "memory.allowed" : "memory.disabled"), revision, score,
+            validity ?? I18n.T("memory.unset"));
 
     /// <summary>标记一条通知为已读（FR-W-HIS-2）。</summary>
     [RelayCommand]

@@ -113,6 +113,8 @@ export const zhCN = {
 
   /* ------------------------------ 同步 ------------------------------ */
   'sync.failed': '历史同步失败，将在下次连接成功后重试',
+  'sync.limited': '当前服务端仅支持有限历史同步',
+  'sync.waiting': '历史同步等待回复可交付，将稍后继续',
 
   /* ------------------------------ 提醒 ------------------------------ */
   'reminder.title': '已排程提醒',
@@ -128,6 +130,7 @@ export const zhCN = {
 
   /* ------------------------------ 通知 ------------------------------ */
   'notify.chat.title': '立希',
+  'notify.chat.privateBody': '立希发来一条消息',
   'notify.greeting.morning.title': '立希的早安',
   'notify.greeting.night.title': '立希的深夜问候',
   'notify.greeting.title': '立希的问候',
@@ -152,6 +155,9 @@ export const zhCN = {
   'settings.section.connection': '连接',
   'settings.section.behavior': '行为',
   'settings.section.notifications': '通知',
+  'settings.proactive.enabled': '主动消息',
+  'settings.proactive.hint': '关闭会立即停止新调度并取消待发提醒；重新开启不会重置配额或补发错过的消息。',
+  'settings.proactive.globallyOff': '服务端当前暂停主动消息，个人开关不会使其立即发送。',
   'settings.section.data': '数据',
   'settings.section.about': '关于',
 
@@ -264,6 +270,30 @@ export const zhCN = {
   'history.notifications.markAllRead': '全部已读',
   'history.facts.empty': '立希还没有记住关于你的事',
   'history.facts.readonly': '记忆由立希自动提炼，仅供查看',
+  'history.facts.managementHint': '可以纠正、停止使用或恢复记忆；停止使用不会彻底删除聊天或备份。',
+  'history.facts.view': '查看',
+  'history.facts.detail': '记忆详情',
+  'history.facts.detailUnavailable': '离线时暂时无法读取完整详情。',
+  'history.facts.stage.candidate': '候选',
+  'history.facts.stage.formal': '正式',
+  'history.facts.stageLabel': '阶段',
+  'history.facts.truthLabel': '真实性',
+  'history.facts.scoreLabel': '使用权重（不代表真实概率）',
+  'history.facts.revisionLabel': '修订版本',
+  'history.facts.sourceLabel': '来源',
+  'history.facts.validityLabel': '有效时间',
+  'history.facts.unknown': '未知',
+  'history.facts.disable': '停止使用',
+  'history.facts.restore': '明确恢复使用',
+  'history.facts.correction.label': '纠正后的记忆',
+  'history.facts.correction.hint': '仅用于纠正原记载错误；权限和有效时间保持不变。生活情况变化请在聊天中说明。需联网提交。',
+  'history.facts.correction.submit': '提交纠正',
+  'history.facts.correction.applied': '纠正已同步到服务端',
+  'history.facts.permission.allowed': '允许使用',
+  'history.facts.permission.blocked': '已禁用',
+  'history.facts.permission.applied': '已同步到服务端',
+  'history.facts.permission.pending': '待同步；其他设备尚未生效',
+  'history.facts.permission.conflict': '服务端版本已变化，请查看最新状态后重新操作',
   'history.facts.count': '共 {n} 条记忆',
 
   /* ------------------------------ 互动 / 积分 / 等级 ------------------------------ */
@@ -275,7 +305,7 @@ export const zhCN = {
   'interaction.disabled.offline': '离线状态下不可送礼',
   'interaction.sending': '立希正在反应…',
   'interaction.success': '已送出「{name}」，消耗 {cost} 积分',
-  'interaction.timeout': '立希好像走神了，请稍后在个人页确认积分',
+  'interaction.timeout': '这次未能完成，请稍后重试并在个人页确认积分',
   'interaction.refunded': 'AI 调用失败，积分已退回',
   'interaction.empty': '暂无可用物品',
   'interaction.titleWithText': '附言会一起发给立希',
@@ -356,6 +386,7 @@ export const zhCN = {
   'error.server.INVALID_JSON': '消息格式错误',
   'error.server.UNKNOWN_TYPE': '不支持的消息类型',
   'error.server.EMPTY_MESSAGE': '消息内容不能为空',
+  'error.server.INPUT_TOO_LONG': '文字最多 8000 个 Unicode 字符、32 KiB，请编辑后发送',
   'error.server.VISION_IMAGE_COUNT_EXCEEDED': '单次最多 3 张图片',
   'error.server.VISION_INVALID_MIME': '图片格式不支持，仅支持 JPG / PNG',
   'error.server.VISION_INVALID_BASE64': '图片解析失败，请重新选择',

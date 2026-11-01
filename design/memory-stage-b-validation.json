@@ -1,0 +1,86 @@
+{
+  "date": "2026-10-16",
+  "timezone": "Asia/Shanghai",
+  "scope": "PRD-02 stage B code and deterministic acceptance, amended by explicit user decisions",
+  "delivery_status": "code_and_deterministic_acceptance_complete_with_user_agreed_deferrals",
+  "latest_scoring_policy": {
+    "explicit_stable_initial": 0.6,
+    "explicit_stable_stage": "formal",
+    "temporary_state_or_plan_initial": 0.3,
+    "temporary_promotion_threshold": 0.6,
+    "formal_correction_baseline": 0.6,
+    "temporary_candidate_correction_baseline": 0.3,
+    "same_turn_initial_or_promotion_usage_bonus": false,
+    "inference_repetition_certifies_truth": false,
+    "permission_independent_of_weight": true
+  },
+  "full_backend_regression": {
+    "command": ".test-temp/foundation-clean-venv/Scripts/python.exe -m pytest Taki_Shiina_Bot/tests scripts/tests -q -p no:cacheprovider --tb=short",
+    "exit_code": 0,
+    "passed": 374,
+    "subtests_passed": 172,
+    "failed": 0,
+    "warnings": 13,
+    "duration_seconds": 88.63,
+    "network": "offline model doubles; external network blocked by test fixtures",
+    "windows_temp_directory_execution": "approved isolated execution after sandbox denied access to generated test directories"
+  },
+  "deterministic_acceptance": {
+    "M-A01": "passed for temporary state/plan track; stable first-score rule superseded by user",
+    "M-A02": "passed: source and logical-turn deduplication",
+    "M-A03": "passed: initial/promotion turn cannot score a second usage increment",
+    "M-A04": "passed: candidates and raw historical prose excluded from actual model messages",
+    "M-A05": "passed: failed/unselected drafts do not reinforce; committed success scores once",
+    "M-A06": "passed: high weights cannot override blocked/disputed/retracted states",
+    "M-A07": "passed: disable, unknown new identity quarantine, restart, restoration guard and undelivered reply fences",
+    "M-A08": "passed: distinct event times and subjects stay distinct; inferences stay pending",
+    "M-A09": "passed: expired plans/states are not current/completed facts",
+    "M-A10": "passed: user source boundary and domain isolation; semantic language accuracy evaluated separately",
+    "M-A11": "passed: stale CAS, transactional rollback and existing concurrency/recovery regressions"
+  },
+  "demonstration": {
+    "command": ".test-temp/foundation-clean-venv/Scripts/python.exe scripts/demo_memory_stage_b.py",
+    "exit_code": 0,
+    "temporary_scores": [0.3, 0.4, 0.5, 0.6, 0.7],
+    "stable_scores": [0.6, 0.7],
+    "blocked_is_excluded": true,
+    "restored_score": 0.7,
+    "official_sample_published_in_temporary_database": 2,
+    "production_data_accessed": false
+  },
+  "semantic_evaluation": {
+    "human_reviewed_cases": 13,
+    "annotation_status": "all 13 labels explicitly reviewed by user; S01/S07 amended",
+    "live_model_predictions_evaluated": false,
+    "live_model_accuracy": null,
+    "credential_available": false,
+    "attempt_status": "refused before network call; no fabricated report generated",
+    "delivery_decision": "user explicitly agreed to deliver code/deterministic acceptance now and complete live semantic evaluation later",
+    "runner": "scripts/evaluate_memory_extraction.py",
+    "corpus": "design/memory-semantic-cases.json"
+  },
+  "official_lore": {
+    "mechanism": "staging, per-entry verification decisions, replay requirement, head CAS, atomic publication, current-version eligibility",
+    "sample": "design/memory-lore-sample.json",
+    "verified_public_synopsis_entries": 2,
+    "complete_episode_and_game_inventory": "deferred with explicit user agreement",
+    "game_cutoff": "2026-10-09"
+  },
+  "rollout": {
+    "collection_default_enabled": false,
+    "reinforcement_default_enabled": false,
+    "permission_revision_time_filters_always_enforced": true,
+    "production_deployed": false,
+    "production_data_migrated": false,
+    "client_packages_modified": false,
+    "all_production_prerequisites_complete": false
+  },
+  "test_server_readiness_followup": {
+    "date": "2026-10-16",
+    "fixes": ["Mounted memory detail and permission routes in unified_api", "Live semantic runner loads backend .env and supports --env-file; environment variables take precedence"],
+    "integration_regression": {"passed": 25, "subtests_passed": 11, "failed": 0},
+    "final_config_and_unified_route_checks": {"passed": 8, "subtests_passed": 11, "failed": 0},
+    "actual_server_or_live_model_test_performed": false,
+    "configuration_test_uses_model_double": true
+  }
+}

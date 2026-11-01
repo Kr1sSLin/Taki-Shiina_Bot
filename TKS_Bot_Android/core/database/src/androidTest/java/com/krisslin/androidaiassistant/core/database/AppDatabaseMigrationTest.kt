@@ -25,7 +25,7 @@ class AppDatabaseMigrationTest {
     }
 
     @Test
-    fun migrateAll_1To5() {
+    fun migrateAll_1To7() {
         createVersionOneFixture()
         openAndVerifyMigration(hasAttachment = false)
     }
@@ -48,13 +48,15 @@ class AppDatabaseMigrationTest {
                 DatabaseModule.MIGRATION_1_2,
                 DatabaseModule.MIGRATION_2_3,
                 DatabaseModule.MIGRATION_3_4,
-                DatabaseModule.MIGRATION_4_5
+                DatabaseModule.MIGRATION_4_5,
+                DatabaseModule.MIGRATION_5_6,
+                DatabaseModule.MIGRATION_6_7
             )
             .build()
 
         try {
         val db = migrated.openHelper.writableDatabase
-        assertEquals(5, db.version)
+        assertEquals(7, db.version)
         db.query(
             "SELECT content, content_type, model_provider FROM chat_messages WHERE message_id = 'request-1'"
         ).use { cursor ->
@@ -64,6 +66,21 @@ class AppDatabaseMigrationTest {
             assertEquals("deepseek", cursor.getString(2))
         }
         db.query("PRAGMA foreign_key_check").use { assertEquals(0, it.count) }
+        db.beginTransaction()
+        try {
+            db.execSQL("INSERT INTO history_sync_state VALUES ('server-a|owner-a', 'opaque-checkpoint')")
+            db.execSQL("UPDATE chat_messages SET content='uncommitted' WHERE message_id='request-1'")
+        } finally { db.endTransaction() }
+        db.query("SELECT * FROM history_sync_state").use { assertEquals(0, it.count) }
+        db.query("SELECT content FROM chat_messages WHERE message_id='request-1'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals("hello", it.getString(0))
+        }
+        db.execSQL("INSERT INTO history_sync_state VALUES ('server-a|owner-a', 'a'), ('server-a|owner-b', 'b')")
+        db.query("SELECT value FROM history_sync_state ORDER BY `key`").use {
+            assertTrue(it.moveToFirst()); assertEquals("a", it.getString(0))
+            assertTrue(it.moveToNext()); assertEquals("b", it.getString(0))
+        }
         if (hasAttachment) {
             db.query("SELECT message_id, local_uri, file_size FROM chat_attachments WHERE attachment_id = 'attachment-1'").use {
                 assertTrue(it.moveToFirst())

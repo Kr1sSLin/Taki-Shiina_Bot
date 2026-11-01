@@ -1,0 +1,51 @@
+{
+  "version": "public-synopsis-sample-20261016",
+  "scope": "公开官网分集简介小样，不代表完整剧情覆盖",
+  "game_cutoff": "2026-10-09",
+  "coverage": {
+    "mygo": {"required_episodes": 13, "sampled_synopses": [4, 6], "full_episode_verification": "pending"},
+    "ave_mujica": {"required_episodes": 13, "taki_relevance_inventory": "pending"},
+    "japanese_game": {"taki_events_inventory": "pending", "cutoff": "2026-10-09"}
+  },
+  "entries": [
+    {
+      "entry_id": "mygo-ep04-ring-gathering",
+      "subject": "千早爱音",
+      "text": "在 MyGO!!!!! 第4集，爱音把燈、そよ和立希叫到 RiNG 进行商谈。",
+      "source": {
+        "work": "BanG Dream! It's MyGO!!!!!",
+        "locator": "第4集 一生だよ！？ 官方分集简介",
+        "language": "ja",
+        "url": "https://anime.bang-dream.com/mygo/story/",
+        "acquired_at": "2026-10-16T15:15:16Z",
+        "acquisition_time_precision": "recorded_at_end_of_lookup_session",
+        "acquisition": "官方页面的搜索服务完整文本；直接打开返回404，未声称观看完整动画",
+        "verification_record": "官网第4集简介明确标注召集者为爱音，立希为被召集者；中文为释义，无感官扩写"
+      }
+    },
+    {
+      "entry_id": "mygo-ep06-practice-frustration",
+      "subject": "椎名立希",
+      "text": "在 MyGO!!!!! 第6集，为演出进行的练习进展不顺，立希越来越焦躁。",
+      "source": {
+        "work": "BanG Dream! It's MyGO!!!!!",
+        "locator": "第6集 なんで今更 官方分集简介",
+        "language": "ja",
+        "url": "https://anime.bang-dream.com/mygo/story/",
+        "acquired_at": "2026-10-16T15:15:16Z",
+        "acquisition_time_precision": "recorded_at_end_of_lookup_session",
+        "acquisition": "官方页面的搜索服务完整文本；直接打开返回404，未声称观看完整动画",
+        "verification_record": "官网第6集简介明确陈述练习不顺与立希焦躁；无额外动作、感官或旅行时间推断"
+      }
+    }
+  ],
+  "review": {
+    "reviewer": "Codex 官方公开文本核对",
+    "verification_record": "2026-10-16 通过官网来源的完整检索文本逐项核对；仅覆盖简介明确支持的两条，未经过用户人工内容验收",
+    "decisions": {"mygo-ep04-ring-gathering": "verified", "mygo-ep06-practice-frustration": "verified"},
+    "replay": [
+      {"case": "ep04-actual-actor-is-anon-not-taki", "passed": true},
+      {"case": "ep06-no-added-sensory-details", "passed": true}
+    ]
+  }
+}

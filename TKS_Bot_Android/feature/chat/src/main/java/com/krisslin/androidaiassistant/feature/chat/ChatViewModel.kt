@@ -19,6 +19,7 @@ import com.krisslin.androidaiassistant.core.network.api.ChatApi
 import com.krisslin.androidaiassistant.core.network.api.GamificationApi
 import com.krisslin.androidaiassistant.core.network.api.InteractionSendRequest
 import com.krisslin.androidaiassistant.core.network.api.InteractionSendData
+import com.krisslin.androidaiassistant.core.network.api.MemoryPermissionSync
 import com.krisslin.androidaiassistant.core.network.auth.AuthRepository
 import com.krisslin.androidaiassistant.core.network.auth.TokenState
 import com.krisslin.androidaiassistant.core.network.ws.BotWebSocketClient
@@ -57,6 +58,7 @@ class ChatViewModel @Inject constructor(
     private val botNotificationRepository: BotNotificationRepository,
     private val userProgressRepository: UserProgressRepository,
     private val authRepository: AuthRepository,
+    private val memoryPermissionSync: MemoryPermissionSync,
     private val botWebSocketClient: BotWebSocketClient,
     private val reminderScheduler: ReminderScheduler,
     private val gson: Gson
@@ -87,13 +89,15 @@ class ChatViewModel @Inject constructor(
 
     // 当前会话 ID
     private val sessionId: String = "default_session"
+    private val imageAttachmentManager = ChatImageAttachmentManager(context, chatRepository, sessionId, chatApi)
     private val timelineSynchronizer = ChatTimelineSynchronizer(
         chatApi = chatApi,
         chatRepository = chatRepository,
         userFactRepository = userFactRepository,
-        sessionId = sessionId
+        authRepository = authRepository,
+        sessionId = sessionId,
+        imageAttachmentManager = imageAttachmentManager
     )
-    private val imageAttachmentManager = ChatImageAttachmentManager(context, chatRepository, sessionId)
 
     // 流式消息内容缓存: requestId -> 累积内容
     private val streamingContentCache = ConcurrentHashMap<String, StringBuilder>()
@@ -119,7 +123,6 @@ class ChatViewModel @Inject constructor(
 
     init {
         loadHistoryFromDb()
-        initializeFactSyncCursor()
         observeAuthState()
         observeWebSocketEvents()
         observeLocalProgressCache()
@@ -163,10 +166,19 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             // 清理历史遗留的空 bot 消息（后端旧版空回复落库的脏数据）
             runCatching { chatRepository.deleteBlankBotMessages() }
-            chatRepository.observeMessagesWithAttachments(sessionId).collect { pairs ->
+            chatRepository.observeMessagesWithAttachments(sessionId, limit = Int.MAX_VALUE).collect { pairs ->
                 val uiMessages = pairs.map { (entity, attachments) ->
+                    val remote = attachments.filter { it.attachmentId.startsWith("remote_") }
+                    val downloaded = remote.filter { it.uploadState == "downloaded" }
+                    val local = attachments.filter { !it.attachmentId.startsWith("remote_") }
+                    val visibleAttachments = when {
+                        remote.isEmpty() -> local
+                        downloaded.size == remote.size -> downloaded
+                        local.isNotEmpty() -> local
+                        else -> downloaded
+                    }
                     entity.toUiModel(
-                        attachments.map { att ->
+                        visibleAttachments.map { att ->
                             ChatAttachmentUi(
                                 id = att.attachmentId,
                                 localUri = att.localUri,
@@ -203,10 +215,6 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private fun initializeFactSyncCursor() {
-        viewModelScope.launch { timelineSynchronizer.initializeFactCursor() }
-    }
-
     /**
      * 观察认证状态变化
      */
@@ -239,6 +247,10 @@ class ChatViewModel @Inject constructor(
                             manualReconnectPendingFullSync = false
                         }
                         syncMemoryFactsFromServer()
+                        viewModelScope.launch {
+                            memoryPermissionSync.flush()
+                            timelineSynchronizer.syncMemoryFacts()
+                        }
                     }
                     is WebSocketEvent.Disconnected -> {
                         _uiState.update { it.copy(connectionStatus = ConnectionStatus.DISCONNECTED) }
@@ -293,6 +305,10 @@ class ChatViewModel @Inject constructor(
         val requestId = UUID.randomUUID().toString()
         // O5：送礼时把输入框里的文字作为「附言」一起送出（成功后才清空，失败保留让用户可以照常发送）
         val attachment = _uiState.value.input.trim()
+        if (chatInputTooLong(attachment)) {
+            _uiState.update { it.copy(error = "文字最多 8000 个 Unicode 字符、32 KiB，请编辑后发送") }
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(botActivity = BotActivityStatus.SENDING, error = null) }
             val envelope = runCatching {
@@ -312,6 +328,13 @@ class ChatViewModel @Inject constructor(
                 return@launch
             }
             if (envelope.code != 0 || data == null || !data.success) {
+                if (data?.recoveryAction == "resend_new_request") {
+                    for (identity in data.requestIds.orEmpty()) {
+                        chatRepository.markMessageError(identity, "RESEND_NEW_REQUEST")
+                        chatRepository.deleteMessage("pending_$identity")
+                    }
+                    syncHistoryFromServer(force = true)
+                }
                 val message = when (data?.errorCode) {
                     "INSUFFICIENT_POINTS" -> "积分不足，先和立希多聊几句吧"
                     "ITEM_NOT_FOUND" -> "这个物品已经下架了"
@@ -589,7 +612,7 @@ class ChatViewModel @Inject constructor(
         val payload = message.payload
         val relatedIds = buildList {
             message.requestId?.let { add(it) }
-            addAll(payload.requestIds)
+            addAll(payload.requestIds.orEmpty())
         }.distinct()
         relatedIds.forEach { requestId ->
             streamingTimeoutJobs.remove(requestId)?.cancel()
@@ -597,7 +620,7 @@ class ChatViewModel @Inject constructor(
             pendingRequestIds.remove(requestId)
             receivedFirstChunk.remove(requestId)
             chatRepository.markMessageError("pending_$requestId", payload.errorCode)
-            chatRepository.markMessageError(requestId, payload.errorCode)
+            chatRepository.markMessageError(requestId, chatRecoveryCode(payload.recoveryAction, payload.errorCode))
         }
         _uiState.update { 
             it.copy(
@@ -607,6 +630,7 @@ class ChatViewModel @Inject constructor(
             ) 
         }
 
+        if (payload.recoveryAction == "poll_status") syncHistoryFromServer(force = true)
         botNotificationRepository.addError(
             errorCode = payload.errorCode,
             message = payload.message,
@@ -624,18 +648,26 @@ class ChatViewModel @Inject constructor(
     private suspend fun handleUserEcho(message: IncomingMessage.UserEcho) {
         val requestId = message.requestId ?: return
         val payload = message.payload
+        val messageId = payload.clientMessageId?.takeIf { it.isNotBlank() } ?: requestId
         val content = when {
             payload.content.isNotBlank() -> payload.content
             payload.imageCount > 0 -> "[图片×${payload.imageCount}]"
             else -> return
         }
         chatRepository.saveExternalMessage(
-            messageId = requestId,
+            messageId = messageId,
             sessionId = sessionId,
             role = MessageRole.USER,
             content = content,
-            timestamp = payload.timestamp
+            timestamp = payload.timestamp,
+            contentType = HistoryImageRestorePolicy.contentType(content, payload.imageCount),
+            modelProvider = if (payload.imageCount > 0) ModelProvider.GEMINI else ModelProvider.DEEPSEEK
         )
+        if (payload.imageCount > 0) {
+            viewModelScope.launch {
+                imageAttachmentManager.restoreHistoryImages(requestId, messageId, payload.imageCount)
+            }
+        }
     }
 
     /**
@@ -745,11 +777,17 @@ class ChatViewModel @Inject constructor(
     /**
      * 发送文本消息
      */
-    fun sendText() {
+    fun sendText() = sendTextWithId()
+
+    private fun sendTextWithId(originalRequestId: String? = null) {
         val currentState = _uiState.value
         val current = currentState.input.trim()
         val selectedImages = currentState.selectedImages
         if (current.isEmpty() && selectedImages.isEmpty()) return
+        if (chatInputTooLong(current)) {
+            _uiState.update { it.copy(error = "文字最多 8000 个 Unicode 字符、32 KiB，请编辑后发送") }
+            return
+        }
 
         // 检查连接状态
         if (_uiState.value.connectionStatus != ConnectionStatus.CONNECTED) {
@@ -757,7 +795,7 @@ class ChatViewModel @Inject constructor(
             return
         }
 
-        val requestId = UUID.randomUUID().toString()
+        val requestId = originalRequestId ?: UUID.randomUUID().toString()
         pendingRequestIds.add(requestId)
         _uiState.update { it.copy(input = "", selectedImages = emptyList(), botActivity = BotActivityStatus.SENDING, error = null) }
 
@@ -863,6 +901,10 @@ class ChatViewModel @Inject constructor(
             val entity = chatRepository.getMessages(sessionId).firstOrNull { it.messageId == messageId || it.messageId == messageId.removePrefix("pending_") }
                 ?: return@launch
             if (entity.role != MessageRole.USER) return@launch
+            if (entity.errorCode == "POLL_STATUS") {
+                syncHistoryFromServer(force = true)
+                return@launch
+            }
             val attachments = chatRepository.getAttachmentsByMessageId(entity.messageId).map {
                 ChatAttachmentUi(
                     id = it.attachmentId,
@@ -873,10 +915,20 @@ class ChatViewModel @Inject constructor(
                     height = it.height
                 )
             }
-            val uriList = attachments.mapNotNull { runCatching { Uri.parse(it.localUri) }.getOrNull() }
-            onPickImages(uriList)
-            onInputChange(entity.content)
-            sendText()
+            if (entity.contentType in setOf(ContentType.IMAGE, ContentType.MIXED) && attachments.isEmpty()) {
+                _uiState.update { it.copy(error = "原图尚未恢复，请同步后再重新发送") }
+                syncHistoryFromServer(force = true)
+                return@launch
+            }
+            val restored = attachments.mapNotNull { attachment ->
+                val result = imageAttachmentManager.createUiAttachment(Uri.parse(attachment.localUri))
+                result.error?.let { error -> _uiState.update { it.copy(error = error) } }
+                result.value
+            }
+            if (restored.size != attachments.size) return@launch
+            _uiState.update { it.copy(input = entity.content, selectedImages = restored) }
+            if (entity.errorCode != "EDIT_INPUT")
+                sendTextWithId(if (entity.errorCode == "RETRY_SAME_REQUEST") entity.messageId else null)
         }
     }
 
@@ -932,7 +984,9 @@ class ChatViewModel @Inject constructor(
 
     private fun syncHistoryFromServer(force: Boolean = false) {
         viewModelScope.launch {
-            if (!timelineSynchronizer.syncHistory(force).success && force) {
+            val result = timelineSynchronizer.syncHistory(force)
+            result.notice?.let { notice -> _uiState.update { it.copy(error = notice) } }
+            if (!result.success && force) {
                 manualReconnectPendingFullSync = true
             }
         }
@@ -949,7 +1003,7 @@ class ChatViewModel @Inject constructor(
     private fun ChatMessageEntity.toUiModel(attachments: List<ChatAttachmentUi>) = ChatMessageUi(
         id = messageId,
         role = role,
-        content = content,
+        content = HistoryImageRestorePolicy.displayContent(content, contentType, attachments.isNotEmpty()),
         contentType = contentType,
         modelProvider = modelProvider,
         attachments = attachments,

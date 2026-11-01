@@ -3,13 +3,13 @@
  *
  * 独立组件：既用于历史页的「记忆档案」Tab，也用于 FR-DSK-8 的独立记忆窗口（`HistoryWindow`）。
  *
- * ⚠️ FR-HIS-4：后端**没有**删除/编辑接口，这里只读——不得提供任何删除或编辑入口，
- *    以免造成「已删除但服务端仍保留」的错觉。
+ * 本期可明确纠正用户事实、禁用和恢复；未提供彻底删除，避免造成
+ * 「已删除但服务端仍保留」的错觉。
  */
 
 import { useEffect, useMemo, useState } from 'react'
-import type { UserFact } from '@shared/protocol'
-import { EmptyState, Input } from '../../components/primitives'
+import type { MemoryDetail, QueuedMemoryPermission, UserFact } from '@shared/protocol'
+import { Button, EmptyState, Input } from '../../components/primitives'
 import { IconInfo, IconSearch } from '../../components/Icons'
 import { describeError, useTranslation } from '../../i18n'
 import { formatDateTime } from '../../lib/format'
@@ -30,16 +30,88 @@ export function FactsWindow(): JSX.Element {
   const [toDate, setToDate] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [detail, setDetail] = useState<MemoryDetail | null>(null)
+  const [pending, setPending] = useState<QueuedMemoryPermission[]>([])
+  const [permissionBusy, setPermissionBusy] = useState(false)
+  const [permissionMessage, setPermissionMessage] = useState<string | null>(null)
+  const [correction, setCorrection] = useState('')
+  const [correctionBusy, setCorrectionBusy] = useState(false)
+  const [correctionMessage, setCorrectionMessage] = useState<string | null>(null)
+
+  const selected = facts.find((fact) => fact.factId === selectedId)
+  const stageLabel = (stage: string): string => stage === 'formal'
+    ? t('history.facts.stage.formal') : t('history.facts.stage.candidate')
+  const permissionLabel = (permission: string): string => permission === 'allowed'
+    ? t('history.facts.permission.allowed') : t('history.facts.permission.blocked')
+  const operationLabel = (status: string): string => status === 'applied'
+    ? t('history.facts.permission.applied') : status === 'conflict'
+      ? t('history.facts.permission.conflict') : t('history.facts.permission.pending')
+
+  async function refresh(): Promise<void> {
+    const [list, queued] = await Promise.all([
+      window.tks.history.listFacts(300), window.tks.history.pendingPermissions()
+    ])
+    setFacts([...list].sort((a, b) => b.timestamp - a.timestamp))
+    setPending(queued)
+  }
+
+  async function selectFact(factId: string): Promise<void> {
+    setSelectedId(factId)
+    setDetail(null)
+    setPermissionMessage(null)
+    setCorrection('')
+    setCorrectionMessage(null)
+    try {
+      setDetail(await window.tks.history.factDetail(factId))
+    } catch {
+      setPermissionMessage(t('history.facts.detailUnavailable'))
+    }
+  }
+
+  async function submitCorrection(): Promise<void> {
+    if (!detail || detail.domain !== 'user_fact' || !correction.trim() || correction.trim() === detail.content) return
+    setCorrectionBusy(true)
+    try {
+      await window.tks.history.correctFact(detail.factId, correction.trim(), detail.revision)
+      await refresh()
+      await selectFact(detail.factId)
+      setCorrectionMessage(t('history.facts.correction.applied'))
+    } catch (err) {
+      await refresh().catch(() => undefined)
+      setCorrectionMessage(describeError(err))
+    } finally {
+      setCorrectionBusy(false)
+    }
+  }
+
+  async function changePermission(enabled: boolean): Promise<void> {
+    if (!selected?.revision) return
+    setPermissionBusy(true)
+    try {
+      const status = await window.tks.history.setFactPermission(selected.factId, enabled, selected.revision)
+      await refresh()
+      setPermissionMessage(operationLabel(status))
+      if (status === 'applied') await selectFact(selected.factId)
+    } catch (err) {
+      setPermissionMessage(describeError(err))
+    } finally {
+      setPermissionBusy(false)
+    }
+  }
 
   useEffect(() => {
     let alive = true
 
     const load = async (): Promise<void> => {
       try {
-        const list = await window.tks.history.listFacts(300)
+        const [list, queued] = await Promise.all([
+          window.tks.history.listFacts(300), window.tks.history.pendingPermissions()
+        ])
         if (!alive) return
         // FR-HIS-2：按时间倒序
         setFacts([...list].sort((a, b) => b.timestamp - a.timestamp))
+        setPending(queued)
         setError(null)
       } catch (err) {
         if (alive) setError(describeError(err))
@@ -79,9 +151,8 @@ export function FactsWindow(): JSX.Element {
 
   return (
     <div className="section">
-      {/* FR-HIS-4：只读提示放在最显眼的位置 */}
       <p className="row-hint" role="note">
-        <IconInfo size={16} /> {t('history.facts.readonly')}
+        <IconInfo size={16} /> {t('history.facts.managementHint')}
       </p>
 
       <div className="search-row">
@@ -127,12 +198,42 @@ export function FactsWindow(): JSX.Element {
             <div className="list-row" key={fact.factId}>
               <div className="list-main">
                 <span className="list-title">{fact.fact}</span>
-                <span className="list-sub">{formatDateTime(fact.timestamp)}</span>
+                <span className="list-sub">{formatDateTime(fact.timestamp)} · {stageLabel(fact.stage ?? 'candidate')} · {permissionLabel(fact.modelPermission ?? 'blocked')}</span>
               </div>
+              <Button size="sm" onClick={() => void selectFact(fact.factId)}>{t('history.facts.view')}</Button>
             </div>
           ))}
         </div>
       )}
+      {selected ? (
+        <section className="section" aria-label={t('history.facts.detail')}>
+          <h3>{t('history.facts.detail')}</h3>
+          <p>{detail?.content ?? selected.fact}</p>
+          <p className="row-hint">{t('history.facts.stageLabel')}: {stageLabel(detail?.stage ?? selected.stage ?? 'candidate')}</p>
+          <p className="row-hint">{t('history.facts.truthLabel')}: {detail?.truthStatus ?? selected.truthStatus ?? 'pending'}</p>
+          <p className="row-hint">{t('history.facts.scoreLabel')}: {detail?.score ?? selected.score ?? 0}</p>
+          <p className="row-hint">{t('history.facts.revisionLabel')}: {detail?.revision ?? selected.revision ?? 0}</p>
+          <p className="row-hint">{t('history.facts.sourceLabel')}: {detail?.sources?.map((source) => source.fragment || source.sourceMessageId).join('；') || selected.sourceMessageId || t('history.facts.unknown')}</p>
+          <p className="row-hint">{t('history.facts.validityLabel')}: {JSON.stringify(detail?.temporalValidity ?? selected.temporalValidity ?? {})}</p>
+          {pending.filter((item) => item.factId === selected.factId).map((item) => (
+            <p key={item.operationId} role="status">{operationLabel(item.state)}</p>
+          ))}
+          {permissionMessage ? <p role="status">{permissionMessage}</p> : null}
+          <Button disabled={permissionBusy || !selected.revision} onClick={() => void changePermission(selected.modelPermission === 'blocked')}>
+            {selected.modelPermission === 'blocked' ? t('history.facts.restore') : t('history.facts.disable')}
+          </Button>
+          {detail?.domain === 'user_fact' ? (
+            <div className="section">
+              <Input label={t('history.facts.correction.label')} value={correction} maxLength={2000}
+                onChange={(event) => setCorrection(event.target.value)} />
+              <p className="row-hint">{t('history.facts.correction.hint')}</p>
+              {correctionMessage ? <p role="status">{correctionMessage}</p> : null}
+              <Button disabled={correctionBusy || !correction.trim() || correction.trim() === detail.content}
+                onClick={() => void submitCorrection()}>{t('history.facts.correction.submit')}</Button>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
     </div>
   )
 }

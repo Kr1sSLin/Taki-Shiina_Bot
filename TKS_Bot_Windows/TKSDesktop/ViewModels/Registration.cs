@@ -36,7 +36,10 @@ public sealed record LocalNotificationItem(
     long Timestamp);
 
 /// <summary>本地用户事实（<c>user_facts</c> 的只读投影，供记忆档案展示）。</summary>
-public sealed record LocalFactItem(string FactId, string Fact, long Timestamp);
+public sealed record LocalFactItem(string FactId, string Fact, long Timestamp,
+    string UserId = "", long Revision = 0, bool Enabled = true, string Stage = "candidate",
+    string TruthStatus = "pending", double Score = 0, string? SourceMessageId = null,
+    string? TemporalValidity = null);
 
 /// <summary>
 /// 本地只读历史端口（消息首屏分页 / 历史通知 / 记忆事实）。
@@ -159,13 +162,7 @@ internal sealed class RepositoryBackedHistoryReader : ILocalHistoryReader
         try
         {
             var repository = _provider.GetRequiredService<MessageRepository>();
-            var take = Math.Clamp(limit + Math.Max(0, skipFromEnd), 1, 1000);
-            var rows = await repository.ListRecentAsync(take, null, ct).ConfigureAwait(false);
-
-            // ListRecentAsync 返回**升序**的最近 take 条：从尾部（最新端）往前跳 skipFromEnd 条即更早一页。
-            var page = skipFromEnd <= 0
-                ? rows
-                : rows.Take(Math.Max(0, rows.Count - skipFromEnd)).ToList();
+            var page = await repository.ListRecentAsync(limit, null, ct, Math.Max(0, skipFromEnd)).ConfigureAwait(false);
 
             var views = new List<ChatMessageView>(page.Count);
 
@@ -281,7 +278,9 @@ internal sealed class RepositoryBackedHistoryReader : ILocalHistoryReader
                 : await repository.SearchAsync(term, safeLimit, ct).ConfigureAwait(false);
 
             return rows
-                .Select(row => new LocalFactItem(row.FactId, row.Fact, row.Timestamp))
+                .Select(row => new LocalFactItem(row.FactId, row.Fact, row.Timestamp,
+                    row.UserId, row.Revision, row.Enabled, row.Stage, row.TruthStatus,
+                    row.Score, row.SourceMessageId, row.TemporalValidity))
                 .ToList();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

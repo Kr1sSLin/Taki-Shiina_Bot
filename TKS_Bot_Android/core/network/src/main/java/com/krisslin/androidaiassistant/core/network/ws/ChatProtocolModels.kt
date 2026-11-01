@@ -116,13 +116,18 @@ data class MakeupCardChangedPayload(
 data class BotErrorPayload(
     val errorCode: String,
     val message: String,
-    val requestIds: List<String> = emptyList(),
-    val timestamp: Long
+    val requestIds: List<String>? = null,
+    val timestamp: Long,
+    val retryable: Boolean? = null,
+    val recoveryAction: String? = null,
+    val refundStatus: String? = null,
+    val failureCategory: String? = null
 )
 
 data class UserEchoPayload(
     val content: String = "",
     val imageCount: Int = 0,
+    val clientMessageId: String? = null,
     val originDeviceId: String? = null,
     val timestamp: Long
 )

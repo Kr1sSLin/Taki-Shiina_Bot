@@ -81,10 +81,30 @@ interface FactRow {
   user_id: string
   fact: string
   timestamp: number
+  revision: number
+  revision_id: string | null
+  permission_version: number
+  model_permission: string
+  stage: string
+  truth_status: string
+  revision_status: string
+  score: number
+  source_message_id: string | null
+  first_recorded_at: number | null
+  temporal_validity: string | null
 }
 
 function toFact(row: FactRow): UserFact {
-  return { factId: row.fact_id, userId: row.user_id, fact: row.fact, timestamp: row.timestamp }
+  return {
+    factId: row.fact_id, userId: row.user_id, fact: row.fact, timestamp: row.timestamp,
+    revision: row.revision, revisionId: row.revision_id,
+    permissionVersion: row.permission_version,
+    modelPermission: row.model_permission as UserFact['modelPermission'],
+    stage: row.stage as UserFact['stage'], truthStatus: row.truth_status as UserFact['truthStatus'],
+    revisionStatus: row.revision_status as UserFact['revisionStatus'], score: row.score,
+    sourceMessageId: row.source_message_id, firstRecordedAt: row.first_recorded_at,
+    temporalValidity: row.temporal_validity ? JSON.parse(row.temporal_validity) as Record<string, unknown> : null
+  }
 }
 
 /** 幂等写入（`memory.fact.created` 可能重复到达）。 */
@@ -95,7 +115,7 @@ export function upsertFact(fact: UserFact): boolean {
       `INSERT INTO user_facts (fact_id, user_id, fact, timestamp)
        VALUES (?, ?, ?, ?)
        ON CONFLICT (fact_id) DO UPDATE SET fact = excluded.fact
-       WHERE user_facts.fact <> excluded.fact`
+       WHERE user_facts.revision = 0 AND user_facts.fact <> excluded.fact`
     )
     .run(fact.factId, fact.userId, fact.fact, fact.timestamp)
   return result.changes > 0
@@ -115,6 +135,83 @@ export function bulkUpsertFacts(facts: UserFact[]): number {
   })
   tx()
   return inserted
+}
+
+/** Apply a server page and its cursor as one SQLite transaction. */
+export function applyFactPage(items: UserFact[], nextCursor: number): UserFact[] {
+  const db = getDb()
+  const changed: UserFact[] = []
+  const insertEvent = db.prepare('INSERT OR IGNORE INTO memory_seen_events (event_id, sequence) VALUES (?, ?)')
+  const current = db.prepare('SELECT revision, permission_version FROM user_facts WHERE fact_id = ?')
+  const upsert = db.prepare(`
+    INSERT INTO user_facts (fact_id,user_id,fact,timestamp,revision,revision_id,permission_version,
+      model_permission,stage,truth_status,revision_status,score,source_message_id,first_recorded_at,temporal_validity)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(fact_id) DO UPDATE SET
+      fact=excluded.fact,timestamp=excluded.timestamp,revision=excluded.revision,
+      revision_id=excluded.revision_id,permission_version=excluded.permission_version,
+      model_permission=excluded.model_permission,stage=excluded.stage,
+      truth_status=excluded.truth_status,revision_status=excluded.revision_status,
+      score=excluded.score,source_message_id=excluded.source_message_id,
+      first_recorded_at=excluded.first_recorded_at,temporal_validity=excluded.temporal_validity
+  `)
+  const advance = db.prepare(`INSERT INTO sync_cursors (key,value) VALUES ('memory_events',?)
+    ON CONFLICT(key) DO UPDATE SET value=MAX(value,excluded.value)`)
+  db.transaction(() => {
+    for (const fact of items) {
+      if (!fact.eventId || typeof fact.sequence !== 'number' || !Number.isSafeInteger(fact.sequence) ||
+          !fact.factId || typeof fact.revision !== 'number' || !Number.isInteger(fact.revision)) {
+        throw new Error('Invalid memory event page')
+      }
+      if (insertEvent.run(fact.eventId, fact.sequence).changes === 0) continue
+      const old = current.get(fact.factId) as { revision: number; permission_version: number } | undefined
+      if (old && (old.revision > fact.revision! ||
+        (old.revision === fact.revision && old.permission_version >= (fact.permissionVersion ?? 0)))) continue
+      upsert.run(fact.factId, fact.userId, fact.fact, fact.timestamp, fact.revision,
+        fact.revisionId ?? null, fact.permissionVersion ?? 0, fact.modelPermission ?? 'blocked',
+        fact.stage ?? 'candidate', fact.truthStatus ?? 'pending', fact.revisionStatus ?? 'active',
+        fact.score ?? 0, fact.sourceMessageId ?? null, fact.firstRecordedAt ?? null,
+        fact.temporalValidity ? JSON.stringify(fact.temporalValidity) : null)
+      changed.push(fact)
+    }
+    advance.run(nextCursor)
+  })()
+  return changed
+}
+
+export interface QueuedPermission {
+  operationId: string
+  owner: string
+  factId: string
+  enabled: boolean
+  expectedRevision: number
+  state: 'pending' | 'conflict'
+}
+
+export function queuePermission(item: Omit<QueuedPermission, 'state'>): void {
+  getDb().prepare(`INSERT INTO memory_permission_queue
+    (operation_id,owner,fact_id,enabled,expected_revision,state,created_at)
+    VALUES (?,?,?,?,?,'pending',?)`).run(
+      item.operationId, item.owner, item.factId, Number(item.enabled), item.expectedRevision, Date.now())
+}
+
+export function listQueuedPermissions(owner: string): QueuedPermission[] {
+  const rows = getDb().prepare(`SELECT * FROM memory_permission_queue
+    WHERE owner=? ORDER BY created_at,operation_id`).all(owner) as Array<{
+      operation_id: string; owner: string; fact_id: string; enabled: number;
+      expected_revision: number; state: 'pending' | 'conflict'
+    }>
+  return rows.map((row) => ({ operationId: row.operation_id, owner: row.owner,
+    factId: row.fact_id, enabled: row.enabled === 1,
+    expectedRevision: row.expected_revision, state: row.state }))
+}
+
+export function finishPermission(operationId: string, state: 'done' | 'conflict'): void {
+  if (state === 'done') {
+    getDb().prepare('DELETE FROM memory_permission_queue WHERE operation_id=?').run(operationId)
+  } else {
+    getDb().prepare("UPDATE memory_permission_queue SET state='conflict' WHERE operation_id=?").run(operationId)
+  }
 }
 
 export function listFacts(limit = 300): UserFact[] {

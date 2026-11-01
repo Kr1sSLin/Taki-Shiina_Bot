@@ -129,7 +129,12 @@ data class InteractionSendData(
     val messageId: String? = null,
     val fallbackText: String? = null,
     val errorCode: String? = null,
-    val messageText: String? = null
+    val messageText: String? = null,
+    val requestIds: List<String>? = null,
+    val retryable: Boolean? = null,
+    val recoveryAction: String? = null,
+    val refundStatus: String? = null,
+    val failureCategory: String? = null
 )
 
 // ==================== 积分 / 等级 ====================

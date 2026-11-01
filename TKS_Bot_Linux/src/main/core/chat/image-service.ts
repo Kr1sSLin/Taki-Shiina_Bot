@@ -9,13 +9,14 @@
  * - 写入前检查可用磁盘空间（EDGE-L15）
  */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   statSync,
   statfsSync,
   unlinkSync,
@@ -36,9 +37,11 @@ import {
   getAttachment,
   insertAttachment,
   listAllAttachmentPaths,
+  listAttachmentsByMessage,
   listAttachmentsOlderThan,
   listDraftAttachments
 } from '../database/repositories/message-repository'
+import type { RestClient } from '../network/rest-client'
 
 const log = createLogger('images')
 
@@ -72,6 +75,86 @@ function hasFreeSpace(neededBytes: number): boolean {
     // 无法探测时不阻塞用户
     return true
   }
+}
+
+const historyRestoreFlights = new Map<string, Promise<boolean>>()
+
+/** Restore the exact server bytes into the normal attachment store. Repeated full syncs are idempotent. */
+export function restoreHistoryImages(
+  rest: Pick<RestClient, 'downloadImage'>,
+  messageId: string,
+  requestId: string,
+  imageCount: number,
+  scope = '',
+  stillCurrent: () => boolean = () => true
+): Promise<boolean> {
+  const key = `${scope}:${messageId}`
+  const flight = historyRestoreFlights.get(key)
+  if (flight) return flight
+  const work = restoreHistoryImagesOnce(rest, messageId, requestId, imageCount, stillCurrent)
+  historyRestoreFlights.set(key, work)
+  void work.finally(() => historyRestoreFlights.delete(key)).catch(() => {})
+  return work
+}
+
+async function restoreHistoryImagesOnce(
+  rest: Pick<RestClient, 'downloadImage'>,
+  messageId: string,
+  requestId: string,
+  imageCount: number,
+  stillCurrent: () => boolean
+): Promise<boolean> {
+  if (!messageId || !requestId || !Number.isInteger(imageCount) || imageCount < 1 || imageCount > PROTOCOL.MAX_IMAGE_COUNT) {
+    return false
+  }
+  const current = listAttachmentsByMessage(messageId)
+  const existing = current.filter((att) => existsSync(att.localPath))
+  for (const missing of current.filter((att) => !existsSync(att.localPath))) deleteAttachment(missing.attachmentId)
+  if (existing.length >= imageCount) return false
+
+  // Match a multiset of original bytes so a locally sent image is not downloaded twice.
+  const localHashes = new Map<string, number>()
+  for (const attachment of existing) {
+    const digest = createHash('sha256').update(readFileSync(attachment.localPath)).digest('hex')
+    localHashes.set(digest, (localHashes.get(digest) ?? 0) + 1)
+  }
+  let restored = false
+  for (let index = 0; index < imageCount; index += 1) {
+    const { mimeType, bytes } = await rest.downloadImage(requestId, index)
+    if (!stillCurrent()) throw new Error('History image account changed')
+    const valid = mimeType === 'image/png'
+      ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+      : mimeType === 'image/jpeg' && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+    if (!valid) throw new Error('invalid history image bytes')
+    const digest = createHash('sha256').update(bytes).digest('hex')
+    const available = localHashes.get(digest) ?? 0
+    if (available > 0) {
+      localHashes.set(digest, available - 1)
+      continue
+    }
+    if (!hasFreeSpace(bytes.length)) throw new Error('insufficient attachment storage')
+    const dir = ensureAttachmentsDir()
+    const target = join(dir, `history-${randomUUID()}.${mimeType === 'image/png' ? 'png' : 'jpg'}`)
+    const temp = join(dir, `${randomUUID()}.tmp`)
+    writeFileSync(temp, bytes, { mode: 0o600 })
+    try {
+      renameSync(temp, target)
+    } catch (err) {
+      try { unlinkSync(temp) } catch { /* best effort */ }
+      throw err
+    }
+    let width: number | null = null
+    let height: number | null = null
+    try {
+      const dimensions = nativeImage.createFromBuffer(bytes).getSize()
+      width = dimensions.width || null
+      height = dimensions.height || null
+    } catch { /* bytes remain unchanged */ }
+    insertAttachment({ messageId, sessionId: PROTOCOL.DEFAULT_SESSION_ID, mimeType, localPath: target,
+      fileSize: bytes.length, width, height })
+    restored = true
+  }
+  return restored
 }
 
 export interface AddImageResult {

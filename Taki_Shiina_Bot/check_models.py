@@ -1,28 +1,30 @@
-import google.generativeai as genai
+"""手动查询 Gemini 模型清单；导入本模块不会访问网络。"""
 
-GOOGLE_API_KEY =
+from __future__ import annotations
 
-try:
-    genai.configure(api_key=GOOGLE_API_KEY)
+import os
 
-    print("🔍 正在查询可用模型...")
-    print("--------------------------------------------------")
 
-    # 列出所有模型
-    for m in genai.list_models():
-        # 只显示支持生成内容(generateContent)的模型
-        if 'generateContent' in m.supported_generation_methods:
-            print(f"✅ 发现模型: {m.name}")
+def main() -> int:
+    key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    if not key:
+        print("请先配置 GEMINI_API_KEY 或 GOOGLE_API_KEY。")
+        return 2
 
-    print("--------------------------------------------------")
+    import google.generativeai as genai
 
-    # 顺便查一下库的版本
-    import importlib.metadata
     try:
-        version = importlib.metadata.version("google-generativeai")
-        print(f"📦 当前库版本: {version}")
-    except:
-        print("📦 无法获取库版本")
+        genai.configure(api_key=key)
+        print("正在查询支持 generateContent 的模型：")
+        for model in genai.list_models():
+            if "generateContent" in model.supported_generation_methods:
+                print(model.name)
+    except Exception as exc:
+        # 不打印 SDK 异常正文，避免 URL 或凭据进入终端记录。
+        print(f"查询失败：{type(exc).__name__}")
+        return 1
+    return 0
 
-except Exception as e:
-    print(f"❌ 查询失败: {e}")
+
+if __name__ == "__main__":
+    raise SystemExit(main())

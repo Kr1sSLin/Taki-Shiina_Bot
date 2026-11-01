@@ -60,6 +60,7 @@ public static class ErrorCatalog
     public const string InvalidJson = "INVALID_JSON";
     public const string UnknownType = "UNKNOWN_TYPE";
     public const string EmptyMessage = "EMPTY_MESSAGE";
+    public const string InputTooLong = "INPUT_TOO_LONG";
     public const string VisionImageCountExceeded = "VISION_IMAGE_COUNT_EXCEEDED";
     public const string VisionInvalidMime = "VISION_INVALID_MIME";
     public const string VisionInvalidBase64 = "VISION_INVALID_BASE64";
@@ -101,6 +102,8 @@ public static class ErrorCatalog
         [InvalidJson] = new(InvalidJson, ErrorCodeKind.Server, "error.server.INVALID_JSON", Retryable: false),
         [UnknownType] = new(UnknownType, ErrorCodeKind.Server, "error.server.UNKNOWN_TYPE", Retryable: false),
         [EmptyMessage] = new(EmptyMessage, ErrorCodeKind.Server, "error.server.EMPTY_MESSAGE", Retryable: false),
+        [InputTooLong] = new(InputTooLong, ErrorCodeKind.Server, "error.server.INPUT_TOO_LONG", Retryable: false),
+        ["EDIT_INPUT"] = new("EDIT_INPUT", ErrorCodeKind.Server, "error.server.INPUT_TOO_LONG", Retryable: false),
         [VisionImageCountExceeded] = new(VisionImageCountExceeded, ErrorCodeKind.Server, "error.server.VISION_IMAGE_COUNT_EXCEEDED", Retryable: false),
         [VisionInvalidMime] = new(VisionInvalidMime, ErrorCodeKind.Server, "error.server.VISION_INVALID_MIME", Retryable: false),
         [VisionInvalidBase64] = new(VisionInvalidBase64, ErrorCodeKind.Server, "error.server.VISION_INVALID_BASE64", Retryable: false),

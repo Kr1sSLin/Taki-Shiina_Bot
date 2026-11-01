@@ -194,6 +194,7 @@ export function MessageList({ highlightId, onTargetHandled, onRetry, onOpenImage
     }
     if (scrolledTargetRef.current === highlightId) return
     const target = listRef.current?.querySelector<HTMLElement>(selectorFor(highlightId))
+      ?? listRef.current?.querySelector<HTMLElement>(selectorFor(`${highlightId}_0`))
     if (!target) return
     scrolledTargetRef.current = highlightId
     atBottomRef.current = false
@@ -264,7 +265,7 @@ export function MessageList({ highlightId, onTargetHandled, onRetry, onOpenImage
         key={message.messageId}
         message={message}
         showTime={showTime}
-        highlight={message.messageId === highlightId}
+        highlight={message.messageId === highlightId || message.messageId === `${highlightId}_0`}
         onRetry={onRetry}
         onOpenImage={onOpenImage}
       />

@@ -111,6 +111,10 @@ const api: TksApi = {
     markRead: (ids) => invoke(IPC.historyMarkRead, ids),
     markAllRead: () => invoke(IPC.historyMarkAllRead),
     listFacts: (limit) => invoke(IPC.historyListFacts, limit),
+    factDetail: (factId) => invoke(IPC.historyFactDetail, factId),
+    setFactPermission: (factId, enabled, expectedRevision) => invoke(IPC.historySetFactPermission, factId, enabled, expectedRevision),
+    correctFact: (factId, content, expectedRevision) => invoke(IPC.historyCorrectFact, factId, content, expectedRevision),
+    pendingPermissions: () => invoke(IPC.historyPendingPermissions),
     onNotificationsUpdated: (cb) => on(IPC.evtNotificationsUpdated, cb),
     onFactsUpdated: (cb) => on(IPC.evtFactsUpdated, cb)
   },
@@ -122,6 +126,8 @@ const api: TksApi = {
   },
   settings: {
     get: () => invoke(IPC.settingsGet),
+    getProactive: () => invoke(IPC.settingsGetProactive),
+    setProactive: (enabled) => invoke(IPC.settingsSetProactive, enabled),
     update: (patch) => invoke(IPC.settingsUpdate, patch),
     testConnection: (apiBaseUrl) => invoke(IPC.settingsTestConnection, apiBaseUrl),
     getCity: () => invoke(IPC.settingsGetCity),

@@ -14,6 +14,7 @@ public sealed class DesktopRuntime : IDisposable
     private readonly ILogger<DesktopRuntime> _logger;
     private readonly IAuthService _auth;
     private readonly IGamificationService _gamification;
+    private readonly MemoryManagementService? _memory;
     private readonly SemaphoreSlim _recoveryGate = new(1, 1);
     private int _started;
     private volatile bool _disposed;
@@ -25,7 +26,8 @@ public sealed class DesktopRuntime : IDisposable
         IPowerEvents power,
         ILogger<DesktopRuntime> logger,
         IAuthService auth,
-        IGamificationService gamification)
+        IGamificationService gamification,
+        MemoryManagementService? memory = null)
     {
         _chat = chat;
         _sync = sync;
@@ -34,6 +36,7 @@ public sealed class DesktopRuntime : IDisposable
         _logger = logger;
         _auth = auth;
         _gamification = gamification;
+        _memory = memory;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -86,6 +89,11 @@ public sealed class DesktopRuntime : IDisposable
 
             await _sync.SyncFullAsync(cancellationToken).ConfigureAwait(false);
             await _sync.SyncFactsAsync(cancellationToken).ConfigureAwait(false);
+            if (_memory is not null)
+            {
+                await _memory.FlushAsync(cancellationToken).ConfigureAwait(false);
+                await _sync.SyncFactsAsync(cancellationToken).ConfigureAwait(false);
+            }
             await _gamification.RefreshOverviewAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -111,6 +119,11 @@ public sealed class DesktopRuntime : IDisposable
             await _chat.ReconnectAsync().ConfigureAwait(false);
             await _sync.SyncFullAsync(cancellationToken).ConfigureAwait(false);
             await _sync.SyncFactsAsync(cancellationToken).ConfigureAwait(false);
+            if (_memory is not null)
+            {
+                await _memory.FlushAsync(cancellationToken).ConfigureAwait(false);
+                await _sync.SyncFactsAsync(cancellationToken).ConfigureAwait(false);
+            }
             await _gamification.RefreshOverviewAsync(cancellationToken).ConfigureAwait(false);
             if (includeOverdueReminders)
             {

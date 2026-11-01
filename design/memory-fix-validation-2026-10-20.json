@@ -1,0 +1,1063 @@
+{
+  "date": "2026-10-20",
+  "environment": "pre-release, isolated synthetic data",
+  "production_files": [
+    "services/memory_extraction.py",
+    "services/text_generation.py"
+  ],
+  "reviewed_corpus_unchanged": true,
+  "baseline_report": "memory-evaluation-2026-10-20.json",
+  "iterations": [
+    {
+      "round": 1,
+      "strict_cases": 10,
+      "store_cases_passed": 12,
+      "total": 13,
+      "remaining": [
+        "S08/S12 canonical wording",
+        "S09 missing dispute"
+      ]
+    },
+    {
+      "round": 2,
+      "strict_cases": 13,
+      "store_cases_passed": 13,
+      "total": 13,
+      "extra_cases_passed": 3,
+      "extra_cases": 4,
+      "remaining": [
+        "H02 explicit purchase event omitted"
+      ]
+    }
+  ],
+  "semantic": {
+    "mode": "live-model",
+    "started_at": "2026-10-20T07:34:57.176716+00:00",
+    "model": "deepseek-v4-pro",
+    "diagnostic_case_timeout_seconds": 30,
+    "original_case_timeout_seconds": 30,
+    "service_flags_observed": {
+      "FOUNDATION_ENABLED": "1",
+      "MEMORY_COLLECTION_ENABLED": "0",
+      "MEMORY_REINFORCEMENT_ENABLED": "0"
+    },
+    "cases": 13,
+    "predictions": {
+      "S01": [
+        {
+          "text": "用户喜欢咖啡",
+          "evidence": "我喜欢咖啡。",
+          "subject": "user",
+          "assertion": "explicit",
+          "temporal_type": "preference",
+          "temporal_validity": {
+            "from": null,
+            "until": null,
+            "expression": null,
+            "timezone": "Asia/Shanghai",
+            "precision": null
+          },
+          "operation": "evidence"
+        }
+      ],
+      "S02": [],
+      "S03": [],
+      "S04": [],
+      "S05": [
+        {
+          "text": "用户不喜欢咖啡",
+          "evidence": "我不喜欢咖啡",
+          "subject": "user",
+          "assertion": "explicit",
+          "temporal_type": "preference",
+          "temporal_validity": {
+            "from": null,
+            "until": null,
+            "expression": null,
+            "timezone": "Asia/Shanghai",
+            "precision": null
+          },
+          "operation": "evidence"
+        }
+      ],
+      "S06": [
+        {
+          "text": "用户喜欢咖啡",
+          "evidence": "我一直喜欢咖啡。",
+          "subject": "user",
+          "assertion": "explicit",
+          "temporal_type": "preference",
+          "temporal_validity": {
+            "from": null,
+            "until": null,
+            "expression": "",
+            "timezone": null,
+            "precision": "unknown"
+          },
+          "operation": "evidence",
+          "fact_id": "synthetic-coffee",
+          "expected_revision": 1
+        }
+      ],
+      "S07": [
+        {
+          "text": "用户喜欢茶",
+          "evidence": "我喜欢茶",
+          "subject": "user",
+          "assertion": "explicit",
+          "temporal_type": "preference",
+          "temporal_validity": {
+            "from": null,
+            "until": null,
+            "expression": "",
+            "timezone": null,
+            "precision": "unknown"
+          },
+          "operation": "correct",
+          "fact_id": "synthetic-coffee",
+          "expected_revision": 1
+        }
+      ],
+      "S08": [
+        {
+          "text": "用户喜欢茶",
+          "evidence": "现在更喜欢茶了",
+          "subject": "user",
+          "assertion": "explicit",
+          "temporal_type": "preference",
+          "temporal_validity": {
+            "from": null,
+            "until": null,
+            "expression": "现在",
+            "timezone": "Asia/Shanghai",
+            "precision": "unknown"
+          },
+          "operation": "change",
+          "fact_id": "synthetic-coffee",
+          "expected_revision": 1
+        }
+      ],
+      "S09": [
+        {
+          "text": "用户喜欢咖啡",
+          "evidence": "咖啡也就那样。",
+          "subject": "user",
+          "assertion": "inferred",
+          "temporal_type": "preference",
+          "temporal_validity": {
+            "from": null,
+            "until": null,
+            "expression": "",
+            "timezone": null,
+            "precision": "unknown"
+          },
+          "operation": "dispute",
+          "fact_id": "synthetic-coffee",
+          "expected_revision": 1
+        }
+      ],
+      "S10": [
+        {
+          "text": "用户喜欢咖啡",
+          "evidence": "我明确确认，我一直喜欢咖啡。",
+          "subject": "user",
+          "assertion": "explicit",
+          "temporal_type": "preference",
+          "temporal_validity": {
+            "from": null,
+            "until": null,
+            "expression": "一直",
+            "timezone": null,
+            "precision": "unknown"
+          },
+          "operation": "confirm",
+          "fact_id": "synthetic-coffee",
+          "expected_revision": 1
+        }
+      ],
+      "S11": [
+        {
+          "text": "用户计划明天去京都旅行",
+          "evidence": "我明天要去京都旅行。",
+          "subject": "user",
+          "assertion": "explicit",
+          "temporal_type": "plan",
+          "temporal_validity": {
+            "from": "2026-10-17T00:00:00+08:00",
+            "until": "2026-10-18T00:00:00+08:00",
+            "expression": "明天",
+            "timezone": "Asia/Shanghai",
+            "precision": "day"
+          }
+        }
+      ],
+      "S12": [
+        {
+          "text": "用户今天感冒",
+          "evidence": "我今天感冒了",
+          "subject": "user",
+          "assertion": "explicit",
+          "temporal_type": "current_state",
+          "temporal_validity": {
+            "from": "2026-10-16T00:00:00+08:00",
+            "until": "2026-10-17T00:00:00+08:00",
+            "expression": "今天",
+            "timezone": "Asia/Shanghai",
+            "precision": "day"
+          }
+        }
+      ],
+      "S13": []
+    },
+    "details": [
+      {
+        "case": "S01",
+        "model_called": true,
+        "status": "completed",
+        "seconds": 2.921,
+        "within_original_30_seconds": true
+      },
+      {
+        "case": "S02",
+        "model_called": true,
+        "status": "completed",
+        "seconds": 1.61,
+        "within_original_30_seconds": true
+      },
+      {
+        "case": "S03",
+        "model_called": true,
+        "status": "completed",
+        "seconds": 1.246,
+        "within_original_30_seconds": true
+      },
+      {
+        "case": "S04",
+        "model_called": true,
+        "status": "completed",
+        "seconds": 1.062,
+        "within_original_30_seconds": true
+      },
+      {
+        "case": "S05",
+        "model_called": true,
+        "status": "completed",
+        "seconds": 2.075,
+        "within_original_30_seconds": true
+      },
+      {
+        "case": "S06",
+        "model_called": true,
+        "status": "completed",
+        "seconds": 1.998,
+        "within_original_30_seconds": true
+      },
+      {
+        "case": "S07",
+        "model_called": true,
+        "status": "completed",
+        "seconds": 2.28,
+        "within_original_30_seconds": true
+      },
+      {
+        "case": "S08",
+        "model_called": true,
+        "status": "completed",
+        "seconds": 2.184,
+        "within_original_30_seconds": true
+      },
+      {
+        "case": "S09",
+        "model_called": true,
+        "status": "completed",
+        "seconds": 2.016,
+        "within_original_30_seconds": true
+      },
+      {
+        "case": "S10",
+        "model_called": true,
+        "status": "completed",
+        "seconds": 2.032,
+        "within_original_30_seconds": true
+      },
+      {
+        "case": "S11",
+        "model_called": true,
+        "status": "completed",
+        "seconds": 1.859,
+        "within_original_30_seconds": true
+      },
+      {
+        "case": "S12",
+        "model_called": true,
+        "status": "completed",
+        "seconds": 1.794,
+        "within_original_30_seconds": true
+      },
+      {
+        "case": "S13",
+        "model_called": false,
+        "status": "completed",
+        "seconds": 0.0,
+        "within_original_30_seconds": true
+      }
+    ],
+    "raw_model_predictions": {
+      "S01": {
+        "facts": [
+          {
+            "text": "用户喜欢咖啡",
+            "evidence": "我喜欢咖啡。",
+            "subject": "user",
+            "assertion": "explicit",
+            "temporal_type": "preference",
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": null,
+              "timezone": "Asia/Shanghai",
+              "precision": null
+            },
+            "operation": "evidence"
+          }
+        ]
+      },
+      "S02": {
+        "facts": []
+      },
+      "S03": {
+        "facts": []
+      },
+      "S04": {
+        "facts": []
+      },
+      "S05": {
+        "facts": [
+          {
+            "text": "用户不喜欢咖啡",
+            "evidence": "我不喜欢咖啡",
+            "subject": "user",
+            "assertion": "explicit",
+            "temporal_type": "preference",
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": null,
+              "timezone": "Asia/Shanghai",
+              "precision": null
+            },
+            "operation": "evidence"
+          }
+        ]
+      },
+      "S06": {
+        "facts": [
+          {
+            "text": "用户喜欢咖啡",
+            "evidence": "我一直喜欢咖啡。",
+            "subject": "user",
+            "assertion": "explicit",
+            "temporal_type": "preference",
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "",
+              "timezone": null,
+              "precision": "unknown"
+            },
+            "operation": "evidence",
+            "fact_id": "synthetic-coffee"
+          }
+        ]
+      },
+      "S07": {
+        "facts": [
+          {
+            "text": "用户喜欢茶",
+            "evidence": "我喜欢茶",
+            "subject": "user",
+            "assertion": "explicit",
+            "temporal_type": "preference",
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "",
+              "timezone": null,
+              "precision": "unknown"
+            },
+            "operation": "correct",
+            "fact_id": "synthetic-coffee"
+          }
+        ]
+      },
+      "S08": {
+        "facts": [
+          {
+            "text": "用户喜欢茶",
+            "evidence": "现在更喜欢茶了",
+            "subject": "user",
+            "assertion": "explicit",
+            "temporal_type": "preference",
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "现在",
+              "timezone": "Asia/Shanghai",
+              "precision": "unknown"
+            },
+            "operation": "change",
+            "fact_id": "synthetic-coffee"
+          }
+        ]
+      },
+      "S09": {
+        "facts": [
+          {
+            "text": "用户喜欢咖啡",
+            "evidence": "咖啡也就那样。",
+            "subject": "user",
+            "assertion": "inferred",
+            "temporal_type": "preference",
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "",
+              "timezone": null,
+              "precision": "unknown"
+            },
+            "operation": "dispute",
+            "fact_id": "synthetic-coffee"
+          }
+        ]
+      },
+      "S10": {
+        "facts": [
+          {
+            "text": "用户喜欢咖啡",
+            "evidence": "我明确确认，我一直喜欢咖啡。",
+            "subject": "user",
+            "assertion": "explicit",
+            "temporal_type": "preference",
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "一直",
+              "timezone": null,
+              "precision": "unknown"
+            },
+            "operation": "confirm",
+            "fact_id": "synthetic-coffee"
+          }
+        ]
+      },
+      "S11": {
+        "facts": [
+          {
+            "text": "用户计划明天去京都旅行",
+            "evidence": "我明天要去京都旅行。",
+            "subject": "user",
+            "assertion": "explicit",
+            "temporal_type": "plan",
+            "temporal_validity": {
+              "from": "2026-10-17T00:00:00+08:00",
+              "until": "2026-10-18T00:00:00+08:00",
+              "expression": "明天",
+              "timezone": "Asia/Shanghai",
+              "precision": "day"
+            }
+          }
+        ]
+      },
+      "S12": {
+        "facts": [
+          {
+            "text": "用户今天感冒",
+            "evidence": "我今天感冒了",
+            "subject": "user",
+            "assertion": "explicit",
+            "temporal_type": "current_state",
+            "temporal_validity": {
+              "from": "2026-10-16T00:00:00+08:00",
+              "until": "2026-10-17T00:00:00+08:00",
+              "expression": "今天",
+              "timezone": "Asia/Shanghai",
+              "precision": "day"
+            }
+          }
+        ]
+      }
+    },
+    "production_data_accessed": false,
+    "provider_metadata": {
+      "S01": {
+        "reasoning_tokens": null,
+        "completion_tokens": 87,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "S02": {
+        "reasoning_tokens": null,
+        "completion_tokens": 5,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "S03": {
+        "reasoning_tokens": null,
+        "completion_tokens": 5,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "S04": {
+        "reasoning_tokens": null,
+        "completion_tokens": 5,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "S05": {
+        "reasoning_tokens": null,
+        "completion_tokens": 87,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "S06": {
+        "reasoning_tokens": null,
+        "completion_tokens": 117,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "S07": {
+        "reasoning_tokens": null,
+        "completion_tokens": 115,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "S08": {
+        "reasoning_tokens": null,
+        "completion_tokens": 123,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "S09": {
+        "reasoning_tokens": null,
+        "completion_tokens": 95,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "S10": {
+        "reasoning_tokens": null,
+        "completion_tokens": 123,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "S11": {
+        "reasoning_tokens": null,
+        "completion_tokens": 120,
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "S12": {
+        "reasoning_tokens": null,
+        "completion_tokens": 115,
+        "thinking": {
+          "type": "disabled"
+        }
+      }
+    },
+    "metrics_on_completed_cases": {
+      "annotation_status": "human_reviewed",
+      "cases": 13,
+      "exact_cases": 13,
+      "precision": 1.0,
+      "recall": 1.0,
+      "false_positive": 0,
+      "false_negative": 0,
+      "disagreements": []
+    },
+    "completed_cases": 13,
+    "overall_exact_fraction": 1.0,
+    "finished_at": "2026-10-20T07:35:20.345088+00:00"
+  },
+  "store_replay": {
+    "cases": 13,
+    "passed": 13,
+    "mode": "live-prediction-store-replay",
+    "runtime_flags": {
+      "MEMORY_COLLECTION_ENABLED": "1",
+      "MEMORY_REINFORCEMENT_ENABLED": "1"
+    },
+    "production_data_accessed": false,
+    "temporary_databases_removed": true,
+    "details": [
+      {
+        "case": "S01",
+        "passed": true,
+        "failures": [],
+        "facts": [
+          {
+            "text": "用户喜欢咖啡",
+            "score": 0.6,
+            "stage": "formal",
+            "truth_status": "accepted",
+            "enabled": true,
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": null,
+              "timezone": "Asia/Shanghai",
+              "precision": null
+            }
+          }
+        ],
+        "retrieved_texts": [
+          "用户喜欢咖啡"
+        ]
+      },
+      {
+        "case": "S02",
+        "passed": true,
+        "failures": [],
+        "facts": [],
+        "retrieved_texts": []
+      },
+      {
+        "case": "S03",
+        "passed": true,
+        "failures": [],
+        "facts": [],
+        "retrieved_texts": []
+      },
+      {
+        "case": "S04",
+        "passed": true,
+        "failures": [],
+        "facts": [],
+        "retrieved_texts": []
+      },
+      {
+        "case": "S05",
+        "passed": true,
+        "failures": [],
+        "facts": [
+          {
+            "text": "用户不喜欢咖啡",
+            "score": 0.6,
+            "stage": "formal",
+            "truth_status": "accepted",
+            "enabled": true,
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": null,
+              "timezone": "Asia/Shanghai",
+              "precision": null
+            }
+          }
+        ],
+        "retrieved_texts": [
+          "用户不喜欢咖啡"
+        ]
+      },
+      {
+        "case": "S06",
+        "passed": true,
+        "failures": [],
+        "facts": [
+          {
+            "text": "用户喜欢咖啡",
+            "score": 0.6,
+            "stage": "formal",
+            "truth_status": "accepted",
+            "enabled": true,
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "",
+              "timezone": null,
+              "precision": "unknown"
+            }
+          }
+        ],
+        "retrieved_texts": [
+          "用户喜欢咖啡"
+        ]
+      },
+      {
+        "case": "S07",
+        "passed": true,
+        "failures": [],
+        "facts": [
+          {
+            "text": "用户喜欢茶",
+            "score": 0.6,
+            "stage": "formal",
+            "truth_status": "accepted",
+            "enabled": true,
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "",
+              "timezone": null,
+              "precision": "unknown"
+            }
+          }
+        ],
+        "retrieved_texts": [
+          "用户喜欢茶"
+        ]
+      },
+      {
+        "case": "S08",
+        "passed": true,
+        "failures": [],
+        "facts": [
+          {
+            "text": "用户喜欢茶",
+            "score": 0.6,
+            "stage": "formal",
+            "truth_status": "accepted",
+            "enabled": true,
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "现在",
+              "timezone": "Asia/Shanghai",
+              "precision": "unknown"
+            }
+          },
+          {
+            "text": "用户喜欢咖啡",
+            "score": 0.6,
+            "stage": "formal",
+            "truth_status": "accepted",
+            "enabled": true,
+            "temporal_validity": {
+              "from": null,
+              "until": 1792123202.0,
+              "expression": "",
+              "timezone": null,
+              "precision": "unknown"
+            }
+          }
+        ],
+        "retrieved_texts": [
+          "用户喜欢茶"
+        ]
+      },
+      {
+        "case": "S09",
+        "passed": true,
+        "failures": [],
+        "facts": [
+          {
+            "text": "用户喜欢咖啡",
+            "score": 0.6,
+            "stage": "formal",
+            "truth_status": "disputed",
+            "enabled": true,
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "",
+              "timezone": null,
+              "precision": "unknown"
+            }
+          }
+        ],
+        "retrieved_texts": []
+      },
+      {
+        "case": "S10",
+        "passed": true,
+        "failures": [],
+        "facts": [
+          {
+            "text": "用户喜欢咖啡",
+            "score": 0.6,
+            "stage": "formal",
+            "truth_status": "accepted",
+            "enabled": true,
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "",
+              "timezone": null,
+              "precision": "unknown"
+            }
+          }
+        ],
+        "retrieved_texts": [
+          "用户喜欢咖啡"
+        ]
+      },
+      {
+        "case": "S11",
+        "passed": true,
+        "failures": [],
+        "facts": [
+          {
+            "text": "用户计划明天去京都旅行",
+            "score": 0.3,
+            "stage": "candidate",
+            "truth_status": "accepted",
+            "enabled": true,
+            "temporal_validity": {
+              "from": "2026-10-17T00:00:00+08:00",
+              "until": "2026-10-18T00:00:00+08:00",
+              "expression": "明天",
+              "timezone": "Asia/Shanghai",
+              "precision": "day"
+            }
+          }
+        ],
+        "retrieved_texts": []
+      },
+      {
+        "case": "S12",
+        "passed": true,
+        "failures": [],
+        "facts": [
+          {
+            "text": "用户今天感冒",
+            "score": 0.3,
+            "stage": "candidate",
+            "truth_status": "accepted",
+            "enabled": true,
+            "temporal_validity": {
+              "from": "2026-10-16T00:00:00+08:00",
+              "until": "2026-10-17T00:00:00+08:00",
+              "expression": "今天",
+              "timezone": "Asia/Shanghai",
+              "precision": "day"
+            }
+          }
+        ],
+        "retrieved_texts": []
+      },
+      {
+        "case": "S13",
+        "passed": true,
+        "failures": [],
+        "facts": [
+          {
+            "text": "用户喜欢咖啡",
+            "score": 0.6,
+            "stage": "formal",
+            "truth_status": "accepted",
+            "enabled": false,
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "",
+              "timezone": null,
+              "precision": "unknown"
+            }
+          }
+        ],
+        "retrieved_texts": []
+      }
+    ]
+  },
+  "additional_synthetic_probes": {
+    "annotation_status": "synthetic-contract-probes-not-human-reviewed",
+    "cases": 4,
+    "passed": 4,
+    "details": [
+      {
+        "case": "H01",
+        "input": "画画倒也没多喜欢。",
+        "candidates": [
+          {
+            "fact_id": "synthetic-drawing",
+            "revision": 3,
+            "text": "用户喜欢绘画",
+            "subject": "user",
+            "truth_status": "accepted",
+            "temporal_type": "preference",
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "",
+              "timezone": null,
+              "precision": "unknown"
+            }
+          }
+        ],
+        "passed": true,
+        "predictions": [
+          {
+            "text": "用户喜欢绘画",
+            "evidence": "画画倒也没多喜欢。",
+            "subject": "user",
+            "assertion": "inferred",
+            "temporal_type": "preference",
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "",
+              "timezone": null,
+              "precision": "unknown"
+            },
+            "operation": "dispute",
+            "fact_id": "synthetic-drawing",
+            "expected_revision": 3
+          }
+        ],
+        "seconds": 2.124
+      },
+      {
+        "case": "H02",
+        "input": "我今天买了盒彩笔。",
+        "candidates": [
+          {
+            "fact_id": "synthetic-drawing",
+            "revision": 3,
+            "text": "用户喜欢绘画",
+            "subject": "user",
+            "truth_status": "accepted",
+            "temporal_type": "preference",
+            "temporal_validity": {
+              "from": null,
+              "until": null,
+              "expression": "",
+              "timezone": null,
+              "precision": "unknown"
+            }
+          }
+        ],
+        "passed": true,
+        "predictions": [
+          {
+            "text": "用户今天买了盒彩笔",
+            "evidence": "我今天买了盒彩笔",
+            "subject": "user",
+            "assertion": "explicit",
+            "temporal_type": "past_event",
+            "temporal_validity": {
+              "from": "2026-10-16T00:00:00+08:00",
+              "until": "2026-10-17T00:00:00+08:00",
+              "expression": "今天",
+              "timezone": "Asia/Shanghai",
+              "precision": "day"
+            }
+          }
+        ],
+        "seconds": 1.788
+      },
+      {
+        "case": "H03",
+        "input": "我明天要去苏州出差。",
+        "candidates": [],
+        "passed": true,
+        "predictions": [
+          {
+            "text": "用户计划明天去苏州出差",
+            "evidence": "我明天要去苏州出差",
+            "subject": "user",
+            "assertion": "explicit",
+            "temporal_type": "plan",
+            "temporal_validity": {
+              "from": "2026-10-17T00:00:00+08:00",
+              "until": "2026-10-18T00:00:00+08:00",
+              "expression": "明天",
+              "timezone": "Asia/Shanghai",
+              "precision": "day"
+            }
+          }
+        ],
+        "seconds": 2.21
+      },
+      {
+        "case": "H04",
+        "input": "我今天牙疼了。",
+        "candidates": [],
+        "passed": true,
+        "predictions": [
+          {
+            "text": "用户今天牙疼",
+            "evidence": "我今天牙疼了",
+            "subject": "user",
+            "assertion": "explicit",
+            "temporal_type": "current_state",
+            "temporal_validity": {
+              "from": "2026-10-16T00:00:00+08:00",
+              "until": "2026-10-17T00:00:00+08:00",
+              "expression": "今天",
+              "timezone": "Asia/Shanghai",
+              "precision": "day"
+            }
+          }
+        ],
+        "seconds": 2.411
+      }
+    ]
+  },
+  "timing": {
+    "model_cases": 12,
+    "min_seconds": 1.062,
+    "max_seconds": 2.921,
+    "median_seconds": 2.007,
+    "mean_seconds": 1.9230833333333335,
+    "p95_nearest_rank_seconds": 2.921,
+    "case_timeout_seconds": 30
+  },
+  "model_request_attempts": {
+    "round1": 12,
+    "round2": 12,
+    "round2_extra": 4,
+    "final": 12,
+    "final_extra": 4,
+    "total": 44,
+    "image_model": 0
+  },
+  "offline": {
+    "targeted_tests_passed": 69,
+    "targeted_subtests_passed": 38,
+    "new_extraction_tests": 11,
+    "full_run": {
+      "passed": 462,
+      "failed": 2,
+      "subtests_passed": 271
+    },
+    "followup_interaction_file_passed": 26,
+    "remaining_known_failures": 0,
+    "test_fixture_change": "Only two semantic recovery tests use a five-second worker coordination guard instead of one second; model/payment deadlines and all assertions remain unchanged."
+  },
+  "deployment": {
+    "service": "tks-backend-dev",
+    "backup": "/home/tks/tks-data/deploy-backups/memory-fix-20261020",
+    "service_flags_changed": false,
+    "actual_user_memory_changed": false,
+    "health": "ok",
+    "temporary_ssh_authorization_removed": true,
+    "local_temporary_key_removed": true,
+    "remote_temporary_files_removed": true,
+    "final_service_flags": {
+      "FOUNDATION_ENABLED": "1",
+      "MEMORY_COLLECTION_ENABLED": "0",
+      "MEMORY_REINFORCEMENT_ENABLED": "0"
+    },
+    "final_health": {
+      "status": "ok",
+      "service": "unified_api",
+      "mode": "unified",
+      "subservices": {
+        "auth": "up",
+        "http_api": "up",
+        "ws_api": "up",
+        "gamification": "up"
+      },
+      "traceId": "trace_4777a0e20be94b7980970be8938f21b9"
+    }
+  }
+}

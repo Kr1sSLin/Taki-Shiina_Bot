@@ -80,19 +80,25 @@ async function main() {
     return 1
   }
 
-  const code = await new Promise((resolveCode) => {
+  const code = await new Promise((resolveCode, reject) => {
     const child = spawn(electronBin, ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', entry], {
       cwd: ROOT,
       env: {
         ...process.env,
         TKS_SELFTEST_API: api,
         TKS_SELFTEST_WS: ws,
+        TKS_SELFTEST_USE_MOCK: useMock ? '1' : '0',
         LIBGL_ALWAYS_SOFTWARE: '1'
       },
-      stdio: 'inherit'
+      // Windows GUI 子进程不可靠地继承控制台，显式转发管道才能看见结果。
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
     })
     children.push(child)
-    child.on('exit', (c) => resolveCode(c ?? 1))
+    child.stdout.on('data', (data) => process.stdout.write(data))
+    child.stderr.on('data', (data) => process.stderr.write(data))
+    child.on('error', reject)
+    child.on('close', (c) => resolveCode(c ?? 1))
   })
 
   return code
@@ -108,4 +114,5 @@ try {
   killAll()
   await sleep(300)
 }
+console.log(`Electron 集成自检结束，退出码：${code}`)
 process.exit(code)

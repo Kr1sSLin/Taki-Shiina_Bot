@@ -150,6 +150,12 @@
                 <StackPanel>
                     <TextBlock Style="{StaticResource Tks.Text.SectionHeader}" Text="{Binding NotificationsSectionText}" />
 
+                    <TextBlock Style="{StaticResource Tks.Text.Caption}" Margin="0,8,0,0"
+                               Text="{Binding ProactiveStatusText}" TextWrapping="Wrap" />
+                    <Button Style="{StaticResource Tks.Button.Ghost}" Margin="0,4,0,8"
+                            Content="{Binding ProactiveActionText}" Command="{Binding ToggleProactiveCommand}"
+                            IsEnabled="{Binding ProactiveAvailable}" />
+
                     <CheckBox Style="{StaticResource Tks.CheckBox}" Margin="0,8,0,0"
                               Content="{Binding NotifyChatText}" IsChecked="{Binding NotifyChat}" />
                     <CheckBox Style="{StaticResource Tks.CheckBox}"

@@ -46,6 +46,13 @@ public sealed class WpfConstructionTests
                     login.Show();
                     login.UpdateLayout();
                     Assert.True(login.IsVisible);
+                    login.WindowState = WindowState.Minimized;
+                    login.ShowWindow(null);
+                    Assert.True(login.IsVisible);
+                    Assert.Equal(WindowState.Normal, login.WindowState);
+                    login.Hide();
+                    login.ShowWindow(null);
+                    Assert.True(login.IsVisible);
                     login.Hide();
                     var main = new MainWindow(provider) { ShowActivated = false, ShowInTaskbar = false };
                     main.Show();
@@ -57,6 +64,33 @@ public sealed class WpfConstructionTests
                     Assert.NotNull(chatPane.FindName("EmojiButton"));
                     Assert.NotNull(chatPane.FindName("AddImageButton"));
                     Assert.NotNull(chatPane.FindName("SendButton"));
+                    // Alt release after restoring a menu-less window is consumed;
+                    // Alt+Space and close commands still reach normal processing.
+                    var hook = typeof(MainWindow).GetMethod("WindowMessageHook",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+                    object[] altRelease = [IntPtr.Zero, 0x0112, new IntPtr(0xF100), IntPtr.Zero, false];
+                    hook.Invoke(main, altRelease);
+                    Assert.True((bool)altRelease[4]);
+                    foreach (var command in new[] { (0xF100, 32), (0xF060, 0) })
+                    {
+                        object[] args = [IntPtr.Zero, 0x0112, new IntPtr(command.Item1), new IntPtr(command.Item2), false];
+                        hook.Invoke(main, args);
+                        Assert.False((bool)args[4]);
+                    }
+                    // Reference composer uses vector icons, never the old text buttons.
+                    foreach (var name in new[] { "EmojiButton", "AddImageButton", "SendButton" })
+                    {
+                        var iconButton = (System.Windows.Controls.Button)chatPane.FindName(name);
+                        Assert.IsType<System.Windows.Controls.Viewbox>(iconButton.Content);
+                        Assert.False(string.IsNullOrWhiteSpace(System.Windows.Automation.AutomationProperties.GetName(iconButton)));
+                    }
+                    var emojiButton = (System.Windows.Controls.Button)chatPane.FindName("EmojiButton");
+                    Assert.Equal(System.Windows.Media.Colors.Transparent,
+                        ((System.Windows.Media.SolidColorBrush)emojiButton.Background).Color);
+                    var inputBox = (System.Windows.Controls.TextBox)chatPane.FindName("InputBox");
+                    Assert.Equal(new Thickness(0), inputBox.BorderThickness);
+                    Assert.Equal(System.Windows.Media.Colors.Transparent,
+                        ((System.Windows.Media.SolidColorBrush)inputBox.Background).Color);
                     // Wide windows must keep semicircular ends, not scale into an ellipse.
                     foreach (var width in new[] { 520d, 900d, 1400d })
                     {
@@ -87,6 +121,28 @@ public sealed class WpfConstructionTests
                     var filterFactory = typeof(ChatView).GetMethod(
                         "BuildImageDialogFilter",
                         System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+                    // Exercise image-based picker insertion rather than Button.Content text.
+                    typeof(ChatView).GetMethod("InsertEmoji_Click",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                        .Invoke(chatPane, [new System.Windows.Controls.Button { Tag = "😀" }, new RoutedEventArgs()]);
+                    Assert.Equal("😀", inputBox.Text);
+                    inputBox.Clear();
+                    if (Environment.GetEnvironmentVariable("TKS_COMPOSER_PREVIEW_DIR") is { Length: > 0 } emojiPreviewDir)
+                    {
+                        main.Width = 900;
+                        provider.GetRequiredService<ChatViewModel>().IsEmojiPanelOpen = true;
+                        main.UpdateLayout();
+                        var panel = (FrameworkElement)chatPane.FindName("EmojiPanel");
+                        var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                            (int)Math.Ceiling(panel.ActualWidth), (int)Math.Ceiling(panel.ActualHeight),
+                            96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                        bitmap.Render(panel);
+                        var png = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                        png.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+                        using var file = File.Create(Path.Combine(emojiPreviewDir, "emoji-panel.png"));
+                        png.Save(file);
+                        provider.GetRequiredService<ChatViewModel>().IsEmojiPanelOpen = false;
+                    }
                     var filter = Assert.IsType<string>(filterFactory!.Invoke(null, null));
                     var filterParts = filter.Split('|');
                     Assert.Equal(2, filterParts.Length);
@@ -152,16 +208,17 @@ public sealed class WpfConstructionTests
                         panel.Arrange(new Rect(0, 0, 800, 800));
                         panel.UpdateLayout();
                     }
-                    var chatView = new ChatView();
+                    var chatView = new ChatView { DataContext = provider.GetRequiredService<ChatViewModel>(),
+                        Background = (System.Windows.Media.Brush)app.Resources["Tks.Brush.Background"] };
                     var historyList = (System.Windows.Controls.ItemsControl)chatView.FindName("MessageItems");
-                    historyList.ItemsSource = Enumerable.Range(0, 2000).Select(index =>
+                    historyList.ItemsSource = Enumerable.Range(0, 10050).Select(index =>
                         new MessageItemViewModel(new TKSDesktop.Core.Services.ChatMessageView(
-                            "virtual-" + index, "assistant", "text", "History row " + index, "sent", index,
+                            "virtual-" + index.ToString("D5", CultureInfo.InvariantCulture), "assistant", "text", "恢复的历史 " + index, "sent", index / 2,
                             null, null, null, false, false, []))).ToArray();
                     chatView.Measure(new Size(600, 400));
                     chatView.Arrange(new Rect(0, 0, 600, 400));
                     chatView.UpdateLayout();
-                    var realized = Enumerable.Range(0, 2000).Count(index => historyList.ItemContainerGenerator.ContainerFromIndex(index) is not null);
+                    var realized = Enumerable.Range(0, 10050).Count(index => historyList.ItemContainerGenerator.ContainerFromIndex(index) is not null);
                     Assert.InRange(realized, 1, 100);
                     var pendingVisuals = new Queue<DependencyObject>();
                     pendingVisuals.Enqueue(historyList);
@@ -173,11 +230,28 @@ public sealed class WpfConstructionTests
                             pendingVisuals.Enqueue(System.Windows.Media.VisualTreeHelper.GetChild(visual, child));
                     }
                     Assert.NotNull(virtualPanel);
-                    virtualPanel.BringIndexIntoViewPublic(1999);
+                    virtualPanel.BringIndexIntoViewPublic(10049);
                     chatView.UpdateLayout();
-                    Assert.NotNull(historyList.ItemContainerGenerator.ContainerFromIndex(1999));
+                    var historyScroll = (System.Windows.Controls.ScrollViewer)historyList.Template.FindName("MessageScrollViewer", historyList);
+                    historyScroll.ScrollToEnd();
+                    chatView.UpdateLayout();
+                    chatView.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+                    chatView.UpdateLayout();
+                    Assert.NotNull(historyList.ItemContainerGenerator.ContainerFromIndex(10049));
+                    var lastContainer = (FrameworkElement)historyList.ItemContainerGenerator.ContainerFromIndex(10049);
+                    var lastBounds = lastContainer.TransformToAncestor(historyList).TransformBounds(new Rect(lastContainer.RenderSize));
+                    Assert.True(lastBounds.Top < historyList.ActualHeight && lastBounds.Bottom > 0);
                     // Recycling cleanup is deferred; bounded realization matters, not immediate eviction of row 0.
-                    Assert.InRange(Enumerable.Range(0, 2000).Count(index => historyList.ItemContainerGenerator.ContainerFromIndex(index) is not null), 1, 100);
+                    Assert.InRange(Enumerable.Range(0, 10050).Count(index => historyList.ItemContainerGenerator.ContainerFromIndex(index) is not null), 1, 100);
+                    if (Environment.GetEnvironmentVariable("TKS_COMPOSER_PREVIEW_DIR") is { Length: > 0 } historyPreviewDir)
+                    {
+                        var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(600, 400, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                        bitmap.Render(chatView);
+                        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+                        using var output = File.Create(Path.Combine(historyPreviewDir, "p2-history-last-page.png"));
+                        encoder.Save(output);
+                    }
                     var messageTemplate = (DataTemplate)chatView.Resources["Tks.MessageTemplate"];
                     foreach (var role in new[] { "user", "assistant" })
                     {

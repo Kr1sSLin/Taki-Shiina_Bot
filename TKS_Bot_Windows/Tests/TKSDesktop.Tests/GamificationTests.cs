@@ -222,7 +222,9 @@ public sealed class GamificationTests
                 RequestIds.Add(body.RootElement.GetProperty("requestId").GetString()!);
                 if (FailSend) throw new HttpRequestException("response lost");
                 code = SendCode;
-                data = new { success = code == 0, balance = 17, refunded = Refunded, fallbackText = "fallback", mergedRequestIds = new[] { "chat-1" } };
+                data = new { success = code == 0, balance = 17, refunded = Refunded, fallbackText = "fallback", mergedRequestIds = new[] { "chat-1" },
+                    errorCode = Refunded ? "AI_FAILED_REFUNDED" : "INSUFFICIENT_POINTS", requestIds = new[] { "stable-request", "chat-1" },
+                    recoveryAction = Refunded ? "resend_new_request" : "refresh_then_retry", retryable = false };
             }
             else if (path.EndsWith("/interaction/items", StringComparison.Ordinal))
                 data = new

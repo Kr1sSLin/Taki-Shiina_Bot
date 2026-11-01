@@ -15,6 +15,7 @@
 import { randomUUID } from 'node:crypto'
 import type {
   ChatMessage,
+  ChatHistoryResponse,
   ChatReplyStreamPayload,
   TimerInstruction,
   TimelineItem,
@@ -36,7 +37,7 @@ import {
 } from '@shared/ipc'
 import { bus } from '../../app/bus'
 import { createLogger } from '../../app/logger'
-import { readFileAsBase64 } from './image-service'
+import { readFileAsBase64, restoreHistoryImages } from './image-service'
 import type { ConnectionManager } from '../network/connection-manager'
 import type { RestClient } from '../network/rest-client'
 import {
@@ -62,7 +63,11 @@ import {
   upsertMessage,
   getCursor
 } from '../database/repositories/message-repository'
-import { bulkUpsertFacts, maxFactTimestamp, upsertFact } from '../database/repositories/notification-repository'
+import { applyFactPage, upsertFact } from '../database/repositories/notification-repository'
+import { getHistoryState, setHistoryState, listHistoryState, deleteHistoryState } from '../database/repositories/message-repository'
+import { getDb } from '../database/db'
+import { getUserId } from '../auth/token-manager'
+import { TksApiError, chatInputTooLong, chatRecoveryCode } from '@shared/errors'
 
 const log = createLogger('chat')
 
@@ -82,6 +87,7 @@ export interface ChatServiceDeps {
    */
   notifyReply: (info: {
     messages: ChatMessage[]
+    originalMessageId: string
     messageKind: string | null
     greetingScenario: string | null
     interactionItemName: string | null
@@ -131,6 +137,7 @@ export class ChatService {
     // FR-CHAT-4：未连接时禁止发送，不做离线队列（理由见 EDGE-L6 / 服务端防抖基于服务端时间）
     if (!this.deps.conn.isConnected()) throw new Error('NOT_CONNECTED')
     if (!content && attachmentIds.length === 0) throw new Error('EMPTY_MESSAGE')
+    if (chatInputTooLong(content)) throw new TksApiError('input too long', { code: 40001 })
 
     const attachments = listAttachmentsByMessageIds(attachmentIds)
     const hasImages = attachments.length > 0
@@ -188,6 +195,7 @@ export class ChatService {
   async sendViaRest(input: { requestId: string; content: string }): Promise<{ reply: string; messages: ChatMessage[] }> {
     const content = (input.content ?? '').trim()
     if (!content) throw new Error('EMPTY_MESSAGE')
+    if (chatInputTooLong(content)) throw new TksApiError('input too long', { code: 40001 })
 
     upsertMessage({
       messageId: input.requestId,
@@ -231,10 +239,24 @@ export class ChatService {
       this.deps.onAfterReply()
       return { reply: data?.reply ?? '', messages }
     } catch (err) {
-      updateMessageStatus(input.requestId, 'error', 'SEND_FAILED')
+      const failure = err instanceof TksApiError ? err.data as { recoveryAction?: string } | undefined : undefined
+      updateMessageStatus(input.requestId, 'error', chatRecoveryCode(failure?.recoveryAction, 'SEND_FAILED'))
       this.emitMessages([input.requestId], [])
       throw err
     }
+  }
+
+  async retrySameRequest(messageId: string): Promise<void> {
+    const message = getMessage(messageId)
+    if (!message || message.role !== 'user' || message.errorCode !== 'RETRY_SAME_REQUEST') return
+    if (!this.deps.conn.isConnected()) throw new Error('NOT_CONNECTED')
+    const images = (message.attachments ?? []).map((attachment) => ({
+      mimeType: attachment.mimeType, dataBase64: readFileAsBase64(attachment.localPath)
+    }))
+    const sent = this.deps.conn.send({ type: 'chat.message', requestId: messageId,
+      payload: { content: message.content, images: images.length ? images : undefined } })
+    updateMessageStatus(messageId, sent ? 'sent' : 'error', sent ? null : 'RETRY_SAME_REQUEST')
+    this.emitMessages([messageId], [])
   }
 
   /* -------------------------------------------------------- 服务端帧处理 */
@@ -244,30 +266,40 @@ export class ChatService {
     const requestId = frame.requestId
     if (!requestId) return
 
-    const existing = getMessage(requestId)
+    const payload = frame.payload
+    const messageId = payload?.clientMessageId || requestId
+    const imageCount = payload?.imageCount ?? 0
+    const restore = (): void => {
+      if (imageCount < 1) return
+      void restoreHistoryImages(this.deps.rest, messageId, requestId, imageCount)
+        .then((changed) => { if (changed) this.emitMessages([messageId], []) })
+        .catch((err) => log.warn('回声图片补拉失败', { error: err instanceof Error ? err.message : String(err) }))
+    }
+
+    const existing = getMessage(messageId)
     if (existing) {
       // ⚠️ 自己发的消息也会收到自己的回声 → 绝不能重复上屏
       if (existing.status === 'sending') {
-        updateMessageStatus(requestId, 'sent')
-        this.emitMessages([requestId], [])
+        updateMessageStatus(messageId, 'sent')
+        this.emitMessages([messageId], [])
       }
+      restore()
       return
     }
 
-    const payload = frame.payload
-    const imageCount = payload?.imageCount ?? 0
     upsertMessage({
-      messageId: requestId,
+      messageId,
       sessionId: PROTOCOL.DEFAULT_SESSION_ID,
       role: 'user',
       messageType: imageCount > 0 ? 'image' : 'text',
-      contentType: imageCount > 0 ? 'image' : 'text',
-      content: payload?.content ?? '',
+      contentType: imageCount > 0 ? (payload?.content && payload.content !== '[图片]' ? 'mixed' : 'image') : 'text',
+      content: payload?.content || (imageCount > 0 ? '[图片]' : ''),
       status: 'sent',
       timestamp: payload?.timestamp ?? Date.now()
     })
     log.info('收到其他设备回声', { requestId, originDeviceId: payload?.originDeviceId, imageCount })
-    this.emitMessages([requestId], [])
+    this.emitMessages([messageId], [])
+    restore()
   }
 
   /** `chat.queued`：展示「已排队（{debounceWindowSec}s 内合并）」（FR-CHAT-15 / EDGE-L17）。 */
@@ -342,12 +374,13 @@ export class ChatService {
 
     const removed: string[] = []
     for (const requestId of requestIds) {
-      updateMessageStatus(requestId, 'error', code)
+      updateMessageStatus(requestId, 'error', chatRecoveryCode(payload.recoveryAction, code))
       deletePendingMessage(requestId)
       removed.push(pendingMessageId(requestId))
       this.clearStreaming(requestId)
     }
     if (requestIds.length > 0) this.emitMessages(requestIds, removed)
+    if (payload.recoveryAction === 'poll_status') void this.syncHistory(true).catch(() => undefined)
 
     this.deps.insertBotNotification({ errorCode: code, message, timestamp })
     bus.send(IPC.evtNotificationCreated, { errorCode: code, message, timestamp })
@@ -360,7 +393,9 @@ export class ChatService {
     const fact: UserFact | undefined = frame.payload
     if (!fact?.factId) return
     upsertFact(fact)
-    setCursor('memory_facts', fact.timestamp)
+    // A legacy WS notification is only a hint. The event cursor advances
+    // exclusively with the REST page and its SQLite transaction.
+    void this.pullFacts().catch(() => undefined)
     bus.send(IPC.evtFactsUpdated, { facts: [fact] })
   }
 
@@ -480,6 +515,7 @@ export class ChatService {
     if (messages.length > 0) {
       this.deps.notifyReply({
         messages,
+        originalMessageId: finalMessageId,
         messageKind: payload.messageKind ?? null,
         greetingScenario: payload.greetingScenario ?? null,
         interactionItemName: payload.interactionItemName ?? null,
@@ -652,8 +688,8 @@ export class ChatService {
 
   /* ------------------------------------------------------------- 读取接口 */
 
-  async list(opts: { limit: number; beforeTimestamp?: number }): Promise<ChatMessage[]> {
-    return listMessages({ limit: opts.limit, beforeTimestamp: opts.beforeTimestamp })
+  async list(opts: { limit: number; beforeTimestamp?: number; beforeMessageId?: string }): Promise<ChatMessage[]> {
+    return listMessages({ limit: opts.limit, beforeTimestamp: opts.beforeTimestamp, beforeMessageId: opts.beforeMessageId })
   }
 
   deleteMessage(messageId: string): void {
@@ -678,8 +714,8 @@ export class ChatService {
   /**
    * 历史同步（FR-SYNC-1..6、FR-SYNC-8/9）。
    *
-   * - 增量：`since = 本地最大 timestamp`，`limit=300`（FR-SYNC-3）
-   * - 全量：`since = 0`（手动重连 / 首次登录 / 上次全量同步失败，FR-SYNC-4）
+   * - 新协议以不透明游标分页；全量从 start 重扫，保留已有消息。
+   * - 旧服务端只做一次有限同步，时间戳只用于该回退路径。
    * - 落库幂等：按 `messageId` 判重；Bot 消息同样按 `\n` 拆分（FR-SYNC-5）
    * - 失败必须写日志且 UI 可见（FR-SYNC-6）
    */
@@ -698,32 +734,91 @@ export class ChatService {
     const mode: 'incremental' | 'full' = full ? 'full' : 'incremental'
     const cursorBefore = getCursor('chat_history')
     const localMax = maxTimestamp()
-    /*
-     * FR-SYNC-3 说「以本地最大 timestamp 作为 since」，
-     * FR-CHAT-12 又要求「清空会话后把游标推到 now，防止历史被立刻补拉回灌」——
-     * 只取本地最大时间戳会让后者失效：清空后本地最大值为 0，于是 since=0，
-     * 下一次增量同步就把全部历史又拉回来（Android 端正是踩了这个坑）。
-     *
-     * 因此取**两者的较大值**：既保证不漏（游标可能落后于实际已落库的消息），
-     * 又保证清空后不会回灌（游标已被推进到 now）。
-     */
+    // 时间戳只用于旧服务端有限回退，新协议不以展示时间推进检查点。
     const since = full ? 0 : Math.max(localMax, cursorBefore)
     log.info('开始历史同步', { mode, since, cursorBefore, localMax, localCount: countMessages() })
 
     try {
-      const data = await this.deps.rest.request<{ items: TimelineItem[] }>('chat/history', {
-        query: { since, limit: PROTOCOL.SYNC_LIMIT },
-        // 幂等 GET，连接层抖动时退避重试（问题 1 的直接缓解）
-        retries: 2
-      })
-      const items = data?.items ?? []
-      const { inserted, updated, touchedIds } = this.ingestTimeline(items)
+      const scope = JSON.stringify([this.deps.rest.baseUrl, getUserId()])
+      const unchanged = (): boolean => scope === JSON.stringify([this.deps.rest.baseUrl, getUserId()])
+      let checkpoint = full ? 'start' : getHistoryState(scope) ?? 'start'
+      let inserted = 0, updated = 0
+      const touchedIds: string[] = []
+      let limited = false, blocked = false, resets = 0
+      do {
+        let data: ChatHistoryResponse
+        try {
+          data = await this.deps.rest.request<ChatHistoryResponse>('chat/history', {
+            query: { cursor: checkpoint, limit: PROTOCOL.SYNC_LIMIT }, retries: 2
+          })
+        } catch (error) {
+          if (error instanceof TksApiError && error.code === 40910 && resets++ === 0) {
+            checkpoint = 'start'
+            continue
+          }
+          throw error
+        }
+        if (!unchanged()) throw new Error('History account changed')
+        limited = data.historySyncVersion !== 1
+        if (limited && since > 0) {
+          data = await this.deps.rest.request<ChatHistoryResponse>('chat/history', { query: { since, limit: PROTOCOL.SYNC_LIMIT }, retries: 2 })
+          if (!unchanged()) throw new Error('History account changed')
+        }
+        if (!limited && (!data.nextCursor || !data.datasetGeneration || typeof data.hasMore !== 'boolean')) throw new Error('Invalid history checkpoint')
+        const items = data?.items ?? []
+        const queueImage = (item: TimelineItem): void => {
+          if (item.role === 'user' && item.requestId && item.imageCount) setHistoryState(`${scope}:image:${item.messageId}`,
+            JSON.stringify({ messageId: item.messageId, requestId: item.requestId, imageCount: item.imageCount }))
+        }
+        getDb().transaction(() => {
+          const page = this.ingestTimeline(items, scope)
+          inserted += page.inserted
+          updated += page.updated
+          touchedIds.push(...page.touchedIds)
+          for (const item of items) queueImage(item)
+          for (const operation of data?.operations ?? []) {
+            if (operation.status !== 'failed') continue
+            for (const source of operation.sources ?? []) {
+              if (!getMessage(source.messageId)) {
+                if (limited && source.timestamp <= since) continue
+                this.ingestTimeline([source])
+              }
+              updateMessageStatus(source.messageId, 'error', 'RESEND_NEW_REQUEST')
+              queueImage(source)
+              touchedIds.push(source.messageId)
+            }
+            for (const requestId of operation.requestIds) {
+              updateMessageStatus(requestId, 'error', 'RESEND_NEW_REQUEST')
+              deletePendingMessage(requestId)
+              this.clearStreaming(requestId)
+              touchedIds.push(requestId)
+            }
+          }
 
-      const maxTs = items.reduce((acc, it) => Math.max(acc, Number(it.timestamp) || 0), cursorBefore)
-      if (maxTs > 0) setCursor('chat_history', maxTs)
+          if (!unchanged()) throw new Error('History account changed')
+          if (limited) {
+            const maxTs = items.reduce((acc, it) => Math.max(acc, Number(it.timestamp) || 0), cursorBefore)
+            if (maxTs > 0) setCursor('chat_history', maxTs)
+          } else {
+            setHistoryState(scope, data.nextCursor!)
+            setHistoryState(`${scope}:generation`, data.datasetGeneration!)
+          }
+        })()
+        for (const job of listHistoryState(`${scope}:image:`)) {
+          if (!unchanged()) throw new Error('History account changed')
+          const item = JSON.parse(job.value) as TimelineItem
+          if (await restoreHistoryImages(this.deps.rest, item.messageId, item.requestId!, item.imageCount!, scope, unchanged)) touchedIds.push(item.messageId)
+          if (!unchanged()) throw new Error('History account changed')
+          deleteHistoryState(job.key)
+        }
+        if (limited) break
+        checkpoint = data.nextCursor!
+        blocked = data.blocked === true
+        if (blocked || !data.hasMore) break
+      } while (true)
 
-      log.info('历史同步完成', { mode, fetched: items.length, inserted, updated })
-      const result: SyncStatusEvent = { ok: true, mode, inserted, updated, errorI18nKey: null }
+      log.info('历史同步完成', { mode, inserted, updated, limited, blocked })
+      const result: SyncStatusEvent = { ok: !limited && !blocked, mode, inserted, updated, errorI18nKey: limited ? 'sync.limited' : blocked ? 'sync.waiting' : null }
       bus.send(IPC.evtSyncStatus, result)
       /*
        * 同步落库的新消息必须**带着消息本体**推给渲染端：
@@ -734,6 +829,7 @@ export class ChatService {
        */
       if (touchedIds.length > 0) this.emitMessages(touchedIds, [])
       this.deps.onAfterSync()
+      if (blocked) setTimeout(() => { if (unchanged()) void this.syncHistory(false) }, 2000)
       return result
     } catch (err) {
       // FR-SYNC-6：同步失败必须写入日志且在 UI 可见（Android 早期版本静默吞掉导致排查困难）
@@ -753,22 +849,25 @@ export class ChatService {
    * @returns inserted/updated 计数，以及本次实际写入（含更新）的消息 ID，
    *          供 `doSync` 推送 `evt:messagesUpdated`——渲染端只认带本体的消息事件。
    */
-  private ingestTimeline(items: TimelineItem[]): { inserted: number; updated: number; touchedIds: string[] } {
+  private ingestTimeline(items: TimelineItem[], scope?: string): { inserted: number; updated: number; touchedIds: string[] } {
     let inserted = 0
     let updated = 0
     const touchedIds: string[] = []
     for (const item of items) {
       if (!item?.messageId) continue
+      const authorityKey = `${scope}:sql:${item.messageId}`
+      if (scope && item.historySource === 'legacy' && getHistoryState(authorityKey)) continue
       // FR-SYNC-9：剥离 `【MM-DD HH:MM】` 前缀
       const content = stripHistoryTimestampPrefix(item.content ?? '')
-      const ts = Number(item.timestamp) || Date.now()
+      const ts = Number(item.timestamp) || 0
 
       if (item.role === 'bot') {
         const parts = splitBotContent(item.messageId, content, ts)
         for (const part of parts) {
-          if (isDelivered(part.messageId)) continue
+          if (isDelivered(part.messageId) && item.historySource !== 'sql') continue
           const created = upsertMessage({
             messageId: part.messageId,
+            authoritative: item.historySource === 'sql',
             sessionId: PROTOCOL.DEFAULT_SESSION_ID,
             role: 'bot',
             messageType: 'text',
@@ -784,12 +883,14 @@ export class ChatService {
           if (created !== 'unchanged') touchedIds.push(part.messageId)
         }
       } else {
+        const hasImages = Number(item.imageCount) > 0
         const created = upsertMessage({
           messageId: item.messageId,
+          authoritative: item.historySource === 'sql',
           sessionId: PROTOCOL.DEFAULT_SESSION_ID,
           role: item.role === 'system' ? 'system' : 'user',
-          messageType: 'text',
-          contentType: 'text',
+          messageType: hasImages ? 'image' : 'text',
+          contentType: hasImages ? (content && content !== '[图片]' ? 'mixed' : 'image') : 'text',
           modelProvider: null,
           content,
           status: 'sent',
@@ -799,30 +900,37 @@ export class ChatService {
         else if (created === 'updated') updated += 1
         if (created !== 'unchanged') touchedIds.push(item.messageId)
       }
+      if (scope && item.historySource === 'sql') setHistoryState(authorityKey, '1')
     }
     return { inserted, updated, touchedIds }
   }
 
   /** FR-SYNC-7：用户事实增量补拉（独立游标）。 */
   async pullFacts(): Promise<number> {
-    const since = maxFactTimestamp()
+    let cursor = getCursor('memory_events')
+    let total = 0
     try {
-      const data = await this.deps.rest.request<{ items: UserFact[] }>('memory/facts', {
-        query: { since, limit: PROTOCOL.SYNC_LIMIT }
-      })
-      const items = data?.items ?? []
-      if (items.length === 0) return 0
-      const inserted = bulkUpsertFacts(items)
-      const maxTs = items.reduce((acc, it) => Math.max(acc, Number(it.timestamp) || 0), since)
-      setCursor('memory_facts', maxTs)
-      if (inserted > 0) {
-        bus.send(IPC.evtFactsUpdated, { facts: items })
-        log.info('记忆增量同步完成', { fetched: items.length, inserted })
+      for (let page = 0; page < 100; page += 1) {
+        const data = await this.deps.rest.request<{ items: UserFact[]; nextCursor: number; hasMore: boolean }>('memory/facts', {
+          query: { cursor, limit: PROTOCOL.SYNC_LIMIT }, retries: 2
+        })
+        if (!data || !Array.isArray(data.items) || !Number.isSafeInteger(data.nextCursor) || data.nextCursor < cursor) {
+          throw new Error('Invalid memory cursor response')
+        }
+        if (data.hasMore && data.nextCursor === cursor) throw new Error('Memory cursor did not advance')
+        const changed = applyFactPage(data.items, data.nextCursor)
+        cursor = data.nextCursor
+        total += changed.length
+        if (changed.length > 0) bus.send(IPC.evtFactsUpdated, { facts: changed })
+        if (!data.hasMore) {
+          log.info('记忆事件同步完成', { changed: total, cursor })
+          return total
+        }
       }
-      return inserted
+      throw new Error('Memory page limit exceeded')
     } catch (err) {
       log.warn('记忆补拉失败', { error: String(err) })
-      return 0
+      return total
     }
   }
 

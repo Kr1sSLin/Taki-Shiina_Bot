@@ -13,11 +13,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -25,10 +28,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.NotificationsNone
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -118,15 +123,15 @@ fun NotificationCenterRoute(
                         SectionTitle("关于我的记录")
                     }
                     items(state.userFacts, key = { it.factId }) { item ->
-                        RecordCard {
+                        RecordCard(onClick = { viewModel.selectFact(item) }) {
                             Text(
-                                text = item.fact,
+                                text = item.fact.ifBlank { "已禁用的记录，点开查看" },
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = formatTimestamp(item.timestamp),
+                                text = "${if (item.enabled) "允许" else "禁用"} · ${if (item.stage == "candidate") "候选" else "正式"} · ${formatTimestamp(item.timestamp)}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -186,6 +191,44 @@ fun NotificationCenterRoute(
                 }
             }
         }
+    }
+
+    state.selectedFact?.let { fact ->
+        AlertDialog(
+            onDismissRequest = viewModel::closeFact,
+            title = { Text("记忆详情") },
+            text = {
+                Column(modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(state.detailContent?.ifBlank { "内容暂不可用" } ?: "内容暂不可用")
+                    Text("来源消息：${state.detailSource ?: "未知"}")
+                    Text("阶段：${if (fact.stage == "candidate") "候选" else "正式"} · 真实性：${fact.truthStatus}")
+                    Text("权限：${if (fact.enabled) "允许" else "禁用"} · 修订：${fact.revision} / ${fact.revisionId ?: "未知"}")
+                    Text("使用权重：${fact.score}（不表示真实概率）")
+                    Text("有效时间：${fact.temporalValidity ?: "未设置"}")
+                    state.operationState?.let { Text("同步状态：${when (it) { "pending" -> "待同步"; "conflict" -> "版本冲突"; else -> "已同步" }}") }
+                    state.detailMessage?.let { Text(it) }
+                    if (state.canCorrect) {
+                        OutlinedTextField(value = state.correctionContent,
+                            onValueChange = viewModel::setCorrectionContent,
+                            label = { Text("纠正后的记忆") }, modifier = Modifier.fillMaxWidth())
+                        Text("仅纠正原记载错误；权限和有效时间不变。生活情况变化请在聊天中说明。需联网提交。",
+                            style = MaterialTheme.typography.labelSmall)
+                        TextButton(onClick = viewModel::correctSelectedFact,
+                            enabled = !state.correctionBusy && state.correctionContent.isNotBlank() &&
+                                state.correctionContent.trim() != state.detailContent) {
+                            Text("提交纠正")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.setFactEnabled(!fact.enabled) }) {
+                    Text(if (fact.enabled) "禁用" else "明确恢复")
+                }
+            },
+            dismissButton = { TextButton(onClick = viewModel::closeFact) { Text("关闭") } }
+        )
     }
 }
 

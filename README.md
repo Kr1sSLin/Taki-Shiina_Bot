@@ -1,29 +1,28 @@
 # TKS (Taki Shiina)
 
-TKS 项目仓库，包含 Python AI 后端与两个客户端（Android / Linux 桌面）：客户端通过 REST / WebSocket 接入后端，获取智能对话、记忆与实时推送能力。
+TKS 项目仓库，包含 Python AI 后端与三个客户端（Android / Linux / Windows 桌面）：客户端通过 REST / WebSocket 接入后端，获取智能对话、记忆与实时推送能力。
 
-> 🪟 **在 Windows 上开发请先看 [docs/开发环境_Windows.md](docs/开发环境_Windows.md)** —— 依赖版本要求、已知坑与一键脚本都在那里。
+> 🪟 **在 Windows 上开发请先看 [Windows 开发指南](design/windows-development.md)** —— 依赖版本要求、已知坑与一键脚本都在那里。
 
 ## 项目结构
 
 ```
 Taki-Shiina_Bot/
 ├── TKS_Bot_Android/         # Android AI 对话助手（Kotlin / Compose，多模块）
+├── TKS_Bot_Linux/           # Linux 桌面客户端（Electron / TypeScript）
+├── TKS_Bot_Windows/         # Windows 桌面客户端（WPF / .NET）
 └── Taki_Shiina_Bot/         # Python 后端（FastAPI / WebSocket AI 服务）
 ```
 
 ## 架构概览
 
 ```
-┌──────────────────────┐   REST (8000) / WebSocket (8001)
-│ Android / Linux 客户端 │ ──────────────────────────────▶
-└──────────────────────┘
-                                                       ▼
-┌──────────────────────────────────┐   ┌─────────────────────┐
-│      Taki_Shiina_Bot (Python)    │──▶│ DeepSeek / Gemini   │
-│  main.py / http_api.py / ws_api  │   │ QWeather 等外部服务  │
-│    （对话 / 记忆 / 定时任务）        │   └─────────────────────┘
-└──────────────────────────────────┘
+Android / Linux / Windows
+          │ REST / WebSocket
+          ▼
+unified_api.py (:8000，推荐) ──▶ DeepSeek / Gemini / QWeather
+          └─ 可靠聊天 / 记忆 / 互动 / 定时任务
+兼容模式：认证 :8002 / HTTP :8000 / WS 与养成 :8001
 ```
 
 ---
@@ -35,7 +34,7 @@ Android AI 对话助手客户端，多模块架构。
 ### 技术栈
 - **语言 / UI**: Kotlin, Jetpack Compose
 - **依赖注入**: Hilt
-- **本地存储**: Room（聊天消息、附件、用户事实、Bot 通知四张表）
+- **本地存储**: Room（聊天、附件、通知、用户事实、积分及同步状态）
 - **网络**: Retrofit/OkHttp（REST + Token 自动刷新）、OkHttp WebSocket 长连接
 - **后台任务**: WorkManager（提醒调度）、系统通知
 
@@ -64,7 +63,7 @@ Android AI 对话助手客户端，多模块架构。
 - `API_BASE_URL` — REST API 地址
 - `WS_BASE_URL` — WebSocket 地址
 
-⚠️ 默认值为占位地址，请修改为实际后端域名后再运行。
+`debug` 默认连接测试域名 `staging.takishiinabot.top`，`release` 默认连接正式域名 `takishiinabot.top`；运行前请确认对应后端可用。
 
 ### 构建
 ```bash
@@ -90,7 +89,7 @@ Python AI 后端服务，为 Android 客户端提供 REST / WebSocket 对话、�
 - 📸 **图片处理**: 图片识别与分析
 - 🌤️ **天气服务**: 和风天气 QWeather 实时天气，支持城市设置
 - ⏰ **定时任务**: 定时场景更新与提醒调度
-- 🎁 **互动礼物 · 积分 · 等级**（新增，详见 `TKS_互动积分等级体系_PRD_v2.md` 与 `docs/互动积分等级体系_接口契约.md`）:
+- 🎁 **互动礼物 · 积分 · 等级**（见 [当前协议与启动指南](design/backend-entrypoints.md)、[规格来源与分期对应](design/phase-index.md)）:
   咖啡/泡面/白龙/手柄/能量棒五种互动物品 → 扣积分并生成拟人回复；
   每日首次 +1、连续 3 天 +3（循环）、纪念日 +100；熊猫成长等级（初生熊猫 → 传奇熊猫）；
   断签清零与补签卡保护
@@ -101,9 +100,10 @@ Python AI 后端服务，为 Android 客户端提供 REST / WebSocket 对话、�
 ### 入口文件
 | 入口 | 说明 |
 |---|---|
-| `uvicorn` 加载 `main:app` | FastAPI 认证服务（`/api/v1` 下 health / auth 路由） |
-| `python http_api.py` | HTTP 对话 API（默认 `127.0.0.1:8000`，需 `BOT_HTTP_TOKEN`） |
-| `python ws_api.py` | WebSocket 对话 API（默认 `127.0.0.1:8001`，需 `BOT_WS_TOKEN`） |
+| `python unified_api.py` | 推荐：单进程提供认证、HTTP、WS、养成与恢复任务，默认 `127.0.0.1:8000` |
+| `uvicorn Taki_Shiina_Bot.main:app --host 127.0.0.1 --port 8002`（仓库根） | 兼容：认证服务（`/api/v1` 下 health / auth 路由） |
+| `python http_api.py` | HTTP 对话 API（默认 `127.0.0.1:8000`，需 JWT 鉴权配置） |
+| `python ws_api.py` | WebSocket 对话 API（默认 `127.0.0.1:8001`，需 JWT 鉴权配置） |
 
 生产环境建议反向代理终止 TLS，服务仅绑定 `127.0.0.1`，并透传 `Authorization` 与 `Sec-WebSocket-Protocol` 头。
 
@@ -115,7 +115,7 @@ Python AI 后端服务，为 Android 客户端提供 REST / WebSocket 对话、�
 | `handlers/` | 消息处理器（对话、图片、记忆查询、城市设置、**互动发送**） |
 | `services/` | 业务服务层（记忆、历史、提示词、天气、认证存储、**积分/等级/补签卡/互动配置**） |
 | `jobs/` | 定时任务调度（**断签扫描与提醒、月度补签卡发放、纪念日奖励**） |
-| `config/` | 后台可配置项（`gamification_config.json`，首次启动自动生成） |
+| `config/` | 后台可配置项（`gamification_config.json`，仅全新部署初始化；已有配置损坏时恢复历史修订，否则暂停新送礼） |
 | `docs/` | 接口契约与对接说明 |
 | `tests/` | 单元测试与 API 集成测试 |
 | `secure_storage.py` | 落盘数据加密存储 |
@@ -129,35 +129,38 @@ Python AI 后端服务，为 Android 客户端提供 REST / WebSocket 对话、�
 |---|---|
 | `points_account.json` | 积分余额 + 积分流水（`points_account` / `points_ledger`） |
 | `progress_data.json` | 等级与连续天数 + 每日有效对话流水 + 补签卡库存 |
-| `config/gamification_config.json` | 互动物品、Prompt 模板、等级阈值、积分规则（**明文，可直接编辑**） |
+| `config/gamification_config.json` | 互动物品、Prompt 模板、等级阈值、积分规则（**明文配置，通过管理接口发布修订**） |
 
-> ⚠️ **这些 REST 接口由 `ws_api.py` 提供**（同一进程持有 WebSocket 连接与对话状态）。
+> 推荐统一入口直接提供全部路由；以下按路径分流仅适用于保留的三进程拓扑。兼容模式的养成 REST 由 `ws_api.py` 提供，同一进程持有连接与对话状态。
 > 定时任务（断签扫描/补签卡发放/纪念日）也在 `ws_api.py` 启动时拉起。
 > 反向代理需按路径分流，完整 nginx 配置与自检命令见
-> **[`Taki_Shiina_Bot/docs/部署_nginx与多进程路由.md`](Taki_Shiina_Bot/docs/部署_nginx与多进程路由.md)**，最少需要新增：
+> **[统一与兼容入口、代理边界](design/backend-entrypoints.md)**，最少需要新增：
 
 ```nginx
 # 注意：proxy_pass 后面不要带路径，否则会剥掉 /api/v1/ 前缀导致 404
-location /api/v1/interaction/ { proxy_pass http://127.0.0.1:8001; proxy_read_timeout 60s; }
+location /api/v1/interaction/ { proxy_pass http://127.0.0.1:8001; proxy_read_timeout 150s; }
 location /api/v1/points/      { proxy_pass http://127.0.0.1:8001; proxy_read_timeout 60s; }
 location /api/v1/level/       { proxy_pass http://127.0.0.1:8001; proxy_read_timeout 60s; }
-location /api/v1/admin/       { proxy_pass http://127.0.0.1:8001; proxy_read_timeout 60s; }
+location = /api/v1/admin    { return 403; }
+location ^~ /api/v1/admin/   { return 403; } # 管理面仅本机直连
+location = /internal        { return 403; }
+location ^~ /internal/       { return 403; }
 ```
 
 ### 环境配置
-复制 `.env.example` 为 `.env` 并填写。关键变量：
+复制 `Taki_Shiina_Bot/.env.example` 为同目录 `.env` 并自行填写。关键变量：
 
 ```env
 # AI 服务
 DEEPSEEK_API_KEY=your_deepseek_api_key
-GOOGLE_API_KEY=your_google_api_key
+GEMINI_API_KEY=your_gemini_api_key
 
 # 天气
-OPENWEATHER_API_KEY=your_openweather_api_key
+QWEATHER_API_KEY=your_qweather_api_key
 MY_LAT=0.0
 MY_LON=0.0
 
-# HTTP / WebSocket API（必填，否则对应服务无法启动）
+# HTTP / WebSocket 兼容 token（可选；下方 JWT 配置必填）
 BOT_HTTP_TOKEN=your_http_api_token
 BOT_HTTP_HOST=127.0.0.1
 BOT_HTTP_PORT=8000
@@ -178,12 +181,25 @@ DATA_ENC_KEY=your_base64_or_hex_key
 BIZ_TZ_OFFSET_HOURS=8
 ```
 
-完整变量（含飞书告警、设备白名单、数据迁移开关等）请见 `.env.example`。
+完整变量（含飞书告警、设备白名单、数据迁移开关等）请见 `Taki_Shiina_Bot/.env.example`。当前超时、图片与历史游标合同见 [协议指南](design/backend-entrypoints.md)。
 
 ### 依赖安装
+
+Linux 服务器支持一键配置依赖、`.env` 和 systemd 开机启动（统一后端入口）：
+
+```bash
+git pull
+bash scripts/setup-backend.sh
+```
+
+首次按提示填写账号、密码和 DeepSeek API Key；以后拉取更新后重跑即可。已有配置和数据密钥会保留。
+系统要求、无交互更新、HTTPS 反代及运维命令见 **[Linux 后端部署说明](scripts/README_backend_linux.md)**。
+
+手动安装依赖：
+
 ```bash
 cd Taki_Shiina_Bot
-pip install -r requirements.txt
+pip install -r requirements-lock.txt
 ```
 
 主要依赖：`fastapi`、`uvicorn[standard]`、`websockets`、`openai`、`google-genai`、`httpx`、`cryptography`、`Pillow`、`reportlab`。
@@ -193,9 +209,28 @@ pip install -r requirements.txt
 cd Taki_Shiina_Bot
 python -m pytest tests/
 ```
-> 说明：仓库中 `tests/test_text_utils.py` 为历史遗留用例，引用的 `split_into_bubbles`
-> 已在早前重构中移除，属**改动前就存在**的失败用例；本次新增的积分/等级/互动用例可用
-> `python -m pytest tests/ --ignore=tests/test_text_utils.py` 全量跑通。
+锁定依赖包含运行与测试环境，阶段 A 在 Python 3.14 / Windows x64 验收。M0 另提供 Linux x86_64 / Python 3.12 的版本锁。文本测试已更新为当前文字接口，无须排除测试。阶段 A 设计和验收证据见[实施记录](design/foundation-stage-a.md)。
+
+### 阶段 A 可靠文字链路
+
+在独立的 `BOT_DATA_DIR` 中设置 `FOUNDATION_ENABLED=1`，并配置 `DATA_ENC_KEY` 与固定的 `FOUNDATION_KEY_ID`；推荐使用统一 HTTP/WS 入口。HTTP、WS 和互动共用可靠请求、回复及恢复任务仓储。源消息与提取任务、最终回复与投递记录分别原子提交。客户端重试须保留 `requestId` 和 `clientMessageId` 配对，未提供后者时沿用 `requestId`。
+
+目录内已有 `foundation.sqlite3` 时始终使用可靠链路；关闭开关不能绕过权限记录，回退须保留数据库及对应密钥。旧 JSON 只作兼容读取，不自动迁移进 SQL。阶段 A 的 WS 图片请求会将原图字节（包括 EXIF）加密保存在源消息中，并原样发送给 Gemini 识别；须配置 `GEMINI_API_KEY`。用户已明确允许图片中的坐标，因此这部分与原 PRD FND-10 的禁止坐标规则形成例外；文字输入与识图后生成的文字描述仍执行坐标清理。历史中的图片可通过认证的 `GET /api/v1/chat/images/{request_id}/{index}` 取回原图，三端在跨设备补拉时恢复附件；无权或缺图返回 404，未核验恢复权限时返回 503。Gemini inline 请求使每轮原图有效上限为 14,000,000 字节。内置 Python 启动入口会按图片限制设置 WS 帧大小；独立 Uvicorn 命令或上游代理须另行配置对应上限。礼物退款后整轮明确失败并由用户重新发送。已有可靠数据库的目录不能启动旧 Telegram 写入入口。部署与恢复限制、合成验收记录详见实施记录。
+M0 的文本用例覆盖清洗、去重和时间戳行为。测试使用临时数据、合成凭据并阻止外部网络连接，不调用真实付费模型。
+
+M0 的 Linux x86_64 / Python 3.12 版本锁仍保留。完整门禁须先补回下方索引所列缺件，以下不是当前完整可复现验收：
+
+```bash
+python3 -m venv .venv-m0
+.venv-m0/bin/python -m pip install -r Taki_Shiina_Bot/requirements-linux-py312.lock
+.venv-m0/bin/python scripts/verify_m0.py
+```
+
+`verify_m0.py` 检查保留的 Python/Shell/Node 脚本语法、依赖一致性、默认后端测试和部署配置测试。
+平台完整验收分别使用 Linux `npm run typecheck` / `npm run verify`、Android Gradle、Windows `scripts/verify.ps1`。
+只读数据盘点可运行 `python3 scripts/inventory_m0.py --backend-dir <后端目录> --data-dir <BOT_DATA_DIR>`。
+
+M0 原 `docs/m0/README.md`、数据字典与决策台账在当前检出中缺失，不能据旧链接宣称完整 M0 验收。现存脚本、阶段记录与缺失规格见 [分期和规格索引](design/phase-index.md)；P0–P6 不等同于 M0 或旧 PRD 的全量交付。
 
 ---
 
@@ -253,8 +288,8 @@ release 产物退化为 `app-release-unsigned.apk`，构建依然可跑通。
 | 依赖 | 位置 |
 |---|---|
 | Android SDK | `/home/administrator/Android/Sdk`（`platforms;android-34` + `build-tools;34.0.0`），可用 `ANDROID_HOME` 覆盖 |
-| JDK 17 | 仓库内 `.jdk-home/jdk-17.0.20.1+1`（`TKS_Bot_Android/local.properties` 指向该 SDK） |
-| Gradle 目录 | 仓库内 `.gradle-home` / `.android-home` / `.xdg-home`（由发布脚本导出） |
+| JDK | 可用 `JAVA_HOME` 指定 JDK17/21；发布脚本默认 `.jdk-home/jdk-17.0.20.1+1`，需自行准备。M0实测使用已有 `/home/administrator/.jdks/jbr-21.0.11` |
+| Gradle 目录 | 发布脚本默认仓库内 `.gradle-home` / `.android-home` / `.xdg-home`；M0复用了本机 `~/.gradle` 的 Gradle8.13 缓存 |
 
 > 首次在缺少 SDK 的机器上构建，需先装 SDK：
 > `sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"`
@@ -262,13 +297,13 @@ release 产物退化为 `app-release-unsigned.apk`，构建依然可跑通。
 ## 🚀 快速开始
 
 ### 前置要求
-- **后端**: Python 3.11+（实测 3.14），pip；配置好 `.env`
+- **后端**: Python 3.11+（M0 锁定验收 Linux/Python 3.12；阶段 A 锁定验收 Windows/Python 3.14），pip；配置好 `.env`
 - **Android 端**: Android Studio + **JDK 17 或 21**（⚠️ 不要用 JDK 26，Gradle 8.13 不支持）
 - **桌面端**: Node.js ≥ 20
 
 ### 启动顺序
 1. 配置 `.env`：从 `.env.example` 复制，至少填 `DATA_ENC_KEY`、`AUTH_JWT_SECRET`、`AUTH_USERNAME`、`AUTH_PASSWORD`
-2. 启动后端：`uvicorn main:app`（认证服务），并按需启动 `http_api.py` / `ws_api.py`（对话 API）
+2. 在 `Taki_Shiina_Bot/` 运行 `python unified_api.py`（推荐单进程）；保留的三进程启动方式见 [启动指南](design/backend-entrypoints.md)
 3. 修改客户端 `API_BASE_URL` / `WS_BASE_URL` 指向后端
 4. 构建客户端（见上文各子项目说明）
 
@@ -279,10 +314,10 @@ release 产物退化为 `app-release-unsigned.apk`，构建依然可跑通。
 | 用途 | Windows | Linux |
 |---|---|---|
 | 后端环境体检 | `.\Taki_Shiina_Bot\scripts\run_dev.ps1 check` | — |
-| 启动后端 | `.\Taki_Shiina_Bot\scripts\run_dev.ps1 auth\|http\|ws\|all` | `python http_api.py` 等 |
+| 启动后端 | `.\Taki_Shiina_Bot\scripts\run_dev.ps1 unified`（推荐）或 `auth\|http\|ws\|all` | `python http_api.py` 等 |
 | 构建发布 | `.\scripts\release.ps1` | `scripts/release.sh` |
 
-> 完整步骤、依赖版本与踩坑记录见 **[docs/开发环境_Windows.md](docs/开发环境_Windows.md)**。
+> 完整步骤、依赖版本与踩坑记录见 **[Windows 开发指南](design/windows-development.md)**。
 
 ---
 
@@ -299,4 +334,4 @@ release 产物退化为 `app-release-unsigned.apk`，构建依然可跑通。
 
 ---
 
-**最后更新**: 2026-08-03
+**协议与入口核对**: 2026-10-23（P6）

@@ -9,8 +9,15 @@
 
 from __future__ import annotations
 
+from services.async_storage import gamification_call
+
 from fastapi import APIRouter, Header, Request
 from pydantic import BaseModel
+from services.controlled_response import ControlledJSONResponse
+from services.chat_runtime import ChatFailed
+from services.foundation_store import PermissionDenied, StorageBusy, VersionConflict
+from services.interaction_config_service import ConfigUnavailableError
+from services.input_budget import BODY_BYTES, InputTooLong, validate_text, edit_input
 
 from api.v1.deps import (
     CODE_INSUFFICIENT_POINTS,
@@ -39,11 +46,14 @@ async def interaction_items(request: Request, authorization: str | None = Header
     trace_id = resolve_trace_id(request)
     auth = require_auth(authorization, trace_id)
     gamification = get_gamification()
-    gamification.touch_user(auth.user_id)
+    await gamification_call(gamification.touch_user, auth.user_id)
     handler = getattr(gamification, "interaction", None)
     if handler is None:
         return business_error(50301, "互动服务未就绪", None, trace_id, http_status=503)
-    return ok(handler.list_items(auth.user_id), trace_id)
+    try:
+        return ok(await gamification_call(handler.list_items, auth.user_id), trace_id)
+    except ConfigUnavailableError:
+        return business_error(50303, "送礼配置暂不可用，请稍后重试", {"retryable": True, "recoveryAction": "refresh_then_retry"}, trace_id)
 
 
 @router.post("/interaction/send")
@@ -64,6 +74,16 @@ async def interaction_send(
         return business_error(CODE_INVALID_PARAM, "itemId 不能为空", None, trace_id, http_status=400)
 
     request_id = (payload.requestId or payload.idempotencyKey or "").strip() or None
+    try:
+        runtime = handler.runtime_provider() if handler.runtime_provider else None
+        if not runtime or not request_id or not await runtime.request(auth.user_id, request_id):
+            validate_text(payload.text or "")
+            if getattr(request.state, "body_size", 0) > BODY_BYTES:
+                raise InputTooLong("请求体最多 64 KiB，请编辑后发送")
+    except InputTooLong as error:
+        return business_error(CODE_INVALID_PARAM, str(error), edit_input(request_id), trace_id, http_status=400)
+    except (StorageBusy, PermissionDenied):
+        return business_error(50301, "服务暂时不可用，请使用原请求重试", None, trace_id, http_status=503)
     result = await handler.send(
         user_id=auth.user_id,
         item_id=item_id,
@@ -74,6 +94,18 @@ async def interaction_send(
 
     code = result.error_code
     if result.ok:
+        runtime = handler.runtime_provider() if handler.runtime_provider else None
+        if runtime:
+            try:
+                existing = await runtime.request(auth.user_id, result.request_id)
+                durable = await runtime.wait(auth.user_id, existing["turn_id"])
+            except (ChatFailed, PermissionDenied, StorageBusy, VersionConflict):
+                return business_error(50302, "暂时未能完成，请使用原请求重试", None, trace_id)
+            result.reply = durable["reply"]
+            result.message_id = durable["messageId"]
+            result.timer_instruction = durable.get("timerInstruction")
+            result.merged_request_ids = [identity for identity in durable.get("requestIds", []) if identity != result.request_id]
+            return ControlledJSONResponse(ok(result.to_http_data(), trace_id), store=runtime.store, owner=auth.user_id, results=[durable])
         return ok(result.to_http_data(), trace_id)
     mapping = {
         CODE_INSUFFICIENT_POINTS: (CODE_INSUFFICIENT_POINTS, "积分不足"),

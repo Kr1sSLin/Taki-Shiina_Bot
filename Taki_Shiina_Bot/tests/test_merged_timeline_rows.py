@@ -113,7 +113,7 @@ class BothWritePathsUseTheSharedBuilderTestCase(unittest.TestCase):
 
         import ws_api
 
-        source = inspect.getsource(ws_api.process_buffered_messages)
+        source = inspect.getsource(ws_api._process_buffered_messages)
         self.assertIn(
             "build_user_timeline_items(buffered",
             source,
@@ -125,7 +125,7 @@ class BothWritePathsUseTheSharedBuilderTestCase(unittest.TestCase):
 
         from handlers.interaction_handler import InteractionHandler
 
-        source = inspect.getsource(InteractionHandler.send)
+        source = inspect.getsource(InteractionHandler._send)
         self.assertIn(
             "build_user_timeline_items(merged_items",
             source,

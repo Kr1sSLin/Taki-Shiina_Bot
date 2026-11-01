@@ -59,6 +59,14 @@ class InsufficientPointsError(RuntimeError):
     """积分不足（PRD FR-3 明确错误码场景）。"""
 
 
+class InteractionLimitError(RuntimeError):
+    pass
+
+
+class LedgerReconciliationError(RuntimeError):
+    pass
+
+
 @dataclass
 class RewardResult:
     entry: dict[str, Any]
@@ -178,6 +186,7 @@ class PointsService:
         cost_points: int,
         idempotency_key: str,
         business_date: str | None = None,
+        *, config_snapshot: dict | None = None,
     ) -> RewardResult:
         """原子扣减积分并记 ITEM_SEND 流水；余额不足抛 InsufficientPointsError。"""
         if cost_points <= 0:
@@ -187,6 +196,39 @@ class PointsService:
             existing = PointsStore.find_by_idempotency(data, key)
             if existing is not None:
                 return RewardResult(entry=dict(existing), created=False)
+            config = config_snapshot if config_snapshot is not None else self.config_service.get_config()
+            limit = config["points_rules"]["interaction_daily_limit"]
+            business_date = business_date or get_business_today().isoformat()
+            if PointsStore.get_balance(data, user_id) < cost_points:
+                raise InsufficientPointsError("积分不足")
+            if limit is not None:
+                sends = {}
+                for row in data["points_ledger"]:
+                    if row.get("user_id") != user_id or row.get("reason_code") != REASON_ITEM_SEND:
+                        continue
+                    key_text = row.get("idempotency_key", "")
+                    try:
+                        if date.fromisoformat(row["business_date"]).isoformat() != row["business_date"]:
+                            raise ValueError("业务日格式错误")
+                    except (KeyError, TypeError, ValueError):
+                        raise LedgerReconciliationError("扣款业务日缺失，需核账") from None
+                    if not key_text.startswith(f"item_send:{user_id}:") or row["change_amount"] >= 0:
+                        raise LedgerReconciliationError("扣款身份异常，需核账")
+                    sends[key_text] = row
+                released = set()
+                for row in data["points_ledger"]:
+                    if row.get("user_id") != user_id or row.get("reason_code") != REASON_ITEM_REFUND:
+                        continue
+                    refund_key = row.get("idempotency_key", "")
+                    send_key = "item_send:" + refund_key.removeprefix("item_refund:")
+                    send = sends.get(send_key)
+                    if not refund_key.startswith(f"item_refund:{user_id}:") or send is None or row.get("related_item_id") != send.get("related_item_id") or row.get("change_amount") != -send["change_amount"]:
+                        raise LedgerReconciliationError("退款无法关联原扣款，需核账")
+                    released.add(send_key)
+                used = sum(row["business_date"] == business_date and key_text not in released
+                           for key_text, row in sends.items())
+                if used >= limit:
+                    raise InteractionLimitError("今日送礼次数已用完")
             try:
                 entry = PointsStore.append_ledger(
                     data,
@@ -199,6 +241,8 @@ class PointsService:
                 )
             except ValueError as exc:
                 raise InsufficientPointsError(str(exc)) from exc
+            entry["config_revision"] = config["revision"]
+            entry["daily_limit"] = limit
         return RewardResult(entry=dict(entry), created=True)
 
     def refund_item(
@@ -212,15 +256,18 @@ class PointsService:
     ) -> RewardResult:
         """互动最终失败时退回已扣积分（PRD FR-9 / 6.3：记一条“失败退回”流水）。"""
         key = f"item_refund:{user_id}:{idempotency_key}"
-        return self._award(
-            user_id=user_id,
-            amount=abs(int(amount)),
-            reason_code=REASON_ITEM_REFUND,
-            idempotency_key=key,
-            business_date=business_date,
-            related_item_id=item_id,
-            note=note,
-        )
+        with self.points_store.transaction() as data:
+            existing = PointsStore.find_by_idempotency(data, key)
+            charge = PointsStore.find_by_idempotency(data, f"item_send:{user_id}:{idempotency_key}")
+            if charge is None or charge.get("user_id") != user_id or charge.get("reason_code") != REASON_ITEM_SEND or charge.get("related_item_id") != item_id or charge.get("change_amount") != -abs(int(amount)):
+                raise LedgerReconciliationError("退款与原扣款不匹配")
+            if existing is not None:
+                if existing.get("user_id") != user_id or existing.get("reason_code") != REASON_ITEM_REFUND or existing.get("related_item_id") != item_id or existing.get("change_amount") != abs(int(amount)):
+                    raise LedgerReconciliationError("既有退款不匹配")
+                return RewardResult(dict(existing), False)
+            entry = PointsStore.append_ledger(data, user_id, abs(int(amount)), REASON_ITEM_REFUND, key,
+                                             related_item_id=item_id, business_date=charge.get("business_date"), note=note)
+        return RewardResult(dict(entry), True)
 
     # ==================== 每日有效对话与积分发放（FR-10 / 4.3） ====================
     def record_user_activity(

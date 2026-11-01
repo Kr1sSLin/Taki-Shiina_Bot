@@ -22,6 +22,7 @@
  */
 
 import { app, clipboard } from 'electron'
+import { chatInputTooLong, chatRecoveryCode } from '@shared/errors'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -148,6 +149,36 @@ async function run(): Promise<number> {
   check('NFR-13：WAL 模式已启用', journalMode.toLowerCase() === 'wal', journalMode)
   const fk = db.pragma('foreign_keys', { simple: true }) as number
   check('§9.2：外键约束已开启（附件级联删除依赖它）', fk === 1, fk)
+
+  // PRD-06 U-A01: replay and out-of-order revisions must never re-enable a blocked fact.
+  const factRepo = await import('./core/database/repositories/notification-repository')
+  const { getCursor } = await import('./core/database/repositories/message-repository')
+  const baseFact = {
+    factId: 'selftest-memory-fact', userId: 'selftest-owner', timestamp: 1000,
+    fact: '合成事实', stage: 'candidate' as const, truthStatus: 'pending' as const,
+    revisionStatus: 'active' as const, score: 0, revisionId: 'revision-1'
+  }
+  factRepo.applyFactPage([{ ...baseFact, revision: 1, permissionVersion: 1,
+    modelPermission: 'allowed', eventId: 'selftest-memory-created', sequence: 10 }], 10)
+  factRepo.applyFactPage([{ ...baseFact, fact: '', revision: 2, permissionVersion: 2,
+    modelPermission: 'blocked', eventId: 'selftest-memory-disabled', sequence: 11 }], 11)
+  factRepo.applyFactPage([{ ...baseFact, revision: 1, permissionVersion: 1,
+    modelPermission: 'allowed', eventId: 'selftest-memory-stale', sequence: 12 }], 12)
+  factRepo.applyFactPage([{ ...baseFact, fact: '', revision: 2, permissionVersion: 2,
+    modelPermission: 'blocked', eventId: 'selftest-memory-disabled', sequence: 11 }], 12)
+  const blocked = factRepo.listFacts().find((item) => item.factId === baseFact.factId)
+  check('PRD-06 U-A01：乱序与重放不恢复已禁用事实，游标推进',
+    blocked?.modelPermission === 'blocked' && blocked.revision === 2 && getCursor('memory_events') === 12,
+    blocked)
+  try {
+    factRepo.applyFactPage([{ ...baseFact, revision: 3, eventId: '', sequence: 13 }], 13)
+    check('PRD-06 U-A01：坏事件不得推进游标', false)
+  } catch {
+    check('PRD-06 U-A01：坏事件不得推进游标', getCursor('memory_events') === 12)
+  }
+  // The synthetic page above uses sequence 10-12. Reset its cursor before
+  // the mock server integration flow, whose independent sequence starts at 1.
+  db.prepare("UPDATE sync_cursors SET value=0 WHERE key='memory_events'").run()
 
   /* ------------------------- FR-DB-1 / 去重 / 拆分 --------------------- */
   section('§9.2 FR-DB-1 与 §6.3 多气泡拆分（真实落库）')
@@ -280,6 +311,75 @@ async function run(): Promise<number> {
 
   closeDatabase()
   process.stdout.write(`  \u001b[90m（数据库层断言完成，重新建库用于后续端到端流程）\u001b[0m\n`)
+
+  section('P3 逐连接心跳与旧连接隔离（真实 loopback WS）')
+  {
+    const { WebSocketServer } = await import('ws')
+    const { WsClient } = await import('./core/network/ws-client')
+    const { PROTOCOL } = await import('../shared/levels')
+    const server = new WebSocketServer({ port: 0, host: '127.0.0.1' })
+    await new Promise<void>((resolve) => server.once('listening', resolve))
+    const address = server.address() as { port: number }
+    const client = new WsClient()
+    type Socket = import('ws').default
+    let peer: Socket | null = null
+    let failed = 0
+    let seenFrames = 0
+    const ticks: Array<() => void> = []
+    const originalInterval = global.setInterval
+    const incoming: Array<Record<string, unknown>> = []
+    server.on('connection', (socket) => {
+      peer = socket
+      socket.on('message', (raw) => incoming.push(JSON.parse(String(raw))))
+    })
+    client.on('heartbeatFailed', () => { failed += 1 })
+    client.on('error', () => {})
+    client.on('frame', () => { seenFrames += 1 })
+    // 只压缩心跳时钟，不替换 WebSocket 或响应处理。
+    global.setInterval = ((callback: () => void, interval: number) => {
+      if (interval === PROTOCOL.HEARTBEAT_INTERVAL_MS) ticks.push(callback)
+      return originalInterval(callback, interval)
+    }) as typeof setInterval
+    try {
+      const connect = async (): Promise<void> => {
+        client.connect(`ws://127.0.0.1:${address.port}`, 'synthetic-token')
+        if (!await waitFor(() => client.isOpen() && peer, 2000, 'P3 loopback open')) throw new Error('P3 loopback open failed')
+      }
+      await connect()
+      const oldSocket = (client as unknown as { socket: Socket }).socket
+      const oldMessage = oldSocket.listeners('message')[0]
+      const oldOpen = oldSocket.listeners('open')[0]
+      const oldClose = oldSocket.listeners('close')[0]
+      const tick = (): void => { ticks[ticks.length - 1]() }
+      tick()
+      await waitFor(() => incoming.length === 1, 2000, 'P3 ping')
+      const timestamp = (incoming[0].payload as { timestamp: number }).timestamp
+      peer!.send(JSON.stringify({ type: 'pong', timestamp: Date.now(), pingTimestamp: timestamp }))
+      await waitFor(() => seenFrames === 1, 2000, 'P3 matching pong')
+      tick(); tick(); tick()
+      check('P3：匹配回显重置连续超时计数', failed === 0)
+      peer!.send(JSON.stringify({ type: 'pong', pingTimestamp: -1 }))
+      await waitFor(() => seenFrames === 2, 2000, 'P3 mismatched pong')
+      tick()
+      check('P3：错误回显不能证明存活，无 pong 触发恢复事件', failed === 1)
+      await connect()
+      const before = seenFrames
+      oldMessage.call(oldSocket, Buffer.from('{"type":"pong"}'), false)
+      oldOpen.call(oldSocket)
+      oldClose.call(oldSocket, 1006, Buffer.from('stale'))
+      check('P3：旧连接回调不能关闭或污染新连接', client.isOpen() && seenFrames === before)
+      tick(); tick(); tick()
+      peer!.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }))
+      await waitFor(() => seenFrames === before + 1, 2000, 'P3 legacy pong')
+      tick()
+      check('P3：重连清除在途心跳并兼容旧 pong', failed === 1)
+    } finally {
+      global.setInterval = originalInterval
+      client.close(true)
+      for (const socket of server.clients) socket.terminate()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  }
 
   /* --------------------------- 组装真实服务图 -------------------------- */
   section('§5 / §7 真实服务链路（REST + WS + 持久化）')
@@ -933,7 +1033,7 @@ async function run(): Promise<number> {
    * 消息只进 SQLite、界面永远看不到，必须重启程序才出现。
    * selftest 不创建窗口，这里临时替换 bus.send 捕获广播载荷再还原。
    */
-  const seedCount = 5
+  const seedCount = 3350
   await fetch(apiBaseUrl.replace(/\/api\/v1\/?$/, '') + '/__test__/trigger', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${services.auth.getAccessToken() ?? ''}` },
@@ -955,6 +1055,11 @@ async function run(): Promise<number> {
   interceptingBus.send = originalBusSend
 
   const pushedBodies = capturedMessagesUpdated.flatMap((event) => event.messages)
+  check('P2：多页恢复 10050 条拆分后消息，唯一 ID 与内容齐全',
+    Array.from({ length: seedCount }, (_, index) => index + 1).every(index =>
+      msgRepo.getMessage(`seed_u_${index}`)?.content === `历史用户消息 ${index}` &&
+      msgRepo.getMessage(`seed_b_${index}_0`)?.content === `历史回复 ${index} 第一行` &&
+      msgRepo.getMessage(`seed_b_${index}_1`)?.content === `历史回复 ${index} 第二行`))
   check('FR-SYNC：同步落库的新消息必须带本体推送 evt:messagesUpdated（而非空事件）',
     seededSync.ok === true &&
       pushedBodies.length >= seedCount * 3 &&
@@ -964,6 +1069,33 @@ async function run(): Promise<number> {
 
   const factsInserted = await services.chat.pullFacts()
   check('FR-SYNC-7：用户事实独立游标补拉可用', typeof factsInserted === 'number', factsInserted)
+  if (process.env.TKS_SELFTEST_USE_MOCK === '1') {
+    const ownedFact = factRepo.listFacts().find((item) =>
+      item.userId === services.auth.status().userId && item.factId !== baseFact.factId)
+    check('PRD-06 U02：模拟服务产生可纠正的用户事实', !!ownedFact)
+    if (ownedFact) {
+      const before = await services.memory.detail(ownedFact.factId)
+      const correctedContent = '用户明确纠正后的合成事实'
+      await services.memory.correctFact(ownedFact.factId, correctedContent, before.revision)
+      const after = await services.memory.detail(ownedFact.factId)
+      check('PRD-06 U02：纠错保留 factId 并产生 0.6 正式新修订',
+        after.factId === before.factId && after.revision === before.revision + 1 &&
+          after.content === correctedContent && after.score === 0.6 && after.stage === 'formal')
+      let staleRejected = false
+      try {
+        await services.memory.correctFact(ownedFact.factId, '过期请求', before.revision)
+      } catch {
+        staleRejected = true
+      }
+      check('PRD-06 U02：旧修订纠错被拒绝', staleRejected)
+      await services.chat.pullFacts()
+      const projected = factRepo.listFacts().find((item) => item.factId === ownedFact.factId)
+      check('PRD-06 U02：新修订进入本地事实投影',
+        projected?.revision === after.revision &&
+          projected.fact === (projected.modelPermission === 'allowed' ? correctedContent : ''),
+        { projected, after })
+    }
+  }
 
   // NFR-12：注入未知帧后连接仍存活
   await fetch(apiBaseUrl.replace(/\/api\/v1\/?$/, '') + '/__test__/trigger', {
@@ -1142,7 +1274,92 @@ async function run(): Promise<number> {
     services.images.listDraft().length
   )
 
+  // 跨设备历史只携带 requestId/imageCount；原图必须另取、原样落在私有附件目录。
+  const historyImageMessageId = randomUUID()
+  msgRepo.upsertMessage({ messageId: historyImageMessageId, sessionId: 'default_session', role: 'user',
+    content: '[图片]', status: 'sent', timestamp: Date.now(), messageType: 'image', contentType: 'image' })
+  const { restoreHistoryImages } = await import('./core/chat/image-service')
+  let imageDownloads = 0
+  const imageRest = { downloadImage: async () => {
+    imageDownloads += 1
+    return { mimeType: 'image/png', bytes: TINY_PNG }
+  } } as Parameters<typeof restoreHistoryImages>[0]
+  const imageRestored = await restoreHistoryImages(imageRest, historyImageMessageId, 'remote-source-id', 1)
+  const historyAttachment = msgRepo.listAttachmentsByMessage(historyImageMessageId)[0]
+  const { toAttachmentUrl } = await import('./desktop/protocol')
+  const { fileURLToPath } = await import('node:url')
+  const encodedAttachment = new URL(toAttachmentUrl(historyAttachment.localPath + '#?.png'))
+  check('附件协议保留本机绝对路径与文件名特殊字符',
+    fileURLToPath(new URL(encodedAttachment.pathname, 'file://')) === historyAttachment.localPath + '#?.png' &&
+    !encodedAttachment.hash && !encodedAttachment.search)
+  const imageRestoredAgain = await restoreHistoryImages(imageRest, historyImageMessageId, 'remote-source-id', 1)
+  check('历史原图补拉保留原始字节、可通过现有附件记录展示且全量重拉幂等',
+    imageRestored && !imageRestoredAgain && imageDownloads === 1 &&
+      !!historyAttachment && readFileSync(historyAttachment.localPath).equals(TINY_PNG) &&
+      msgRepo.getMessage(historyImageMessageId)?.attachments?.length === 1)
+
   /* -------------------------------- 日志 ------------------------------ */
+  const protocolSamples = JSON.parse(readFileSync(join(process.cwd(), '../design/foundation-protocol-samples.json'), 'utf8'))
+  const recoverySamples = protocolSamples.recovery
+  const requestBeforeSample = services.rest.request
+  const downloadBeforeSample = services.rest.downloadImage
+  try {
+    services.rest.request = async <T>(path: string, options = {}) => path === 'chat/history'
+      ? ({ ...protocolSamples.historySync.pageData, hasMore: false } as T)
+      : requestBeforeSample.call(services.rest, path, options) as Promise<T>
+    services.rest.downloadImage = async () => ({ mimeType: 'image/png', bytes: TINY_PNG })
+    const synced = await services.chat.syncHistory(true)
+    const image = msgRepo.getMessage('client-message')
+    check('P6：共享分页样例经真实同步器落库、恢复图片并保留终态批次',
+      synced.ok && image?.attachments?.length === 2 &&
+      recoverySamples.terminalError.payload.requestIds.every((id: string) => msgRepo.getMessage(id)?.status === 'error'))
+  } finally {
+    services.rest.request = requestBeforeSample
+    services.rest.downloadImage = downloadBeforeSample
+  }
+  await services.chat.syncHistory(true)
+  const failedOperation = recoverySamples.historyData.operations[0]
+  for (const source of failedOperation.sources) {
+    msgRepo.upsertMessage({ messageId: source.messageId, sessionId: 'default_session', role: 'user',
+      content: source.content, timestamp: source.timestamp, status: 'sent', messageType: 'text', contentType: 'text' })
+  }
+  check('P4：中文 Emoji 与组合字符使用 Unicode code point 上限',
+    !chatInputTooLong('中'.repeat(8000)) && chatInputTooLong('中'.repeat(8001)) &&
+    !chatInputTooLong('😀'.repeat(8000)) && chatInputTooLong('😀'.repeat(8001)) &&
+    !chatInputTooLong('e\u0301'.repeat(4000)) && chatInputTooLong('e\u0301'.repeat(4001)))
+  msgRepo.upsertMessage({ messageId: 'sample-too-long', sessionId: 'default_session', role: 'user', content: '保留待编辑原文',
+    timestamp: Date.now(), status: 'sent', messageType: 'text', contentType: 'text' })
+  services.chat.handleBotError(recoverySamples.inputTooLong)
+  check('P4：输入超限落库为编辑动作，查询动作不转换成新请求',
+    msgRepo.getMessage('sample-too-long')?.errorCode === 'EDIT_INPUT' &&
+    msgRepo.getMessage('sample-too-long')?.content === '保留待编辑原文' &&
+    chatRecoveryCode('poll_status', 'CHAT_RETRY') === 'POLL_STATUS')
+  const originalSend = services.conn.send
+  const originalConnected = services.conn.isConnected
+  let retriedRequestId = ''
+  try {
+    services.conn.isConnected = () => true
+    services.conn.send = (frame) => { retriedRequestId = (frame as { requestId?: string }).requestId ?? ''; return true }
+    services.chat.handleBotError({ ...recoverySamples.inputTooLong, payload: { ...recoverySamples.inputTooLong.payload,
+      recoveryAction: 'retry_same_request', errorCode: 'CHAT_RETRY' } })
+    await services.chat.retrySameRequest('sample-too-long')
+    check('P4：临时失败重试保留原请求 ID 与已落库原文', retriedRequestId === 'sample-too-long' &&
+      msgRepo.getMessage('sample-too-long')?.content === '保留待编辑原文')
+  } finally { services.conn.send = originalSend; services.conn.isConnected = originalConnected }
+  services.chat.handleBotError(recoverySamples.legacyError)
+  services.chat.handleBotError(recoverySamples.terminalError)
+  check('P0/P1：共享新旧错误帧可消费，终态批量标记失败且保留正文',
+    failedOperation.requestIds.every((id: string) => msgRepo.getMessage(id)?.status === 'error') &&
+    msgRepo.getMessage('sample-text')?.content === '保留的文字')
+  for (const id of failedOperation.requestIds) msgRepo.updateMessageStatus(id, 'sent')
+  await fetch(apiBaseUrl.replace(/\/api\/v1\/?$/, '') + '/__test__/trigger', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${services.auth.getAccessToken() ?? ''}` },
+    body: JSON.stringify({ kind: 'operation_failure', operation: failedOperation, offline: true }) })
+  await services.chat.syncHistory(true)
+  check('P1：丢失实时帧后历史同步恢复全部失败气泡',
+    failedOperation.requestIds.every((id: string) => msgRepo.getMessage(id)?.errorCode === 'RESEND_NEW_REQUEST'))
+  check('P1：失败恢复不会删除原图附件',
+    readFileSync(historyAttachment.localPath).equals(TINY_PNG) && msgRepo.getMessage(historyImageMessageId)?.attachments?.length === 1)
+
   section('§8 / NFR-6 / NFR-7 日志与凭据安全')
   const logDir = paths().logsDir
   const logFiles = readdirSync(logDir).filter((f) => /^tks-\d{8}\.jsonl$/.test(f))

@@ -38,7 +38,9 @@ class GamificationService:
         self.default_user_id = default_user_id
 
         self.config = InteractionConfigService(
-            config_dir=os.path.join(base_dir, CONFIG_DIR_NAME), logger=logger
+            config_dir=os.path.join(base_dir, CONFIG_DIR_NAME), logger=logger,
+            initialize=not any(os.path.exists(os.path.join(base_dir, name)) for name in
+                               (CONFIG_DIR_NAME, POINTS_DATA_FILENAME, PROGRESS_DATA_FILENAME, "foundation.sqlite3")),
         )
         self.points_store = PointsStore(os.path.join(base_dir, POINTS_DATA_FILENAME), logger)
         self.progress_store = ProgressStore(os.path.join(base_dir, PROGRESS_DATA_FILENAME), logger)

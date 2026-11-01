@@ -129,7 +129,7 @@ public static class WsFrameParser
             case "pong":
                 {
                     var dto = Deserialize<WsPongTopLevelDto>(raw);
-                    return new WsPongFrame(dto?.Timestamp ?? 0);
+                    return new WsPongFrame(dto?.Timestamp ?? 0, dto?.PingTimestamp);
                 }
 
             case "chat.message.echo":
@@ -230,6 +230,9 @@ public static class WsFrameParser
 /// <summary>顶层 `{type, timestamp}` 形态（`pong`，以及 `points.snapshot` 的宽松读取）。</summary>
 internal sealed class WsPongTopLevelDto
 {
+    [System.Text.Json.Serialization.JsonPropertyName("pingTimestamp")]
+    public long? PingTimestamp { get; set; }
+
     [System.Text.Json.Serialization.JsonPropertyName("type")]
     public string? Type { get; set; }
 
