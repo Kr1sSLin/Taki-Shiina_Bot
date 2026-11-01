@@ -34,7 +34,7 @@ Android AI 对话助手客户端，多模块架构。
 ### 技术栈
 - **语言 / UI**: Kotlin, Jetpack Compose
 - **依赖注入**: Hilt
-- **本地存储**: Room（聊天消息、附件、用户事实、Bot 通知四张表）
+- **本地存储**: Room（聊天、附件、通知、用户事实、积分及同步状态）
 - **网络**: Retrofit/OkHttp（REST + Token 自动刷新）、OkHttp WebSocket 长连接
 - **后台任务**: WorkManager（提醒调度）、系统通知
 
@@ -63,7 +63,7 @@ Android AI 对话助手客户端，多模块架构。
 - `API_BASE_URL` — REST API 地址
 - `WS_BASE_URL` — WebSocket 地址
 
-⚠️ 默认值为占位地址，请修改为实际后端域名后再运行。
+`debug` 默认连接测试域名 `staging.takishiinabot.top`，`release` 默认连接正式域名 `takishiinabot.top`；运行前请确认对应后端可用。
 
 ### 构建
 ```bash
